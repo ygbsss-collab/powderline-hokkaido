@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Powderline — Backcountry route lab</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">✦</span><div><strong>POWDERLINE</strong><small>BACKCOUNTRY ROUTE LAB</small></div></div>
+        <section class="hero-copy"><p class="eyebrow">HOKKAIDO / WINTER 2026</p><h1>Find your<br/><em>line.</em></h1><p>Freeform planning for riders who prefer the quiet side of the mountain.</p></section>
+        <section class="controls">
+          <label class="field-label" for="region">Area</label>
+          <select id="region"><option value="asahidake">Asahidake · Daisetsuzan</option><option value="rusutsu">Rusutsu · Hokkaido</option><option value="furano">Furano · Hokkaido</option><option value="niseko">Niseko · Hokkaido</option><option value="kamui">Kamui Ski Links · Asahikawa</option><option value="kiroro">Kiroro · Hokkaido</option></select>
+          <div class="button-row"><button id="drawBtn" class="primary">＋ Draw line</button><button id="clearBtn" class="ghost">Clear</button></div>
+          <div class="button-row"><label class="file-button ghost">Import GPX<input id="gpxInput" type="file" accept=".gpx,application/gpx+xml" /></label><button id="exportBtn" class="ghost">Export</button></div>
+          <div class="button-row"><button id="saveBtn" class="wide">Save route</button></div>
+        </section>
+        <section class="stats"><div><span>Distance</span><strong id="distance">0.0 km</strong></div><div><span>Points</span><strong id="points">0</strong></div><div><span>Descent*</span><strong id="descent">—</strong></div></section>
+        <p class="hint">* Elevation is available when a terrain provider is configured. Your routes stay in this browser until exported.</p>
+        <section class="saved"><div class="section-title"><span>Saved lines</span><span id="savedCount">0</span></div><div id="savedList" class="saved-list"><p class="empty">No saved lines yet.</p></div></section>
+        <details class="settings"><summary>Terrain provider</summary><p>For production terrain in Japan, add a MapTiler Cloud key. The key is stored only in this browser.</p><div class="key-row"><input id="apiKey" type="password" placeholder="MapTiler API key" /><button id="applyKey">Apply</button></div><small>MapTiler free plan: 5k sessions / month, 2k 3D sessions / month.</small></details>
+      </aside>
+      <section class="map-panel"><div id="map"></div><div class="map-topbar"><div class="pill"><span class="live-dot"></span><span id="mapStatus">3D terrain ready</span></div><div class="top-actions"><button id="tiltBtn">Tilt <span>◒</span></button><button id="resetBtn">Reset view</button></div></div><div class="map-legend"><span><i class="legend-line"></i> Your line</span><span><i class="legend-dot"></i> Start</span></div><div id="toast" class="toast" role="status"></div></section>
+    </main>
+    <script src="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
