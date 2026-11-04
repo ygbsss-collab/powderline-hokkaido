@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">POWDERLINE</string>
+    <string name="title_activity_main">POWDERLINE</string>
+    <string name="package_name">com.powderline.hokkaido</string>
+    <string name="custom_url_scheme">com.powderline.hokkaido</string>
+</resources>

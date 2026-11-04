@@ -3,30 +3,149 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Powderline — Backcountry route lab</title>
-    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.css" />
+    <title data-i18n="docTitle">POWDERLINE — 백컨트리 경로 설계</title>
+    <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/v3.33.0/mapbox-gl.css" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="app-shell">
       <aside class="sidebar">
-        <div class="brand"><span class="brand-mark">✦</span><div><strong>POWDERLINE</strong><small>BACKCOUNTRY ROUTE LAB</small></div></div>
-        <section class="hero-copy"><p class="eyebrow">HOKKAIDO / WINTER 2026</p><h1>Find your<br/><em>line.</em></h1><p>Freeform planning for riders who prefer the quiet side of the mountain.</p></section>
+        <div class="brand-header">
+          <div class="brand"><span class="brand-mark">✦</span><div><strong>POWDERLINE</strong><small data-i18n="brandSubtitle">백컨트리 경로 설계</small></div></div>
+          <div class="lang-switch" role="group" aria-label="언어 선택 / Language"><button id="langKoBtn" class="active" type="button" aria-pressed="true">KO</button><button id="langEnBtn" type="button" aria-pressed="false">EN</button></div>
+        </div>
         <section class="controls">
-          <label class="field-label" for="region">Area</label>
-          <select id="region"><option value="asahidake">Asahidake · Daisetsuzan</option><option value="rusutsu">Rusutsu · Hokkaido</option><option value="furano">Furano · Hokkaido</option><option value="niseko">Niseko · Hokkaido</option><option value="kamui">Kamui Ski Links · Asahikawa</option><option value="kiroro">Kiroro · Hokkaido</option></select>
-          <div class="button-row"><button id="drawBtn" class="primary">＋ Draw line</button><button id="clearBtn" class="ghost">Clear</button></div>
-          <div class="button-row"><label class="file-button ghost">Import GPX<input id="gpxInput" type="file" accept=".gpx,application/gpx+xml" /></label><button id="exportBtn" class="ghost">Export</button></div>
-          <div class="button-row"><button id="saveBtn" class="wide">Save route</button></div>
+          <label class="field-label" for="region" data-i18n="labelRegion">지역</label>
+          <select id="region"><option value="asahidake">아사히다케</option><option value="rusutsu">루스츠</option><option value="furano" selected>후라노</option><option value="niseko">니세코</option><option value="kamui">카무이 스키 링크스</option><option value="kiroro">키로로</option></select>
+          <span class="field-label layer-label" data-i18n="labelMapStyle">지도 종류</span>
+          <div class="style-switch" role="group" aria-label="지도 종류"><button id="satelliteBtn" class="active" type="button" aria-pressed="true" data-i18n="btnSatellite">위성 지도</button><button id="topoBtn" type="button" aria-pressed="false" data-i18n="btnTopo">지형도 / 등고선</button></div>
+          <fieldset class="layer-settings"><legend data-i18n="legendLayers">표시 설정</legend><label><input id="liftsToggle" type="checkbox" checked /><span class="layer-swatch lift-swatch"></span><span data-i18n="layerLifts">리프트</span></label><label><input id="runsToggle" type="checkbox" checked /><span class="layer-swatch run-swatch"></span><span data-i18n="layerRuns">슬로프</span></label><label><input id="gpxToggle" type="checkbox" checked /><span class="layer-swatch gpx-swatch"></span><span data-i18n="layerGpx">내 GPX 경로</span></label><small id="facilityStatus">스키 시설 불러오는 중…</small></fieldset>
+          <div class="button-row"><button id="drawBtn" class="primary wide" data-i18n="btnCreateCourse">코스 만들기</button></div>
+          <section id="courseEditor" class="course-editor" hidden>
+            <div class="editor-heading"><div><strong data-i18n="editorTitle">코스 편집 모드</strong><small id="editorStatus" data-i18n="editorStatusDefault">도구를 선택하세요.</small></div><button id="exitEditorBtn" type="button" aria-label="코스 편집 모드 닫기" data-i18n="btnClose">닫기</button></div>
+            <label class="field-label" for="courseName" data-i18n="labelCourseName">코스 이름</label>
+            <input id="courseName" type="text" maxlength="80" placeholder="코스 이름" data-i18n-placeholder="placeholderCourseName" />
+            <div class="editor-actions"><button id="newCourseBtn" type="button" data-i18n="btnNewCourse">＋ 새 코스</button><button id="finishDrawBtn" type="button" data-i18n="btnFinishDraw">그리기 완료</button></div>
+            <div class="tool-grid" role="group" aria-label="코스 편집 도구"><button id="drawToolBtn" type="button" data-tool="draw" data-i18n="toolDraw">그리기</button><button id="editToolBtn" type="button" data-tool="edit" data-i18n="toolEdit">꼭짓점 편집</button><button id="cutToolBtn" type="button" data-tool="cut" data-i18n="toolCut">✂ 코스 자르기</button><button id="deleteSegmentToolBtn" type="button" data-tool="delete-segment" data-i18n="toolDeleteSegment">구간 삭제</button></div>
+            <div class="editor-actions"><button id="undoBtn" type="button" data-i18n="btnUndo">실행 취소</button><button id="redoBtn" type="button" data-i18n="btnRedo">다시 실행</button></div>
+            <div class="editor-actions"><button id="deleteVertexBtn" type="button" data-i18n="btnDeleteVertex">선택 꼭짓점 삭제</button><button id="clearBtn" type="button" data-i18n="btnClearCourse">선택 코스 비우기</button></div>
+            <div class="course-worklist"><span class="field-label" data-i18n="labelWorkingCourses">작업 중인 코스</span><div id="courseWorkList"></div></div>
+            <button id="saveBtn" class="wide" type="button" data-i18n="btnSaveCourse">선택 코스 저장</button>
+          </section>
+          <div class="button-row"><label class="file-button ghost"><span data-i18n="btnImportGpx">GPX 불러오기</span><input id="gpxInput" type="file" accept=".gpx,application/gpx+xml" /></label><button id="exportBtn" class="ghost" data-i18n="btnExportGpx">GPX 내보내기</button></div>
         </section>
-        <section class="stats"><div><span>Distance</span><strong id="distance">0.0 km</strong></div><div><span>Points</span><strong id="points">0</strong></div><div><span>Descent*</span><strong id="descent">—</strong></div></section>
-        <p class="hint">* Elevation is available when a terrain provider is configured. Your routes stay in this browser until exported.</p>
-        <section class="saved"><div class="section-title"><span>Saved lines</span><span id="savedCount">0</span></div><div id="savedList" class="saved-list"><p class="empty">No saved lines yet.</p></div></section>
-        <details class="settings"><summary>Terrain provider</summary><p>For production terrain in Japan, add a MapTiler Cloud key. The key is stored only in this browser.</p><div class="key-row"><input id="apiKey" type="password" placeholder="MapTiler API key" /><button id="applyKey">Apply</button></div><small>MapTiler free plan: 5k sessions / month, 2k 3D sessions / month.</small></details>
+        <section class="stats"><div><span data-i18n="statDistance">거리</span><strong id="distance">0.0 km</strong></div><div><span data-i18n="statPoints">꼭짓점</span><strong id="points">0</strong></div><div><span data-i18n="statDescent">누적 하강*</span><strong id="descent">—</strong></div></section>
+        <p class="hint" data-i18n="hint3D">* 3D 지형의 실제 고도 데이터를 사용합니다. 경로는 GPX로 내보내기 전까지 이 브라우저에 저장됩니다.</p>
+        <section class="auth-panel" aria-labelledby="authTitle">
+          <div class="section-title"><span id="authTitle" data-i18n="authTitle">POWDERLINE 계정</span><span id="authStatusBadge" data-i18n="authOffline">로컬</span></div>
+          <form id="authForm" class="auth-form">
+            <input id="authEmail" type="email" autocomplete="username" required placeholder="이메일 (아이디)" data-i18n-placeholder="placeholderEmail" />
+            <input id="authPassword" type="password" autocomplete="current-password" required minlength="6" placeholder="비밀번호" data-i18n-placeholder="placeholderPassword" />
+            <div class="button-row">
+              <button id="loginBtn" class="primary" type="submit" data-i18n="btnLogin">로그인</button>
+              <button id="signupBtn" class="ghost" type="button" data-i18n="btnSignUp">회원가입 신청</button>
+            </div>
+          </form>
+          <div id="signedInPanel" class="signed-in" hidden>
+            <div class="signed-in-info">
+              <div class="user-status-row">
+                <span id="userStatusBadge" class="signed-in-badge status-badge-approved" data-i18n="badgeApproved">✓ 승인 회원</span>
+                <span id="userRoleBadge" class="role-badge" hidden>Admin</span>
+              </div>
+              <strong id="signedInEmail"></strong>
+              <small id="signedInNickname" class="signed-in-nickname"></small>
+            </div>
+            <button id="logoutBtn" class="ghost" type="button" data-i18n="btnLogout">로그아웃</button>
+          </div>
+          <small id="authStatus" data-i18n="authReady">Supabase 연결 완료 — 로그인하면 코스를 동기화합니다.</small>
+        </section>
+        <section id="adminPanel" class="admin-panel" hidden>
+          <div class="section-title">
+            <span data-i18n="adminTitle">가입 요청 관리</span>
+            <span id="pendingCountBadge" class="badge-count">0</span>
+          </div>
+          <div class="admin-panel-body">
+            <div id="pendingList" class="pending-list">
+              <p class="empty" data-i18n="emptyPending">대기 중인 가입 요청이 없습니다.</p>
+            </div>
+            <button id="refreshAdminBtn" type="button" class="ghost wide-sm" data-i18n="btnRefresh">새로고침 🔄</button>
+          </div>
+        </section>
+        <section class="saved"><div class="section-title"><span data-i18n="labelSavedRoutes">저장된 경로</span><span id="savedCount">0</span></div><div id="savedList" class="saved-list"><p class="empty" data-i18n="emptySaved">저장된 경로가 없습니다.</p></div></section>
+        <details class="settings" id="supabaseSettings" hidden><summary data-i18n="settingsSupabase">Supabase 연결</summary><p data-i18n="settingsSupabaseDesc">Publishable Key는 이 브라우저에 저장되며 로그인과 사용자별 코스 동기화에 사용됩니다.</p><div class="key-row"><input id="supabaseKey" type="password" autocomplete="off" placeholder="sb_publishable_…" data-i18n-placeholder="placeholderSupabaseKey" /><button id="applySupabaseKey" type="button" data-i18n="btnApply">적용</button></div><small id="supabaseStatus">https://lxfsvhwibiaspnaduhri.supabase.co</small></details>
+        <details class="settings" id="mapboxSettings" hidden><summary data-i18n="settingsMapbox">Mapbox 연결</summary><p data-i18n="settingsMapboxDesc">비교 화면에서 사용한 것과 같은 공개 토큰을 입력하세요. 현재 브라우저 탭에만 저장됩니다.</p><div class="key-row"><input id="mapboxToken" type="password" autocomplete="off" placeholder="Mapbox 공개 토큰 (pk.… )" data-i18n-placeholder="placeholderMapboxToken" /><button id="applyToken" type="button" data-i18n="btnApply">적용</button></div><small id="tokenStatus">Mapbox 공개 토큰이 필요합니다.</small></details>
+        <details class="settings"><summary data-i18n="settingsMapData">지도 데이터</summary><p data-i18n="settingsMapDataDesc">배경 지도와 고도: Mapbox 위성 지도 / 아웃도어 지도 및 Terrain-DEM. 스키 시설: OpenSkiData / OpenSkiMap.org.</p><small data-i18n="settingsSkiDataCredit">스키 데이터: © OpenStreetMap 기여자(ODbL), Skimap.org, Who's On First, © Mapterhorn. 제공자 저작자 표시는 지도에 계속 표시됩니다.</small></details>
       </aside>
-      <section class="map-panel"><div id="map"></div><div class="map-topbar"><div class="pill"><span class="live-dot"></span><span id="mapStatus">3D terrain ready</span></div><div class="top-actions"><button id="tiltBtn">Tilt <span>◒</span></button><button id="resetBtn">Reset view</button></div></div><div class="map-legend"><span><i class="legend-line"></i> Your line</span><span><i class="legend-dot"></i> Start</span></div><div id="toast" class="toast" role="status"></div></section>
+      <section class="map-panel profile-open">
+        <div id="map"></div>
+        <div class="map-topbar"><div class="pill"><span class="live-dot"></span><span id="mapStatus">Mapbox 지형 불러오는 중…</span></div><div class="top-actions"><a href="./maplibre-backup.html" data-i18n="linkMaplibre">MapLibre 백업</a><button id="tiltBtn"><span data-i18n="btnTilt">기울이기</span> <span>◒</span></button><button id="resetBtn" data-i18n="btnResetView">보기 초기화</button></div></div>
+        <div class="map-legend"><span><i class="legend-line"></i> <span data-i18n="legendMyRoute">내 경로</span></span><span><i class="legend-dot"></i> <span data-i18n="legendStartPoint">시작점</span></span></div>
+        <div id="toast" class="toast" role="status"></div>
+        <section id="profilePanel" class="route-profile">
+          <button id="profileToggle" class="profile-toggle" type="button" aria-expanded="true" aria-controls="profileBody"><span data-i18n="profilePanelTitle">경로 고도·경사도 분석</span><span id="profileChevron" aria-hidden="true">⌄</span></button>
+          <div id="profileBody" class="profile-body">
+            <div class="profile-chart-wrap">
+              <canvas id="profileChart" aria-label="경로 거리와 지형 고도 그래프"></canvas>
+              <p id="profileMessage" class="profile-message" data-i18n="profileEmptyMsg">경로를 그리거나 GPX를 불러오면 지형 고도 그래프가 표시됩니다.</p>
+              <div id="profileTooltip" class="profile-tooltip" hidden></div>
+            </div>
+            <div class="profile-stats" aria-label="경로 고도 및 경사도 통계">
+              <div><span data-i18n="profileHorizDistance">수평거리</span><strong id="profileDistance">—</strong></div>
+              <div><span data-i18n="profileAscent">누적 상승</span><strong id="profileAscent">—</strong></div>
+              <div><span data-i18n="profileDescent">누적 하강</span><strong id="profileDescent">—</strong></div>
+              <div><span data-i18n="profileAvgSlope">평균 |경사도|</span><strong id="profileAverage">—</strong></div>
+              <div><span data-i18n="profileMaxSlope">최대 구간 경사도</span><strong id="profileMaximum">—</strong></div>
+            </div>
+            <p class="profile-note" data-i18n="profileNote">경사도는 약 15 m 수평 간격으로 계산합니다. 샘플 간격이 Terrain-DEM의 실제 해상도보다 높은 정확도를 의미하지는 않습니다. 평균은 구간 경사각 절댓값의 수평거리 가중 평균이며, 눈사태 사면 경사도 등급이 아닙니다.</p>
+          </div>
+        </section>
+      </section>
     </main>
-    <script src="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.js"></script>
+    <div id="confirmModal" class="modal-backdrop" hidden>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <h3 id="modalTitle" data-i18n="modalUnsavedTitle">저장되지 않은 변경사항</h3>
+        <p id="modalMessage" data-i18n="modalUnsavedDesc">저장하지 않은 코스 작업이 있습니다. 저장하고 종료하시겠습니까, 아니면 변경사항을 취소하시겠습니까?</p>
+        <div class="modal-actions">
+          <button id="modalCancelBtn" type="button" class="ghost" data-i18n="btnModalCancel">취소 (편집 계속)</button>
+          <button id="modalDiscardBtn" type="button" class="ghost" data-i18n="btnModalDiscard">취소하고 닫기</button>
+          <button id="modalSaveBtn" type="button" class="primary" data-i18n="btnModalSave">저장 후 닫기</button>
+        </div>
+      </div>
+    </div>
+    <div id="signupModal" class="modal-backdrop" hidden>
+      <div class="modal-dialog auth-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="signupModalTitle">
+        <div class="modal-header">
+          <h3 id="signupModalTitle" data-i18n="signupModalTitle">회원가입 신청</h3>
+          <button id="closeSignupModalBtn" type="button" class="modal-close-btn" aria-label="닫기">✕</button>
+        </div>
+        <p class="modal-desc" data-i18n="signupModalDesc">정보를 입력하고 신청하시면 관리자 승인 후 로그인할 수 있습니다.</p>
+        <form id="signupModalForm" class="auth-form modal-form">
+          <div class="form-field">
+            <label for="signupEmail" data-i18n="labelSignupEmail">이메일 (아이디)</label>
+            <input id="signupEmail" type="email" autocomplete="username" required placeholder="example@email.com" data-i18n-placeholder="placeholderSignupEmail" />
+          </div>
+          <div class="form-field">
+            <label for="signupPassword" data-i18n="labelSignupPassword">비밀번호 (6자 이상)</label>
+            <input id="signupPassword" type="password" autocomplete="new-password" required minlength="6" placeholder="비밀번호" data-i18n-placeholder="placeholderPassword" />
+          </div>
+          <div class="form-field">
+            <label for="signupPasswordConfirm" data-i18n="labelSignupPasswordConfirm">비밀번호 확인</label>
+            <input id="signupPasswordConfirm" type="password" autocomplete="new-password" required minlength="6" placeholder="비밀번호 확인" data-i18n-placeholder="placeholderPasswordConfirm" />
+          </div>
+          <div class="form-field">
+            <label for="signupNickname" data-i18n="labelSignupNickname">닉네임</label>
+            <input id="signupNickname" type="text" maxlength="50" required placeholder="활동할 닉네임" data-i18n-placeholder="placeholderNickname" />
+          </div>
+          <div class="modal-actions">
+            <button id="cancelSignupBtn" type="button" class="ghost" data-i18n="btnModalCancel">취소</button>
+            <button id="submitSignupBtn" type="submit" class="primary" data-i18n="btnSubmitSignup">신청하기</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <script src="./config.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.33.0/mapbox-gl.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0"></script>
     <script src="./app.js"></script>
   </body>
 </html>

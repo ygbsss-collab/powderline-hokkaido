@@ -1,0 +1,22 @@
+{
+  "name": "powderline-hokkaido-data-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "data:ski": "node scripts/extract-openskidata.mjs",
+    "cap:sync": "cap sync",
+    "cap:sync:android": "cap sync android",
+    "android:add": "cap add android",
+    "android:open": "cap open android",
+    "android:apk": "npm run cap:sync:android && cd android && gradlew.bat assembleDebug",
+    "ios:add": "cap add ios",
+    "ios:sync": "cap sync ios"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/cli": "8.6.0",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/ios": "8.6.0",
+    "stream-json": "^1.9.1"
+  }
+}

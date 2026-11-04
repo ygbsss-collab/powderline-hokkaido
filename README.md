@@ -9,7 +9,7 @@ Powderline is a static MVP for planning freeform backcountry snowboard lines aro
 - Freeform line drawing on the map (not snapped to trails)
 - Vertex dragging for edits
 - GPX import and export
-- Browser-local route saving
+- Browser-local route saving, plus per-user Supabase sync after sign-in
 - Responsive PC / mobile layout
 
 ## Run locally
@@ -18,6 +18,18 @@ Open `dist/index.html` in a browser, or serve the repository with any static fil
 
 ## Terrain and licensing notes
 
-The default terrain source is MapLibre's public demo terrain for development. For a real production map of Japan, enter a MapTiler Cloud API key in the Terrain provider panel. Keep required attribution visible and stay inside the provider's terms and quota. The MapTiler free plan is intended for testing, personal, or non-commercial use and currently lists 5,000 sessions/month, 2,000 3D sessions/month, and 100,000 API requests/month. Commercial or higher-volume use needs a paid plan.
+The app uses real Terrarium elevation tiles from the [AWS Open Data Terrain Tiles dataset](https://registry.opendata.aws/terrain-tiles/) and explicitly configures MapLibre's `terrarium` decoder. Satellite imagery (`seamlessphoto`) and the contour-bearing standard map (`std`) come from the [Geospatial Information Authority of Japan](https://maps.gsi.go.jp/development/ichiran.html). These endpoints do not require an API key.
 
-The map renderer is MapLibre GL JS (BSD-3-Clause). GPX parsing and route data stay in the browser in this MVP; no server or account is required.
+GSI permits live use of its tiles without an application when the source is displayed; the app keeps the required attribution visible. Individual imagery included in `seamlessphoto` can have additional source notes, so review the GSI tile list before commercial redistribution or bulk/offline use. AWS Terrain Tiles aggregate multiple open elevation datasets with their own attribution requirements; the app links the dataset attribution from the map.
+
+GPX parsing stays in the browser. Routes stay local until a user configures Supabase and signs in, after which saves and loads use that user's rows in `powderline_routes`.
+
+## Supabase setup
+
+The app is connected to `https://lxfsvhwibiaspnaduhri.supabase.co`. Open **Supabase Connection** in the sidebar and enter an `sb_publishable_…` key; secret and service-role keys are intentionally rejected. The key and browser auth session are kept in local storage.
+
+Apply `supabase/migrations/20261104000000_create_powderline_routes.sql` to create the table, grants, and owner-only Row Level Security policies. Email/password users can then sign in from the sidebar and save or load only their own routes. Logged-out use retains the existing browser-local route behavior.
+
+## Mapbox terrain comparison
+
+Open `dist/mapbox-compare.html` through a static web server, or use **Compare Mapbox** in the main map. The split view synchronizes the current MapLibre terrain and Mapbox Standard Satellite + Terrain-DEM at the same Furano camera. Enter a Mapbox public access token beginning with `pk.`; the comparison stores it only in the current browser tab. Mapbox usage is subject to account quotas and terms, and its required logo and attribution are rendered by Mapbox GL JS.

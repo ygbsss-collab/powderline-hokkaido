@@ -1,0 +1,8 @@
+{
+  "appId": "com.powderline.hokkaido",
+  "appName": "POWDERLINE",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
