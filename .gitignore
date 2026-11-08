@@ -13,6 +13,9 @@ cert.pfx
 # Backups and temporary files
 dist-backup/
 supabase/.temp/
+supabase/functions/.env
+supabase/functions/.env.*
+!supabase/functions/.env.example
 
 # Android build outputs and local configuration
 .gradle/

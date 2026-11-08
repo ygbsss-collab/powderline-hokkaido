@@ -26,10 +26,12 @@ GPX parsing stays in the browser. Routes stay local until a user configures Supa
 
 ## Supabase setup
 
-The app is connected to `https://lxfsvhwibiaspnaduhri.supabase.co`. Open **Supabase Connection** in the sidebar and enter an `sb_publishable_…` key; secret and service-role keys are intentionally rejected. The key and browser auth session are kept in local storage.
+The app is connected to `https://lxfsvhwibiaspnaduhri.supabase.co`. Its publishable key is shared by the web and Capacitor builds; secret and service-role keys are intentionally rejected. The browser auth session is kept in local storage.
+
+The `mapbox-public-token` Edge Function reads `MAPBOX_PUBLIC_TOKEN`, accepts only the project's publishable API key, and returns only a `pk.` Mapbox public token. The app requests it at startup and keeps the most recently received public token in local storage as an offline/failure fallback.
 
 Apply `supabase/migrations/20261104000000_create_powderline_routes.sql` to create the table, grants, and owner-only Row Level Security policies. Email/password users can then sign in from the sidebar and save or load only their own routes. Logged-out use retains the existing browser-local route behavior.
 
 ## Mapbox terrain comparison
 
-Open `dist/mapbox-compare.html` through a static web server, or use **Compare Mapbox** in the main map. The split view synchronizes the current MapLibre terrain and Mapbox Standard Satellite + Terrain-DEM at the same Furano camera. Enter a Mapbox public access token beginning with `pk.`; the comparison stores it only in the current browser tab. Mapbox usage is subject to account quotas and terms, and its required logo and attribution are rendered by Mapbox GL JS.
+Open `dist/mapbox-compare.html` through a static web server, or use **Compare Mapbox** in the main map. The split view synchronizes the current MapLibre terrain and Mapbox Standard Satellite + Terrain-DEM at the same Furano camera. It uses the same automatically loaded Mapbox public token as the main app. Mapbox usage is subject to account quotas and terms, and its required logo and attribution are rendered by Mapbox GL JS.
