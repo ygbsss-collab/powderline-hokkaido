@@ -5696,3 +5696,13 @@ select {
 .party-gps-marker-pin { width: 12px; height: 12px; border: 2px solid #0a0e13; border-radius: 50%; background: #38bdf8; box-shadow: 0 2px 6px rgba(0, 0, 0, .5); }
 .party-gps-marker.leader .party-gps-marker-pin { background: #4edea3; }
 .party-gps-marker.stale .party-gps-marker-pin { background: #fbbf24; }
+.stitch-account-screen .stitch-admin-menu-disabled { opacity: .68; cursor: not-allowed; }
+.stitch-account-screen .stitch-admin-menu-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: rgba(135, 146, 154, .18); color: #87929a; font: 600 10px "JetBrains Mono", monospace; }
+.stitch-account-screen .account-inline-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: #262a30; }
+.stitch-account-screen .account-inline-form[hidden] { display: none; }
+.stitch-account-screen .account-inline-form label { color: #bdc8d1; font-size: 12px; }
+.stitch-account-screen .account-inline-form input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #87929a; border-radius: 8px; background: #1c2025; color: #e0e2ea; }
+.stitch-account-screen .account-inline-actions { display: flex; gap: 8px; }
+.stitch-account-screen .account-inline-actions button { padding: 8px 12px; border: 0; border-radius: 8px; background: #38bdf8; color: #00354a; cursor: pointer; }
+.stitch-account-screen .account-inline-actions button + button { background: #36393f; color: #e0e2ea; }
+.stitch-account-screen .account-inline-form small { color: #ffb4ab; }

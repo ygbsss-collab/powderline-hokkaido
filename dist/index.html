@@ -360,6 +360,12 @@
 </button>
 </div>
 </div>
+<form id="stitchNicknameForm" class="account-inline-form" hidden>
+  <label for="stitchNicknameInput">새 닉네임</label>
+  <input id="stitchNicknameInput" type="text" minlength="1" maxlength="50" autocomplete="nickname" required />
+  <div class="account-inline-actions"><button type="submit">저장</button><button id="stitchNicknameCancel" type="button">취소</button></div>
+  <small id="stitchNicknameFeedback" role="status" aria-live="polite"></small>
+</form>
 <!-- Registered Email (Read-only Lock Indicator) -->
 <div class="flex items-center gap-1.5 mt-1 text-on-surface-variant">
 <span class="material-symbols-outlined text-[14px] text-outline">lock</span>
@@ -370,7 +376,7 @@
 <!-- Verification Complete Badge -->
 <div id="stitchAccountApprovedBadge" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-secondary-container/20 text-secondary"><span class="w-1.5 h-1.5 rounded-full bg-secondary"></span><span class="font-label-sm text-label-sm font-semibold">승인 완료</span></div>
 <!-- Admin Special Gold/Cyan HUD Badge -->
-<div id="stitchAccountAdminBadge" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-primary-container/20 text-primary-container shadow-[0_0_10px_rgba(56,189,248,0.2)]"><span class="text-[12px] leading-none">👑</span><span class="font-label-sm text-label-sm font-semibold tracking-wide">관리자 (Admin)</span></div>
+<div id="stitchAccountAdminBadge" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-primary-container/20 text-primary-container shadow-[0_0_10px_rgba(56,189,248,0.2)]" hidden><span class="text-[12px] leading-none">👑</span><span class="font-label-sm text-label-sm font-semibold tracking-wide">관리자 (Admin)</span></div>
 </div>
 </div>
 </div>
@@ -378,7 +384,7 @@
 
 </div>
 <!-- 4. Admin Dedicated Console Banner Card -->
-<div id="stitchAdminConsoleSection" class="stitch-admin-console-section">
+<div id="stitchAdminConsoleSection" class="stitch-admin-console-section" hidden>
 <div class="rounded-xl bg-surface-container p-space-md shadow-md space-y-space-sm">
 <div class="flex items-center justify-between">
 <div class="flex items-center gap-space-xs">
@@ -387,25 +393,25 @@
 </div>
 <span class="font-label-sm text-label-sm px-2 py-0.5 rounded bg-surface-container-highest text-outline">AUTHORITY ACTIVE</span>
 </div>
-<!-- Interactive Navigation Banner to Member Management -->
-<button id="stitchOpenAdminUsersBtn" class="group relative flex flex-col p-space-md rounded-xl bg-gradient-to-br from-surface-container-high via-surface-container-high to-surface-bright shadow-sm hover:shadow-lg transition-all active:scale-[0.99] overflow-hidden text-left border-0 w-full cursor-pointer" type="button">
+<!-- Interactive Navigation Banner to Admin Management -->
+<button id="stitchOpenAdminManageBtn" class="group relative flex flex-col p-space-md rounded-xl bg-gradient-to-br from-surface-container-high via-surface-container-high to-surface-bright shadow-sm hover:shadow-lg transition-all active:scale-[0.99] overflow-hidden text-left border-0 w-full cursor-pointer" type="button">
 <!-- Glow Accent Line -->
 <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-primary-container via-tertiary-container to-secondary"></div>
 <div class="flex items-center justify-between">
 <div class="flex items-center gap-space-sm min-w-0">
 <div class="w-10 h-10 rounded-xl bg-primary-container/20 flex items-center justify-center shrink-0">
-<span class="material-symbols-outlined text-primary-container text-[22px]">manage_accounts</span>
+<span class="material-symbols-outlined text-primary-container text-[22px]">admin_panel_settings</span>
 </div>
 <div class="min-w-0">
 <div class="flex items-center gap-space-xs">
-<span class="font-headline-md text-headline-md text-on-surface truncate">회원 관리 센터</span>
+<span class="font-headline-md text-headline-md text-on-surface truncate">관리자 관리</span>
 <!-- Orange/Cyan Alert Badge -->
 <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-tertiary-container/30 text-tertiary text-label-sm font-label-sm animate-pulse">
                 <span id="stitchAdminPendingCountBadge">대기 0명</span>
               </span>
 </div>
 <p class="font-body-sm text-body-sm text-on-surface-variant truncate mt-0.5">
-              전체 회원 목록 조회 및 신규 가입 승인/거절 처리
+              회원 관리 · 전체 코스 관리 · 지역 관리
             </p>
 </div>
 </div>
@@ -418,76 +424,6 @@
 </button>
 </div>
 </div>
-<!-- 2. Assigned Party Card (Active or Empty) -->
-<div id="stitchPartySection" class="w-full">
-  <!-- Active Party Card (Shown when user has joined a party) -->
-  <div id="stitchPartyActiveCard" class="flex flex-col bg-surface-container rounded-xl p-space-md shadow-md space-y-space-sm" hidden>
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-space-xs">
-        <span class="material-symbols-outlined text-primary-container text-[20px]">groups_2</span>
-        <h2 class="font-headline-md text-headline-md text-on-surface">소속 파티</h2>
-      </div>
-      <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">EXPEDITIONS</span>
-    </div>
-    <div class="flex flex-col p-space-md rounded-xl bg-surface-container-high space-y-space-sm">
-      <div class="flex items-center justify-between">
-        <span id="stitchPartyActiveName" class="font-headline-md text-body-lg font-bold text-on-surface truncate">KIRORO BACKCOUNTRY</span>
-        <span id="stitchPartyRoleBadge" class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-secondary-container/20 text-secondary text-label-sm font-semibold">
-          <span>🏅</span>
-          <span id="stitchPartyRoleText">파티장 (Master)</span>
-        </span>
-      </div>
-      <button id="stitchGoToPartyScreenBtn" class="w-full py-3 px-space-md rounded-lg bg-surface-container-lowest hover:bg-surface-bright text-primary font-body-md font-semibold flex items-center justify-between transition-colors cursor-pointer border-0" type="button">
-        <div class="flex items-center gap-space-xs">
-          <span class="material-symbols-outlined text-[18px]">nordic_walking</span>
-          <span>파티 화면으로 이동</span>
-        </div>
-        <span class="material-symbols-outlined text-[18px]">chevron_right</span>
-      </button>
-      <div class="flex justify-end pt-1">
-        <button id="stitchBtnLeaveParty" class="px-3 py-1.5 rounded-lg bg-surface-container text-outline hover:text-error text-body-sm font-medium flex items-center gap-1 transition-colors cursor-pointer border-0" type="button">
-          <span class="material-symbols-outlined text-[16px]">logout</span>
-          <span>파티 탈퇴</span>
-        </button>
-      </div>
-    </div>
-    <div class="flex items-center gap-1.5 px-1 text-on-surface-variant font-label-sm text-label-sm">
-      <span class="material-symbols-outlined text-[14px] text-outline">info</span>
-      <span>파티 미소속 시: '참여 중인 파티가 없습니다' 상태로 자동 전환됩니다.</span>
-    </div>
-  </div>
-
-  <!-- Empty Party Card (Shown when user has NO party) -->
-  <div id="stitchPartyEmptyCard" class="flex flex-col bg-surface-container-high rounded-xl p-space-md space-y-space-md shadow-md">
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-space-xs">
-        <span class="material-symbols-outlined text-primary-container text-[20px]">groups_2</span>
-        <h2 class="font-headline-md text-headline-md text-on-surface">소속 파티</h2>
-      </div>
-      <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">EXPEDITIONS</span>
-    </div>
-    <div class="relative flex flex-col items-center justify-center p-space-lg rounded-xl bg-surface-container-low overflow-hidden text-center space-y-space-sm">
-      <svg class="absolute inset-0 w-full h-full opacity-5 pointer-events-none" preserveAspectRatio="none" viewBox="0 0 200 100" xmlns="http://www.w3.org/2000/svg">
-        <path class="text-primary" d="M0,20 Q50,60 100,30 T200,50" fill="none" stroke="currentColor" stroke-width="1.5"></path>
-        <path class="text-primary" d="M0,50 Q60,10 120,40 T200,20" fill="none" stroke="currentColor" stroke-width="1.5"></path>
-        <path class="text-primary" d="M0,80 Q40,95 100,70 T200,85" fill="none" stroke="currentColor" stroke-width="1.5"></path>
-      </svg>
-      <div class="w-12 h-12 rounded-full bg-surface-container-highest flex items-center justify-center text-outline shadow-sm">
-        <span class="material-symbols-outlined text-[26px]">hiking</span>
-      </div>
-      <div class="flex flex-col space-y-0.5 z-10">
-        <p class="font-body-lg text-body-lg text-on-surface font-semibold">참여 중인 파티가 없습니다</p>
-        <p class="font-body-sm text-body-sm text-on-surface-variant max-w-[240px]">
-          혼자 타기엔 설산은 깊고 험합니다. 안전한 백컨트리 원정을 위해 파티에 합류하세요.
-        </p>
-      </div>
-      <button id="stitchFindPartyBtn" class="mt-space-xs z-10 w-full py-3 px-space-md rounded-lg bg-primary-container text-on-primary-container font-headline-md text-body-md font-bold flex items-center justify-center gap-space-xs transition-transform active:scale-[0.98] shadow-sm border-0 cursor-pointer" type="button">
-        <span class="material-symbols-outlined text-[18px]">travel_explore</span>
-        <span>새 파티 찾기 / 참여하기</span>
-      </button>
-    </div>
-  </div>
-</div>
 <!-- 3. Account Settings Card -->
 <div class="rounded-xl bg-surface-container p-space-md shadow-md space-y-space-md">
 <div class="flex items-center gap-space-xs">
@@ -496,7 +432,7 @@
 </div>
 <div class="space-y-space-xs">
 <!-- Change Password Row -->
-<button class="w-full flex items-center justify-between p-space-md rounded-xl bg-surface-container-low hover:bg-surface-container-high active:bg-surface-bright transition-colors text-left group">
+<button id="stitchBtnChangePassword" type="button" class="w-full flex items-center justify-between p-space-md rounded-xl bg-surface-container-low hover:bg-surface-container-high active:bg-surface-bright transition-colors text-left group">
 <div class="flex items-center gap-space-sm">
 <div class="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-primary-container">
 <span class="material-symbols-outlined text-[18px]">key</span>
@@ -508,6 +444,16 @@
 </div>
 <span class="material-symbols-outlined text-outline group-hover:text-on-surface group-hover:translate-x-0.5 transition-all text-[20px]">chevron_right</span>
 </button>
+<form id="stitchPasswordForm" class="account-inline-form" hidden>
+  <label for="stitchCurrentPassword">현재 비밀번호</label>
+  <input id="stitchCurrentPassword" type="password" autocomplete="current-password" required />
+  <label for="stitchNewPassword">새 비밀번호</label>
+  <input id="stitchNewPassword" type="password" autocomplete="new-password" minlength="6" required />
+  <label for="stitchConfirmPassword">새 비밀번호 확인</label>
+  <input id="stitchConfirmPassword" type="password" autocomplete="new-password" minlength="6" required />
+  <div class="account-inline-actions"><button type="submit">변경</button><button id="stitchPasswordCancel" type="button">취소</button></div>
+  <small id="stitchPasswordFeedback" role="status" aria-live="polite"></small>
+</form>
 <!-- Keep Login / Remember Toggle Row -->
 <div class="w-full flex items-center justify-between p-space-md rounded-xl bg-surface-container-low">
 <div class="flex items-center gap-space-sm">
@@ -549,6 +495,108 @@
 </main>
 
 
+      </div>
+
+      <!-- Subview 2-0: Admin Management Hub -->
+      <div id="mobileAdminManageView" class="stitch-subview" hidden>
+        <header class="fixed top-0 w-full z-50 pt-safe bg-surface/80 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)] border-b border-outline-variant/20">
+          <div class="h-16 px-margin flex items-center justify-between">
+            <div class="flex items-center gap-space-xs">
+              <button id="stitchAdminManageHeaderBackBtn" aria-label="내 계정으로 복귀" class="w-10 h-10 -ml-2 rounded-full flex items-center justify-center text-on-surface hover:bg-surface-bright active:scale-95 transition-all bg-transparent border-0 cursor-pointer" type="button">
+                <span class="material-symbols-outlined text-[24px]">arrow_back</span>
+              </button>
+              <div class="flex flex-col justify-center">
+                <div class="flex items-center gap-space-xs">
+                  <span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span>
+                  <span class="font-label-sm text-label-sm uppercase tracking-wider text-primary-container">POWDERLINE</span>
+                </div>
+                <h1 class="font-headline-md text-headline-md text-on-surface">관리자 관리</h1>
+              </div>
+            </div>
+            <div class="flex items-center gap-space-sm"></div>
+          </div>
+        </header>
+        <main class="flex flex-col relative w-full pt-16 pb-28 bg-surface min-h-screen">
+          <div class="flex flex-col w-full px-margin pb-space-xl">
+            <div class="flex items-center justify-between py-space-sm mb-space-md">
+              <button id="stitchAdminManageBackBtn" class="flex items-center gap-space-xs text-primary transition-opacity hover:opacity-80 active:scale-95 duration-150 bg-transparent border-0 p-0 cursor-pointer" type="button">
+                <span class="material-symbols-outlined text-[20px]">arrow_back_ios</span>
+                <span class="font-body-md text-body-md font-semibold">내 계정으로 복귀</span>
+              </button>
+            </div>
+            <div class="flex flex-col gap-0.5 mb-space-md">
+              <h2 class="font-headline-xl-mobile text-headline-xl-mobile text-on-surface font-bold tracking-tight">관리자 관리 (Admin Console)</h2>
+              <p class="font-body-sm text-body-sm text-on-surface-variant">회원 승인, 전체 GPX 코스 및 원정 지역을 관리합니다.</p>
+            </div>
+            <div class="flex flex-col gap-space-md">
+              <!-- Menu 1: Member Management (Active) -->
+              <button id="stitchOpenAdminUsersBtn" class="group relative flex flex-col p-space-md rounded-xl bg-gradient-to-br from-surface-container-high via-surface-container-high to-surface-bright shadow-md hover:shadow-lg transition-all active:scale-[0.99] overflow-hidden text-left border-0 w-full cursor-pointer" type="button">
+                <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-primary-container via-tertiary-container to-secondary"></div>
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-space-sm min-w-0">
+                    <div class="w-10 h-10 rounded-xl bg-primary-container/20 flex items-center justify-center shrink-0">
+                      <span class="material-symbols-outlined text-primary-container text-[22px]">manage_accounts</span>
+                    </div>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-space-xs">
+                        <span class="font-headline-md text-headline-md text-on-surface truncate">회원 관리</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full bg-tertiary-container/30 text-tertiary text-label-sm font-label-sm">
+                          <span id="stitchAdminManagePendingBadge">대기 0명</span>
+                        </span>
+                      </div>
+                      <p class="font-body-sm text-body-sm text-on-surface-variant truncate mt-0.5">전체 회원 목록 조회 및 신규 가입 승인/거절 처리</p>
+                    </div>
+                  </div>
+                  <div class="w-8 h-8 rounded-full bg-surface-container flex items-center justify-center shrink-0 group-hover:translate-x-1 transition-transform">
+                    <span class="material-symbols-outlined text-primary-container text-[20px]">arrow_forward</span>
+                  </div>
+                </div>
+              </button>
+
+              <!-- Menu 2: All Courses Management (Pending/Disabled) -->
+              <button id="stitchOpenAdminCoursesBtn" class="stitch-admin-menu-disabled relative flex flex-col p-space-md rounded-xl bg-surface-container text-left border-0 w-full" type="button" disabled aria-disabled="true">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-space-sm min-w-0">
+                    <div class="w-10 h-10 rounded-xl bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
+                      <span class="material-symbols-outlined text-[22px]">route</span>
+                    </div>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-space-xs">
+                        <span class="font-headline-md text-headline-md text-on-surface truncate">전체 코스 관리</span>
+                        <span class="stitch-admin-menu-badge">준비 중</span>
+                      </div>
+                      <p class="font-body-sm text-body-sm text-outline truncate mt-0.5">전체 회원이 등록한 GPX 코스 조회 및 관리</p>
+                    </div>
+                  </div>
+                  <div class="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
+                    <span class="material-symbols-outlined text-[18px]">lock</span>
+                  </div>
+                </div>
+              </button>
+
+              <!-- Menu 3: Region Management (Pending/Disabled) -->
+              <button id="stitchOpenAdminRegionsBtn" class="stitch-admin-menu-disabled relative flex flex-col p-space-md rounded-xl bg-surface-container text-left border-0 w-full" type="button" disabled aria-disabled="true">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-space-sm min-w-0">
+                    <div class="w-10 h-10 rounded-xl bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
+                      <span class="material-symbols-outlined text-[22px]">terrain</span>
+                    </div>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-space-xs">
+                        <span class="font-headline-md text-headline-md text-on-surface truncate">지역 관리</span>
+                        <span class="stitch-admin-menu-badge">준비 중</span>
+                      </div>
+                      <p class="font-body-sm text-body-sm text-outline truncate mt-0.5">백컨트리 원정 지역 및 초기 좌표 설정 관리</p>
+                    </div>
+                  </div>
+                  <div class="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
+                    <span class="material-symbols-outlined text-[18px]">lock</span>
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </main>
       </div>
 
       <!-- Subview 2: Admin Users Management Console -->

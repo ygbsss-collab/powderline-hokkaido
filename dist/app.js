@@ -369,6 +369,7 @@
   const SUPABASE_KEY_STORAGE = 'powderline.supabasePublishableKey';
   let supabaseClient = null;
   let supabaseAuthSubscription = null;
+  let accountPasswordReauthUserId = null;
   let authInitializationComplete = false;
   let mobileAuthActiveView = 'login';
   let setMobileAppView = () => { };
@@ -592,7 +593,7 @@ geolocateControl.on('error', (e) => {
     const signedIn = Boolean(state.session?.user);
     const profile = state.profile;
     const isApproved = profile?.status === 'approved';
-    const isAdmin = profile?.role === 'admin';
+    const isAdmin = isApproved && profile?.role === 'admin';
 
     // Mobile Auth Display Control (Requirement: unapproved users see Stitch Mobile Auth screens)
     if (typeof syncMobileAuthState === 'function') {
@@ -676,14 +677,14 @@ geolocateControl.on('error', (e) => {
       state.profile = null;
     }
     updateAuthUi();
-    if (state.profile?.role === 'admin') {
+    if (state.profile?.role === 'admin' && state.profile?.status === 'approved') {
       await loadPendingUsers();
     }
     return state.profile;
   }
 
   async function loadPendingUsers() {
-    if (!supabaseClient || state.profile?.role !== 'admin') return;
+    if (!supabaseClient || state.profile?.role !== 'admin' || state.profile?.status !== 'approved') return;
     const countBadge = $('#pendingCountBadge');
     const stitchCount = $('#stitchPendingCount');
     try {
@@ -777,10 +778,11 @@ geolocateControl.on('error', (e) => {
       `).join('');
       }
     }
+    if (typeof syncStitchAccountUI === 'function') syncStitchAccountUI();
   }
 
   async function handleSetUserStatus(targetUserId, newStatus) {
-    if (!supabaseClient || state.profile?.role !== 'admin') return;
+    if (!supabaseClient || state.profile?.role !== 'admin' || state.profile?.status !== 'approved') return;
     try {
       const { data, error } = await supabaseClient.rpc('set_user_status', {
         target_user_id: targetUserId,
@@ -1191,6 +1193,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (client !== supabaseClient) return;
       const previousUserId = state.session?.user?.id;
       state.session = nextSession || null;
+      if (nextSession?.user?.id === previousUserId &&
+          (event === 'USER_UPDATED' || (event === 'SIGNED_IN' && accountPasswordReauthUserId === previousUserId))) {
+        updateAuthUi();
+        return;
+      }
       if (nextSession?.user) {
         await loadUserProfile();
         if (nextSession.user.id !== previousUserId) {
@@ -1961,22 +1968,83 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   map.on('contextmenu', 'route-points', removeVertex);
   map.on('dblclick', 'route-points', removeVertex);
 
+  function escapeXml(value) {
+    return String(value ?? '')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+      .replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char]));
+  }
+
   function gpxString() {
     const now = new Date().toISOString();
     const course = getActiveCourse();
-    const courseName = course ? course.name : 'Powderline line';
-    const trkpts = state.points.map(function (p) { return '<trkpt lat="' + p.lat + '" lon="' + p.lng + '"></trkpt>'; }).join('');
-    return '<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Powderline"><metadata><name>Powderline route</name><time>' + now + '</time></metadata><trk><name>' + escapeHtml(courseName) + '</name><trkseg>' + trkpts + '</trkseg></trk></gpx>';
+    const rawName = ($('#courseName')?.value?.trim() || course?.name || 'Powderline route').trim() || 'Powderline route';
+    const escapedName = escapeXml(rawName);
+    const rawPoints = (Array.isArray(state.points) && state.points.length)
+      ? state.points
+      : (Array.isArray(course?.points) ? course.points : []);
+    const trkpts = [];
+    for (let i = 0; i < rawPoints.length; i++) {
+      const p = rawPoints[i];
+      if (!p) continue;
+      const lat = Number(p.lat);
+      const lon = Number(p.lng ?? p.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) continue;
+      let eleVal = null;
+      if (p.ele !== undefined && p.ele !== null && p.ele !== '' && Number.isFinite(Number(p.ele))) {
+        eleVal = Number(p.ele);
+      } else if (p.elevation !== undefined && p.elevation !== null && p.elevation !== '' && Number.isFinite(Number(p.elevation))) {
+        eleVal = Number(p.elevation);
+      } else if (typeof map?.queryTerrainElevation === 'function') {
+        try {
+          const demEle = map.queryTerrainElevation([lon, lat], { exaggerated: false });
+          if (typeof demEle === 'number' && Number.isFinite(demEle)) eleVal = demEle;
+        } catch {}
+      }
+      let timeIso = null;
+      const rawTime = p.time ?? p.timestamp;
+      if (rawTime !== undefined && rawTime !== null && rawTime !== '') {
+        const parsedTime = new Date(rawTime);
+        if (!Number.isNaN(parsedTime.getTime())) timeIso = parsedTime.toISOString();
+      }
+      let children = '';
+      if (eleVal !== null) children += '<ele>' + Number(eleVal.toFixed(2)) + '</ele>';
+      if (timeIso !== null) children += '<time>' + escapeXml(timeIso) + '</time>';
+      trkpts.push(
+        children
+          ? '      <trkpt lat="' + lat + '" lon="' + lon + '">' + children + '</trkpt>'
+          : '      <trkpt lat="' + lat + '" lon="' + lon + '"/>'
+      );
+    }
+    if (trkpts.length < 2) return '';
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<gpx xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd" version="1.1" creator="POWDERLINE">',
+      '  <metadata>',
+      '    <name>' + escapedName + '</name>',
+      '    <time>' + now + '</time>',
+      '  </metadata>',
+      '  <trk>',
+      '    <name>' + escapedName + '</name>',
+      '    <trkseg>',
+      trkpts.join('\n'),
+      '    </trkseg>',
+      '  </trk>',
+      '</gpx>'
+    ].join('\n');
   }
 
   $('#exportBtn').addEventListener('click', () => {
     if (state.points.length < 2) return toast(t('toastNeedRouteFirst'));
+    const xml = gpxString();
+    if (!xml) return toast(t('toastNeedRouteFirst'));
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([gpxString()], { type: 'application/gpx+xml' }));
+    const url = URL.createObjectURL(new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' }));
+    a.href = url;
     const cur = getActiveCourse();
-    const fname = (cur?.name || 'powderline-route').replace(/[/\\?%*:|"<>]/g, '-');
+    const fname = (cur?.name || 'powderline-route').trim().replace(/[/\\?%*:|"<>]/g, '-') || 'powderline-route';
     a.download = fname + '.gpx';
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast(t('toastExportedGpx'));
   });
 
@@ -2628,7 +2696,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       }
       if (nextView === 'account') {
         syncStitchAccountUI();
-        if (state.profile?.role === 'admin') {
+        if (state.profile?.role === 'admin' && state.profile?.status === 'approved') {
           loadPendingUsers();
         }
       }
@@ -3080,16 +3148,22 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   function setStitchAccountSubView(subview) {
     const mainView = $('#mobileAccountMainView');
+    const adminManageView = $('#mobileAdminManageView');
     const adminUsersView = $('#mobileAdminUsersView');
     const deleteView = $('#mobileDeleteAccountView');
+    const isAdmin = state.profile?.role === 'admin' && state.profile?.status === 'approved';
+    const nextSubview = (!isAdmin && (subview === 'adminManage' || subview === 'adminUsers')) ? 'main' : subview;
 
-    if (mainView) mainView.hidden = subview !== 'main';
-    if (adminUsersView) adminUsersView.hidden = subview !== 'adminUsers';
-    if (deleteView) deleteView.hidden = subview !== 'deleteAccount';
+    if (mainView) mainView.hidden = nextSubview !== 'main';
+    if (adminManageView) adminManageView.hidden = nextSubview !== 'adminManage';
+    if (adminUsersView) adminUsersView.hidden = nextSubview !== 'adminUsers';
+    if (deleteView) deleteView.hidden = nextSubview !== 'deleteAccount';
 
-    if (subview === 'adminUsers') {
+    if (nextSubview === 'adminManage') {
+      loadPendingUsers();
+    } else if (nextSubview === 'adminUsers') {
       loadAdminUsersList();
-    } else if (subview === 'deleteAccount') {
+    } else if (nextSubview === 'deleteAccount') {
       resetDeleteAccountView();
     }
   }
@@ -3097,8 +3171,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function syncStitchAccountUI() {
     const profile = state.profile;
     const user = state.session?.user;
-    const isAdmin = profile?.role === 'admin';
     const isApproved = profile?.status === 'approved';
+    const isAdmin = isApproved && profile?.role === 'admin';
 
     const nickEl = $('#stitchAccountNickname');
     const emailEl = $('#stitchAccountEmail');
@@ -3106,6 +3180,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const adminBadge = $('#stitchAccountAdminBadge');
     const adminConsole = $('#stitchAdminConsoleSection');
     const pendingCountBadge = $('#stitchAdminPendingCountBadge');
+    const managePendingBadge = $('#stitchAdminManagePendingBadge');
 
     const nickname = profile?.nickname || user?.user_metadata?.nickname || '라이더';
     const email = user?.email || 'rider@powderline.app';
@@ -3135,30 +3210,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       adminConsole.hidden = !isAdmin;
     }
 
+    const count = state.pendingUsers ? state.pendingUsers.length : 0;
     if (pendingCountBadge) {
-      const count = state.pendingUsers ? state.pendingUsers.length : 0;
       pendingCountBadge.textContent = `대기 ${count}명`;
     }
-
-    // Party Section Active / Empty Toggle
-    const activePartyCard = $('#stitchPartyActiveCard');
-    const emptyPartyCard = $('#stitchPartyEmptyCard');
-    const partyNameEl = $('#stitchPartyActiveName');
-    const partyRoleText = $('#stitchPartyRoleText');
-
-    const hasParty = Boolean(state.currentParty);
-    if (activePartyCard && emptyPartyCard) {
-      activePartyCard.hidden = !hasParty;
-      emptyPartyCard.hidden = hasParty;
-      if (hasParty) {
-        if (partyNameEl) partyNameEl.textContent = state.currentParty.name || 'KIRORO BACKCOUNTRY';
-        if (partyRoleText) partyRoleText.textContent = state.currentParty.isLeader ? '파티장 (Master)' : '대원 (Member)';
-      }
+    if (managePendingBadge) {
+      managePendingBadge.textContent = `대기 ${count}명`;
     }
+
   }
 
   async function loadAdminUsersList() {
-    if (!supabaseClient || state.profile?.role !== 'admin') return;
+    if (!supabaseClient || state.profile?.role !== 'admin' || state.profile?.status !== 'approved') return;
     try {
       const { data, error } = await supabaseClient
         .from('profiles')
@@ -3394,6 +3457,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       showMobileView('map');
     });
 
+    $('#stitchOpenAdminManageBtn')?.addEventListener('click', () => {
+      setStitchAccountSubView('adminManage');
+    });
+
+    $('#stitchAdminManageBackBtn')?.addEventListener('click', () => {
+      setStitchAccountSubView('main');
+    });
+
+    $('#stitchAdminManageHeaderBackBtn')?.addEventListener('click', () => {
+      setStitchAccountSubView('main');
+    });
+
     $('#stitchOpenAdminUsersBtn')?.addEventListener('click', () => {
       setStitchAccountSubView('adminUsers');
     });
@@ -3414,26 +3489,107 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       setStitchAccountSubView('main');
     });
 
-    // Edit Nickname
-    $('#stitchBtnEditNickname')?.addEventListener('click', async () => {
-      if (!supabaseClient) return;
-      const current = state.profile?.nickname || '';
-      const newNick = prompt('새로운 닉네임을 입력해주세요:', current);
-      if (!newNick || !newNick.trim() || newNick.trim() === current) return;
-
+    const nicknameForm = $('#stitchNicknameForm');
+    const nicknameInput = $('#stitchNicknameInput');
+    const nicknameFeedback = $('#stitchNicknameFeedback');
+    $('#stitchBtnEditNickname')?.addEventListener('click', () => {
+      nicknameForm.hidden = !nicknameForm.hidden;
+      if (!nicknameForm.hidden) {
+        nicknameInput.value = state.profile?.nickname || '';
+        nicknameFeedback.textContent = '';
+        nicknameInput.focus();
+      }
+    });
+    $('#stitchNicknameCancel')?.addEventListener('click', () => {
+      nicknameForm.hidden = true;
+      nicknameFeedback.textContent = '';
+    });
+    nicknameForm?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const nickname = nicknameInput.value.trim();
+      if (nickname.length < 1 || nickname.length > 50) {
+        nicknameFeedback.textContent = '닉네임은 1~50자로 입력해 주세요.';
+        return;
+      }
+      const client = supabaseClient;
+      const userId = state.session?.user?.id;
+      if (!client || !userId) {
+        nicknameFeedback.textContent = '로그인 상태를 확인해 주세요.';
+        return;
+      }
+      const submitButton = nicknameForm.querySelector('[type="submit"]');
+      submitButton.disabled = true;
+      nicknameFeedback.textContent = '';
       try {
-        const { error } = await supabaseClient
-          .from('profiles')
-          .update({ nickname: newNick.trim() })
-          .eq('id', state.session.user.id);
-
+        const { data, error } = await client.from('profiles')
+          .update({ nickname }).eq('id', userId).select('nickname').single();
         if (error) throw error;
-        if (state.profile) state.profile.nickname = newNick.trim();
-        syncStitchAccountUI();
+        if (client !== supabaseClient || state.session?.user?.id !== userId) return;
+        if (state.profile) state.profile.nickname = data.nickname;
+        else await loadUserProfile();
+        updateAuthUi();
+        nicknameForm.hidden = true;
         toast('닉네임이 성공적으로 변경되었습니다.');
-      } catch (err) {
-        console.error('Update nickname error:', err);
-        toast(err.message || '닉네임 변경에 실패했습니다.');
+      } catch (error) {
+        nicknameFeedback.textContent = error?.message || '닉네임 변경에 실패했습니다.';
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    const passwordForm = $('#stitchPasswordForm');
+    const passwordFeedback = $('#stitchPasswordFeedback');
+    $('#stitchBtnChangePassword')?.addEventListener('click', () => {
+      passwordForm.hidden = !passwordForm.hidden;
+      passwordForm.reset();
+      passwordFeedback.textContent = '';
+      if (!passwordForm.hidden) $('#stitchCurrentPassword').focus();
+    });
+    $('#stitchPasswordCancel')?.addEventListener('click', () => {
+      passwordForm.reset();
+      passwordForm.hidden = true;
+      passwordFeedback.textContent = '';
+    });
+    passwordForm?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const currentPassword = $('#stitchCurrentPassword').value;
+      const newPassword = $('#stitchNewPassword').value;
+      const confirmPassword = $('#stitchConfirmPassword').value;
+      if (newPassword.length < 6) {
+        passwordFeedback.textContent = '새 비밀번호는 6자 이상이어야 합니다.';
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        passwordFeedback.textContent = '새 비밀번호 확인이 일치하지 않습니다.';
+        return;
+      }
+      const client = supabaseClient;
+      const userId = state.session?.user?.id;
+      const email = state.session?.user?.email;
+      if (!client || !userId || !email || !currentPassword) {
+        passwordFeedback.textContent = '로그인 상태와 현재 비밀번호를 확인해 주세요.';
+        return;
+      }
+      const submitButton = passwordForm.querySelector('[type="submit"]');
+      submitButton.disabled = true;
+      passwordFeedback.textContent = '';
+      try {
+        accountPasswordReauthUserId = userId;
+        const { data, error: authError } = await client.auth.signInWithPassword({ email, password: currentPassword });
+        if (authError) throw authError;
+        if (client !== supabaseClient || state.session?.user?.id !== userId || data?.user?.id !== userId) {
+          throw new Error('로그인 상태가 변경되었습니다. 다시 시도해 주세요.');
+        }
+        const { error: updateError } = await client.auth.updateUser({ password: newPassword });
+        if (updateError) throw updateError;
+        passwordForm.reset();
+        passwordForm.hidden = true;
+        toast('비밀번호가 변경되었습니다.');
+      } catch (error) {
+        passwordFeedback.textContent = error?.message || '비밀번호 변경에 실패했습니다.';
+      } finally {
+        accountPasswordReauthUserId = null;
+        submitButton.disabled = false;
       }
     });
 
@@ -3460,24 +3616,6 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         }
       });
     }
-
-    // Party Actions
-    $('#stitchGoToPartyScreenBtn')?.addEventListener('click', () => {
-      showMobileView('party');
-    });
-
-    $('#stitchFindPartyBtn')?.addEventListener('click', () => {
-      showMobileView('party');
-    });
-
-    $('#stitchBtnLeaveParty')?.addEventListener('click', () => {
-      if (confirm("'KIRORO BACKCOUNTRY' 파티를 탈퇴하시겠습니까?")) {
-        state.currentParty = null;
-        try { localStorage.removeItem('powderline_active_party'); } catch (e) { }
-        syncStitchAccountUI();
-        toast('파티에서 탈퇴했습니다.');
-      }
-    });
 
     // Admin User Tabs
     $('#stitchTabPending')?.addEventListener('click', () => switchAdminTab('pending'));
