@@ -1974,12 +1974,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       .replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char]));
   }
 
-  function gpxString() {
+  function gpxString(exportRoute = null) {
     const now = new Date().toISOString();
-    const course = getActiveCourse();
-    const rawName = ($('#courseName')?.value?.trim() || course?.name || 'Powderline route').trim() || 'Powderline route';
+    const course = exportRoute || getActiveCourse();
+    const rawName = (exportRoute?.name || $('#courseName')?.value?.trim() || course?.name || 'Powderline route').trim() || 'Powderline route';
     const escapedName = escapeXml(rawName);
-    const rawPoints = (Array.isArray(state.points) && state.points.length)
+    const rawPoints = exportRoute ? exportRoute.points : (Array.isArray(state.points) && state.points.length)
       ? state.points
       : (Array.isArray(course?.points) ? course.points : []);
     const trkpts = [];
@@ -1994,7 +1994,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         eleVal = Number(p.ele);
       } else if (p.elevation !== undefined && p.elevation !== null && p.elevation !== '' && Number.isFinite(Number(p.elevation))) {
         eleVal = Number(p.elevation);
-      } else if (typeof map?.queryTerrainElevation === 'function') {
+      } else if (!exportRoute && typeof map?.queryTerrainElevation === 'function') {
         try {
           const demEle = map.queryTerrainElevation([lon, lat], { exaggerated: false });
           if (typeof demEle === 'number' && Number.isFinite(demEle)) eleVal = demEle;
@@ -2595,6 +2595,17 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   $('#profileChart').addEventListener('pointerleave', () => $('#profileTooltip').hidden = true);
   window.addEventListener('resize', () => requestAnimationFrame(drawProfile));
 
+  const adminRoutePageSize = 50;
+  let adminRoutes = [];
+  let adminRoutePage = 0;
+  let adminRouteHasMore = true;
+  let adminRouteLoading = false;
+  let adminRouteLoadError = '';
+  let adminRouteSearchTimer = null;
+  let adminRoutePreviewRequest = 0;
+  let adminRoutePreviewMap = null;
+  let adminRoutesForbiddenForUser = null;
+
   setLanguage(state.lang);
   resetProfile(t('profileEmptyMsg'));
 
@@ -3146,23 +3157,202 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   let adminUsersCache = [];
   let currentAdminTab = 'pending';
 
+  function hasAdminRouteAccess() {
+    return Boolean(supabaseClient && state.session?.user &&
+      adminRoutesForbiddenForUser !== state.session.user.id &&
+      state.profile?.role === 'admin' && state.profile?.status === 'approved');
+  }
+
+  function renderAdminRoutes() {
+    const list = $('#stitchAdminCoursesList');
+    const status = $('#stitchAdminCoursesStatus');
+    const more = $('#stitchAdminCoursesMoreBtn');
+    if (!list || !status || !more) return;
+    const query = ($('#stitchAdminCoursesSearch')?.value || '').trim().toLocaleLowerCase();
+    const matches = adminRoutes.filter(route => {
+      const region = regions[route.region]?.label || route.region || '';
+      return !query || [route.author_nickname, route.name, route.region, region]
+        .some(value => String(value || '').toLocaleLowerCase().includes(query));
+    });
+    list.innerHTML = matches.map(route => {
+      const region = regions[route.region]?.label || route.region || '지역 미지정';
+      const distance = route.distance_km != null && Number.isFinite(Number(route.distance_km))
+        ? ` · ${Number(route.distance_km).toFixed(1)} km` : '';
+      return `<article class="admin-course-item"><strong>${escapeHtml(route.name)}</strong>` +
+        `<small>${escapeHtml(route.author_nickname || '작성자 미상')} · ${escapeHtml(region)}${distance}</small>` +
+        `<div class="admin-course-actions"><button type="button" data-admin-route-action="map" data-route-id="${escapeHtml(route.id)}">지도 보기</button>` +
+        `<button type="button" data-admin-route-action="gpx" data-route-id="${escapeHtml(route.id)}">GPX 다운로드</button></div></article>`;
+    }).join('');
+    if (!matches.length && !adminRouteLoading && !adminRouteLoadError) {
+      list.innerHTML = '<p>표시할 코스가 없습니다.</p>';
+    }
+    status.classList.toggle('error', Boolean(adminRouteLoadError));
+    status.textContent = adminRouteLoadError || (adminRouteLoading ? '코스를 불러오는 중입니다…' :
+      query ? `검색 결과 ${matches.length}개 · 불러온 코스 ${adminRoutes.length}개` : `불러온 코스 ${adminRoutes.length}개`);
+    more.hidden = !adminRouteHasMore || Boolean(query);
+    more.disabled = adminRouteLoading;
+  }
+
+  function resetAdminRoutes() {
+    adminRoutes = [];
+    adminRoutePage = 0;
+    adminRouteHasMore = true;
+    adminRouteLoadError = '';
+    if ($('#stitchAdminCoursesSearch')) $('#stitchAdminCoursesSearch').value = '';
+    renderAdminRoutes();
+  }
+
+  async function loadAdminRoutes(loadAll = false) {
+    if (adminRouteLoading || !adminRouteHasMore || !hasAdminRouteAccess() || $('#mobileAdminCoursesView')?.hidden) return;
+    const client = supabaseClient;
+    const userId = state.session.user.id;
+    adminRouteLoading = true;
+    adminRouteLoadError = '';
+    renderAdminRoutes();
+    try {
+      do {
+        const { data, error } = await client.rpc('list_admin_all_routes', {
+          page_number: adminRoutePage + 1, page_size: adminRoutePageSize
+        });
+        if (error) throw error;
+        if (client !== supabaseClient || state.session?.user?.id !== userId || !hasAdminRouteAccess()) return;
+        const rows = Array.isArray(data) ? data : [];
+        // Keep only list metadata here. Route points are fetched on demand.
+        adminRoutes.push(...rows.map(({ id, user_id, name, region, distance_km, created_at, author_nickname }) =>
+          ({ id, user_id, name, region, distance_km, created_at, author_nickname })));
+        adminRoutePage++;
+        adminRouteHasMore = rows.length === adminRoutePageSize;
+        renderAdminRoutes();
+      } while (loadAll && adminRouteHasMore && !$('#mobileAdminCoursesView')?.hidden && $('#stitchAdminCoursesSearch')?.value.trim());
+    } catch (error) {
+      if (error?.code === '42501' || /administrator access required|permission denied/i.test(error?.message || '')) {
+        adminRoutesForbiddenForUser = userId;
+        resetAdminRoutes();
+        setStitchAccountSubView('adminManage');
+        syncStitchAccountUI();
+        toast('관리자 코스 조회 권한이 없습니다.');
+      } else {
+        adminRouteLoadError = `코스 조회 실패: ${error?.message || '다시 시도해 주세요.'}`;
+      }
+    } finally {
+      adminRouteLoading = false;
+      renderAdminRoutes();
+      if (!adminRouteLoadError && adminRouteHasMore && !$('#mobileAdminCoursesView')?.hidden && $('#stitchAdminCoursesSearch')?.value.trim()) {
+        loadAdminRoutes(true);
+      }
+    }
+  }
+
+  function closeAdminRoutePreview() {
+    adminRoutePreviewRequest++;
+    const preview = $('#stitchAdminCoursePreview');
+    if (preview) preview.hidden = true;
+    adminRoutePreviewMap?.getSource('admin-route-preview')?.setData({
+      type: 'FeatureCollection', features: []
+    });
+  }
+
+  function showAdminRoutePreview(route) {
+    const points = route.points.filter(point => {
+      const lat = Number(point?.lat);
+      const lng = Number(point?.lng ?? point?.lon);
+      return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
+    }).map(point => [Number(point.lng ?? point.lon), Number(point.lat)]);
+    if (points.length < 2) throw new Error('지도에 표시할 코스 좌표가 부족합니다.');
+    const preview = $('#stitchAdminCoursePreview');
+    $('#stitchAdminCoursePreviewTitle').textContent = route.name || '코스 미리보기';
+    preview.hidden = false;
+    if (!adminRoutePreviewMap) {
+      adminRoutePreviewMap = new mapboxgl.Map({
+        container: 'stitchAdminCoursePreviewMap',
+        style: hasMapboxToken ? MAPBOX_STYLES.satellite : tokenFallbackStyle,
+        center: points[0], zoom: 11, interactive: true
+      });
+    }
+    const previewRequest = adminRoutePreviewRequest;
+    const drawPreview = () => {
+      if (preview.hidden || previewRequest !== adminRoutePreviewRequest) return;
+      const data = { type: 'Feature', geometry: { type: 'LineString', coordinates: points }, properties: {} };
+      if (!adminRoutePreviewMap.getSource('admin-route-preview')) {
+        adminRoutePreviewMap.addSource('admin-route-preview', { type: 'geojson', data });
+        adminRoutePreviewMap.addLayer({ id: 'admin-route-preview-line', type: 'line', source: 'admin-route-preview',
+          paint: { 'line-color': '#38bdf8', 'line-width': 4 } });
+      } else {
+        adminRoutePreviewMap.getSource('admin-route-preview').setData(data);
+      }
+      const bounds = points.reduce((box, point) => box.extend(point), new mapboxgl.LngLatBounds(points[0], points[0]));
+      adminRoutePreviewMap.resize();
+      adminRoutePreviewMap.fitBounds(bounds, { padding: 35, maxZoom: 14, duration: 500 });
+    };
+    if (adminRoutePreviewMap.isStyleLoaded()) drawPreview();
+    else adminRoutePreviewMap.once('load', drawPreview);
+    preview.scrollIntoView({ block: 'nearest' });
+  }
+
+  async function openAdminRoute(routeId, action, button) {
+    if (!hasAdminRouteAccess() || !adminRoutes.some(route => route.id === routeId)) return;
+    const client = supabaseClient;
+    const userId = state.session.user.id;
+    const requestId = action === 'map' ? ++adminRoutePreviewRequest : null;
+    button.disabled = true;
+    try {
+      const { data, error } = await client.rpc('get_admin_route_points', { route_id: routeId }).single();
+      if (error) throw error;
+      if (client !== supabaseClient || state.session?.user?.id !== userId || !hasAdminRouteAccess() ||
+          $('#mobileAdminCoursesView')?.hidden || (action === 'map' && requestId !== adminRoutePreviewRequest)) return;
+      if (!data || !Array.isArray(data.points) || data.id !== routeId) throw new Error('코스 좌표를 불러올 수 없습니다.');
+      if (action === 'map') {
+        showAdminRoutePreview(data);
+      } else {
+        const xml = gpxString({ name: data.name, points: data.points });
+        if (!xml) throw new Error('GPX로 내보낼 코스 좌표가 부족합니다.');
+        const url = URL.createObjectURL(new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' }));
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = ((data.name || 'powderline-route').trim().replace(/[/\\?%*:|"<>]/g, '-') || 'powderline-route') + '.gpx';
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      adminRouteLoadError = '';
+      renderAdminRoutes();
+    } catch (error) {
+      if (error?.code === '42501' || /administrator access required|permission denied/i.test(error?.message || '')) {
+        adminRoutesForbiddenForUser = userId;
+        resetAdminRoutes();
+        setStitchAccountSubView('adminManage');
+        syncStitchAccountUI();
+        toast('관리자 코스 조회 권한이 없습니다.');
+      } else {
+        adminRouteLoadError = `${action === 'map' ? '지도 보기' : 'GPX 다운로드'} 실패: ${error?.message || '다시 시도해 주세요.'}`;
+        renderAdminRoutes();
+      }
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function setStitchAccountSubView(subview) {
     const mainView = $('#mobileAccountMainView');
     const adminManageView = $('#mobileAdminManageView');
     const adminUsersView = $('#mobileAdminUsersView');
+    const adminCoursesView = $('#mobileAdminCoursesView');
     const deleteView = $('#mobileDeleteAccountView');
     const isAdmin = state.profile?.role === 'admin' && state.profile?.status === 'approved';
-    const nextSubview = (!isAdmin && (subview === 'adminManage' || subview === 'adminUsers')) ? 'main' : subview;
+    const nextSubview = (!isAdmin && (subview === 'adminManage' || subview === 'adminUsers' || subview === 'adminCourses')) ? 'main' : subview;
 
+    if (nextSubview !== 'adminCourses') closeAdminRoutePreview();
     if (mainView) mainView.hidden = nextSubview !== 'main';
     if (adminManageView) adminManageView.hidden = nextSubview !== 'adminManage';
     if (adminUsersView) adminUsersView.hidden = nextSubview !== 'adminUsers';
+    if (adminCoursesView) adminCoursesView.hidden = nextSubview !== 'adminCourses';
     if (deleteView) deleteView.hidden = nextSubview !== 'deleteAccount';
 
     if (nextSubview === 'adminManage') {
       loadPendingUsers();
     } else if (nextSubview === 'adminUsers') {
       loadAdminUsersList();
+    } else if (nextSubview === 'adminCourses' && adminRoutePage === 0 && !adminRouteLoading) {
+      loadAdminRoutes();
     } else if (nextSubview === 'deleteAccount') {
       resetDeleteAccountView();
     }
@@ -3209,6 +3399,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (adminConsole) {
       adminConsole.hidden = !isAdmin;
     }
+    const adminCoursesMenu = $('#stitchOpenAdminCoursesBtn');
+    if (adminCoursesMenu) adminCoursesMenu.hidden = !isAdmin || adminRoutesForbiddenForUser === user?.id;
+    if (!isAdmin && adminRoutes.length) resetAdminRoutes();
+    if (!isAdmin && !$('#mobileAdminCoursesView')?.hidden) setStitchAccountSubView('main');
 
     const count = state.pendingUsers ? state.pendingUsers.length : 0;
     if (pendingCountBadge) {
@@ -3471,6 +3665,30 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     $('#stitchOpenAdminUsersBtn')?.addEventListener('click', () => {
       setStitchAccountSubView('adminUsers');
+    });
+
+    $('#stitchOpenAdminCoursesBtn')?.addEventListener('click', () => {
+      if (!hasAdminRouteAccess()) return;
+      resetAdminRoutes();
+      setStitchAccountSubView('adminCourses');
+    });
+
+    $('#stitchAdminCoursesBackBtn')?.addEventListener('click', () => {
+      setStitchAccountSubView('adminManage');
+    });
+
+    $('#stitchAdminCoursePreviewCloseBtn')?.addEventListener('click', closeAdminRoutePreview);
+    $('#stitchAdminCoursesMoreBtn')?.addEventListener('click', () => loadAdminRoutes());
+    $('#stitchAdminCoursesSearch')?.addEventListener('input', () => {
+      clearTimeout(adminRouteSearchTimer);
+      renderAdminRoutes();
+      adminRouteSearchTimer = setTimeout(() => {
+        if ($('#stitchAdminCoursesSearch')?.value.trim() && adminRouteHasMore) loadAdminRoutes(true);
+      }, 250);
+    });
+    $('#stitchAdminCoursesList')?.addEventListener('click', e => {
+      const button = e.target.closest('button[data-admin-route-action]');
+      if (button && !button.disabled) openAdminRoute(button.dataset.routeId, button.dataset.adminRouteAction, button);
     });
 
     $('#stitchAdminUsersBackBtn')?.addEventListener('click', () => {

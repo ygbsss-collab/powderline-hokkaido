@@ -553,8 +553,8 @@
                 </div>
               </button>
 
-              <!-- Menu 2: All Courses Management (Pending/Disabled) -->
-              <button id="stitchOpenAdminCoursesBtn" class="stitch-admin-menu-disabled relative flex flex-col p-space-md rounded-xl bg-surface-container text-left border-0 w-full" type="button" disabled aria-disabled="true">
+              <!-- Menu 2: All Courses Management -->
+              <button id="stitchOpenAdminCoursesBtn" class="group relative flex flex-col p-space-md rounded-xl bg-surface-container-high text-left border-0 w-full cursor-pointer" type="button">
                 <div class="flex items-center justify-between">
                   <div class="flex items-center gap-space-sm min-w-0">
                     <div class="w-10 h-10 rounded-xl bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
@@ -563,13 +563,12 @@
                     <div class="min-w-0">
                       <div class="flex items-center gap-space-xs">
                         <span class="font-headline-md text-headline-md text-on-surface truncate">전체 코스 관리</span>
-                        <span class="stitch-admin-menu-badge">준비 중</span>
                       </div>
-                      <p class="font-body-sm text-body-sm text-outline truncate mt-0.5">전체 회원이 등록한 GPX 코스 조회 및 관리</p>
+                      <p class="font-body-sm text-body-sm text-on-surface-variant truncate mt-0.5">전체 회원의 코스 조회 및 GPX 다운로드</p>
                     </div>
                   </div>
                   <div class="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
-                    <span class="material-symbols-outlined text-[18px]">lock</span>
+                    <span class="material-symbols-outlined text-[18px]">arrow_forward</span>
                   </div>
                 </div>
               </button>
@@ -596,6 +595,26 @@
               </button>
             </div>
           </div>
+        </main>
+      </div>
+
+      <!-- Administrator route browser: route points are fetched only for a selected action. -->
+      <div id="mobileAdminCoursesView" class="stitch-subview" hidden>
+        <header class="admin-courses-header">
+          <button id="stitchAdminCoursesBackBtn" type="button" aria-label="관리자 관리로 돌아가기"><span class="material-symbols-outlined">arrow_back</span></button>
+          <h1>전체 코스 관리</h1>
+        </header>
+        <main class="admin-courses-content">
+          <p>전체 회원의 코스를 조회하고 GPX로 내려받을 수 있습니다.</p>
+          <label for="stitchAdminCoursesSearch">코스 검색</label>
+          <input id="stitchAdminCoursesSearch" type="search" placeholder="작성자, 코스명, 지역" autocomplete="off" />
+          <p id="stitchAdminCoursesStatus" class="admin-courses-status" role="status" aria-live="polite"></p>
+          <div id="stitchAdminCoursesList" class="admin-courses-list"></div>
+          <button id="stitchAdminCoursesMoreBtn" class="admin-courses-more" type="button" hidden>더 보기</button>
+          <section id="stitchAdminCoursePreview" class="admin-course-preview" hidden aria-label="코스 지도 미리보기">
+            <div class="admin-course-preview-heading"><strong id="stitchAdminCoursePreviewTitle"></strong><button id="stitchAdminCoursePreviewCloseBtn" type="button" aria-label="지도 미리보기 닫기">닫기</button></div>
+            <div id="stitchAdminCoursePreviewMap" class="admin-course-preview-map"></div>
+          </section>
         </main>
       </div>
 

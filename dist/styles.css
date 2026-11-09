@@ -5698,6 +5698,30 @@ select {
 .party-gps-marker.stale .party-gps-marker-pin { background: #fbbf24; }
 .stitch-account-screen .stitch-admin-menu-disabled { opacity: .68; cursor: not-allowed; }
 .stitch-account-screen .stitch-admin-menu-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: rgba(135, 146, 154, .18); color: #87929a; font: 600 10px "JetBrains Mono", monospace; }
+.stitch-account-screen .admin-courses-header { display: flex; align-items: center; gap: 12px; padding: calc(14px + env(safe-area-inset-top)) 18px 14px; background: #1c2025; }
+.stitch-account-screen .admin-courses-header h1 { margin: 0; font-size: 18px; }
+.stitch-account-screen .admin-courses-header button { display: grid; place-items: center; width: 36px; height: 36px; background: transparent; color: #38bdf8; cursor: pointer; }
+.stitch-account-screen .admin-courses-content { padding: 20px 18px 100px; }
+.stitch-account-screen .admin-courses-content > p:first-child { margin: 0 0 18px; color: #bdc8d1; font-size: 13px; }
+.stitch-account-screen .admin-courses-content label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 700; }
+.stitch-account-screen #stitchAdminCoursesSearch { width: 100%; box-sizing: border-box; padding: 11px 13px; border: 1px solid #59636b; border-radius: 9px; background: #262a30; color: #e0e2ea; font: inherit; }
+.stitch-account-screen .admin-courses-status { min-height: 18px; margin: 12px 0; color: #bdc8d1; font-size: 12px; }
+.stitch-account-screen .admin-courses-status.error { color: #ffb4ab; }
+.stitch-account-screen .admin-courses-list { display: grid; gap: 10px; }
+.stitch-account-screen .admin-course-item { padding: 14px; border: 1px solid #3a444d; border-radius: 12px; background: #262a30; }
+.stitch-account-screen .admin-course-item strong { display: block; color: #e0e2ea; font-size: 15px; }
+.stitch-account-screen .admin-course-item small { display: block; margin-top: 5px; color: #bdc8d1; font-size: 12px; }
+.stitch-account-screen .admin-course-actions { display: flex; gap: 8px; margin-top: 12px; }
+.stitch-account-screen .admin-course-actions button, .stitch-account-screen .admin-courses-more { padding: 9px 12px; border-radius: 8px; background: #38bdf8; color: #00354a; font-size: 12px; font-weight: 700; cursor: pointer; }
+.stitch-account-screen .admin-course-actions button + button { background: #363f48; color: #e0e2ea; }
+.stitch-account-screen .admin-course-actions button:disabled, .stitch-account-screen .admin-courses-more:disabled { opacity: .5; cursor: default; }
+.stitch-account-screen .admin-courses-more { display: block; width: 100%; margin-top: 14px; }
+.stitch-account-screen .admin-courses-more[hidden], .stitch-account-screen .admin-course-preview[hidden] { display: none !important; }
+.stitch-account-screen .admin-course-preview { margin-top: 20px; padding: 12px; border-radius: 12px; background: #262a30; }
+.stitch-account-screen .admin-course-preview-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.stitch-account-screen .admin-course-preview-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stitch-account-screen .admin-course-preview-heading button { padding: 5px 8px; background: #363f48; color: #e0e2ea; cursor: pointer; }
+.stitch-account-screen .admin-course-preview-map { height: 300px; border-radius: 8px; overflow: hidden; }
 .stitch-account-screen .account-inline-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: #262a30; }
 .stitch-account-screen .account-inline-form[hidden] { display: none; }
 .stitch-account-screen .account-inline-form label { color: #bdc8d1; font-size: 12px; }
