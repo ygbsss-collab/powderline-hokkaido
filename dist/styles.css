@@ -5722,6 +5722,31 @@ select {
 .stitch-account-screen .admin-course-preview-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stitch-account-screen .admin-course-preview-heading button { padding: 5px 8px; background: #363f48; color: #e0e2ea; cursor: pointer; }
 .stitch-account-screen .admin-course-preview-map { height: 300px; border-radius: 8px; overflow: hidden; }
+.stitch-account-screen .admin-region-form { display: grid; gap: 8px; margin-top: 22px; padding: 16px; border-radius: 12px; background: #262a30; }
+.stitch-account-screen .admin-region-form h2 { margin: 0 0 6px; font-size: 17px; }
+.stitch-account-screen .admin-region-form label { display: grid; gap: 5px; margin: 0; font-size: 12px; }
+.stitch-account-screen .admin-region-form input { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px; border: 1px solid #59636b; border-radius: 8px; background: #1c2025; color: #e0e2ea; font: inherit; }
+.stitch-account-screen .admin-region-form input:disabled { opacity: .65; }
+.stitch-account-screen .admin-region-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.stitch-account-screen .admin-region-grid label { flex: 1 1 95px; }
+.stitch-account-screen .admin-region-form-hint { margin: 6px 0 0; color: #bdc8d1; font-size: 11px; }
+.stitch-account-screen .admin-region-form-actions { display: flex; gap: 8px; }
+.stitch-account-screen .admin-region-form-actions button { padding: 9px 12px; border-radius: 8px; background: #38bdf8; color: #00354a; font-weight: 700; cursor: pointer; }
+.stitch-account-screen .admin-region-form-actions button + button { background: #363f48; color: #e0e2ea; }
+.stitch-account-screen .admin-region-form-actions button:disabled { opacity: .5; cursor: default; }
+.stitch-account-screen .admin-region-map-open { padding: 10px 12px; border-radius: 8px; background: #244a56; color: #b8edff; font-weight: 700; cursor: pointer; }
+.admin-region-map-picker { position: absolute; inset: 0; z-index: 70; pointer-events: none; color: #e0e2ea; font-family: Inter, 'Noto Sans KR', sans-serif; }
+.admin-region-map-picker[hidden] { display: none !important; }
+.admin-region-picker-top, .admin-region-picker-bottom { position: absolute; left: 12px; right: 12px; padding: 12px; border-radius: 12px; background: rgba(16, 20, 25, .94); box-shadow: 0 4px 20px rgba(0, 0, 0, .35); pointer-events: auto; }
+.admin-region-picker-top { top: calc(12px + env(safe-area-inset-top)); }
+.admin-region-picker-top p { margin: 5px 0 0; font-size: 12px; color: #bdc8d1; }
+.admin-region-picker-bottom { bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-region-picker-bottom button { flex: 1 1 130px; min-height: 44px; padding: 8px; border: 0; border-radius: 8px; background: #244a56; color: #e0e2ea; font-size: 12px; font-weight: 700; touch-action: manipulation; cursor: pointer; }
+.admin-region-picker-bottom button[aria-pressed="true"] { background: #38bdf8; color: #00354a; }
+.admin-region-picker-bottom > div { display: flex; flex: 1 1 100%; gap: 8px; }
+.admin-region-picker-bottom #adminRegionPickerApplyBtn { background: #38bdf8; color: #00354a; }
+.admin-region-picker-bottom #adminRegionPickerCancelBtn { background: #363f48; }
+body.admin-region-picking #mobileHud, body.admin-region-picking .mobile-hud-bottom-nav { display: none !important; }
 .stitch-account-screen .account-inline-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: #262a30; }
 .stitch-account-screen .account-inline-form[hidden] { display: none; }
 .stitch-account-screen .account-inline-form label { color: #bdc8d1; font-size: 12px; }

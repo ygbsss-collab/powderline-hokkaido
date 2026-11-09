@@ -7,6 +7,11 @@
     kamui: { label: '카무이 스키 링크스', center: [142.19, 43.70], zoom: 11.0, bearing: 8, pitch: 54 },
     kiroro: { label: '키로로', center: [140.99, 43.07], zoom: 10.8, bearing: -12, pitch: 54 }
   };
+  const builtInRegionIds = new Set(['asahidake', 'rusutsu', 'furano', 'niseko', 'kamui', 'kiroro']);
+  let catalogRegionIds = new Set();
+  let adminRegionRows = [];
+  let adminRegionsForbiddenForUser = null;
+  let adminRegionPicker = null;
   const I18N = {
     ko: {
       docTitle: 'POWDERLINE — 백컨트리 경로 설계',
@@ -1118,6 +1123,57 @@ async function loadMyParties({selectedId} = {}) {
   setPartyCreateAvailability();
 }
 
+function syncRegionSelectors() {
+  const active = Object.entries(regions)
+    .filter(([, details]) => !details.custom && details.isActive !== false)
+    .sort((a, b) => (a[1].sortOrder ?? 999) - (b[1].sortOrder ?? 999));
+  const options = active.map(([id, details]) => `<option value="${escapeHtml(id)}">${escapeHtml(details.label)}</option>`).join('');
+  const fallback = active.some(([id]) => id === 'furano') ? 'furano' : active[0]?.[0] || '';
+  for (const id of ['region', 'mobileRegionSelect', 'homeRegionSelect', 'rideRegionSelect', 'partyCreateRegion']) {
+    const select = $(`#${id}`);
+    if (!select) continue;
+    const previous = select.value;
+    select.innerHTML = options;
+    if (id === 'region' && regions[previous]?.custom) {
+      const customOption = new Option(regions[previous].label, previous);
+      customOption.dataset.courseCustom = 'true';
+      select.add(customOption);
+    }
+    select.value = [...select.options].some(option => option.value === previous) ? previous : fallback;
+  }
+  renderMobileCourseRegions();
+  renderMobileHome();
+}
+
+async function loadRegionCatalog(client) {
+  try {
+    const { data, error } = await client.from('powderline_regions')
+      .select('id,label,center_lng,center_lat,zoom,bearing,pitch,sort_order,is_active,is_default,bbox')
+      .order('sort_order', { ascending: true });
+    if (error) throw error;
+    if (client !== supabaseClient) return { error: new Error('연결이 변경되었습니다.') };
+    if (!builtInRegionIds.size || ![...builtInRegionIds].every(id => data?.some(row => row.id === id))) {
+      throw new Error('기본 지역을 모두 불러오지 못했습니다.');
+    }
+    for (const id of catalogRegionIds) if (regions[id]) regions[id].isActive = false;
+    for (const row of data) {
+      regions[row.id] = {
+        label: row.label, center: [row.center_lng, row.center_lat],
+        zoom: row.zoom, bearing: row.bearing, pitch: row.pitch,
+        sortOrder: row.sort_order, isActive: row.is_active
+      };
+      catalogRegionIds.add(row.id);
+    }
+    if (state.profile?.id === state.session?.user?.id &&
+        state.profile?.role === 'admin' && state.profile?.status === 'approved') adminRegionRows = data;
+    syncRegionSelectors();
+    return { data };
+  } catch (error) {
+    console.warn('Region catalog unavailable; keeping existing regions:', error);
+    return { error };
+  }
+}
+
 async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)||DEFAULT_SUPABASE_CONFIG.publishableKey){
   authInitializationComplete=false;
   syncMobileAuthState();
@@ -1168,6 +1224,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       updateAuthUi(error.message);
     }
     state.session = session;
+    await loadRegionCatalog(client);
     try {
       if (session) {
         await loadUserProfile();
@@ -1466,7 +1523,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       map.getSource('ski-lift-towers')?.setData(emptyCollection);
       map.getSource('ski-lift-terminals')?.setData(emptyCollection);
       updateFacilityStatus('unavailable');
-      console.warn('Ski data error', error);
+      if (error?.message !== '404') console.warn('Ski data error', error);
     }
   }
   function setLayerVisibility(ids, visible) { ids.forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none') }) }
@@ -1815,7 +1872,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function drawProfile() { const samples = profile.samples, canvas = $('#profileChart'); if (!samples.length || !canvas.clientWidth || !canvas.clientHeight) return; const width = canvas.clientWidth, height = canvas.clientHeight, dpr = Math.min(window.devicePixelRatio || 1, 2); canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr); const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); const pad = { left: 42, right: 12, top: 8, bottom: 23 }, plotWidth = width - pad.left - pad.right, plotHeight = height - pad.top - pad.bottom, total = samples.at(-1).distance, range = samples.reduce((result, sample) => ({ min: Math.min(result.min, sample.elevation), max: Math.max(result.max, sample.elevation) }), { min: Infinity, max: -Infinity }), elevationPad = Math.max(5, (range.max - range.min) * .08), min = range.min - elevationPad, max = range.max + elevationPad, xFor = distance => pad.left + (distance / total) * plotWidth, yFor = elevation => pad.top + (max - elevation) / (max - min) * plotHeight; profile.layout = { pad, plotWidth, total, xFor }; ctx.clearRect(0, 0, width, height); ctx.strokeStyle = 'rgba(20,33,31,.18)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, height - pad.bottom); ctx.lineTo(width - pad.right, height - pad.bottom); ctx.stroke(); ctx.fillStyle = '#73817e'; ctx.font = '9px DM Mono, monospace'; ctx.textAlign = 'right'; ctx.fillText(Math.round(max) + ' m', pad.left - 5, pad.top + 7); ctx.fillText(Math.round(min) + ' m', pad.left - 5, height - pad.bottom); ctx.textAlign = 'left'; ctx.fillText('0 km', pad.left, height - 5); ctx.textAlign = 'right'; ctx.fillText((total / 1000).toFixed(2) + ' km', width - pad.right, height - 5); ctx.beginPath(); samples.forEach((sample, index) => { const x = xFor(sample.distance), y = yFor(sample.elevation); if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y) }); ctx.lineTo(width - pad.right, height - pad.bottom); ctx.lineTo(pad.left, height - pad.bottom); ctx.closePath(); ctx.fillStyle = 'rgba(120,144,18,.16)'; ctx.fill(); ctx.beginPath(); samples.forEach((sample, index) => { const x = xFor(sample.distance), y = yFor(sample.elevation); if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y) }); ctx.strokeStyle = '#789012'; ctx.lineWidth = 2; ctx.stroke() }
   function inspectProfile(event) { if (!profile.samples.length || !profile.layout) return; event.preventDefault(); const canvas = $('#profileChart'), rect = canvas.getBoundingClientRect(), localX = Math.max(profile.layout.pad.left, Math.min(rect.width - profile.layout.pad.right, event.clientX - rect.left)), target = (localX - profile.layout.pad.left) / profile.layout.plotWidth * profile.layout.total; let low = 0, high = profile.samples.length - 1; while (low < high) { const mid = Math.floor((low + high) / 2); if (profile.samples[mid].distance < target) low = mid + 1; else high = mid } const next = profile.samples[low], previous = profile.samples[Math.max(0, low - 1)], sample = Math.abs(next.distance - target) < Math.abs(previous.distance - target) ? next : previous, tooltip = $('#profileTooltip'); tooltip.textContent = `${(sample.distance / 1000).toFixed(2)} km · ${Math.round(sample.elevation)} m · ${sample.slope >= 0 ? '+' : ''}${sample.slope.toFixed(1)}°`; tooltip.style.left = profile.layout.xFor(sample.distance) + 'px'; tooltip.style.top = '58px'; tooltip.hidden = false; if (!profile.marker) profile.marker = new mapboxgl.Marker({ color: '#d8ff43', scale: .75 }).addTo(map); profile.marker.setLngLat([sample.lng, sample.lat]) }
   function toast(msg) { const el = $('#toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 2500) }
-  function setRegion() { const region = $('#region').value, r = regions[region]; map.flyTo({ center: r.center, zoom: r.zoom, bearing: r.bearing, pitch: r.pitch, duration: 1400 }); loadSkiData(region); clearLine(); toast(t('toastRegionMoved', r.label)) }
+  function setRegion() { const region = $('#region').value, r = regions[region]; if (!r) return; map.flyTo({ center: r.center, zoom: r.zoom, bearing: r.bearing, pitch: r.pitch, duration: 1400 }); loadSkiData(region); clearLine(); toast(t('toastRegionMoved', r.label)) }
   function clearLine() {
     pushHistory();
     state.points = [];
@@ -1827,6 +1884,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   // Map Click Interactions
   map.on('click', e => {
+    if (adminRegionPicker) return;
     if (!state.editorMode) return;
     if (state.tool === 'draw') {
       if (map.getLayer('route-points') && map.queryRenderedFeatures(e.point, { layers: ['route-points'] }).length) return;
@@ -1845,6 +1903,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     let dragIndex = null;
 
     function onDown(e) {
+      if (adminRegionPicker) return;
       if (!state.editorMode || !state.points.length) return;
       const features = map.queryRenderedFeatures(e.point, { layers: ['route-points'] });
       if (!features.length) return;
@@ -1949,6 +2008,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   setupVertexInteractions();
 
   function removeVertex(event) {
+    if (adminRegionPicker) return;
     if (!state.editorMode) return;
     event.preventDefault();
     event.originalEvent?.stopPropagation();
@@ -3331,20 +3391,266 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   }
 
+  function hasAdminRegionAccess() {
+    return Boolean(supabaseClient && state.session?.user &&
+      state.profile?.role === 'admin' && state.profile?.status === 'approved' &&
+      adminRegionsForbiddenForUser !== state.session.user.id);
+  }
+
+  function showAdminRegionError(error, target = $('#stitchAdminRegionsStatus')) {
+    if (['42501', 'PGRST116'].includes(error?.code) || [401, 403].includes(error?.status) ||
+        /permission denied|row-level security/i.test(error?.message || '')) {
+      adminRegionsForbiddenForUser = state.session?.user?.id;
+      adminRegionRows = [];
+      setStitchAccountSubView('adminManage');
+      syncStitchAccountUI();
+      toast('지역 관리 권한이 없습니다.');
+      return;
+    }
+    if (target) {
+      target.classList.add('error');
+      target.textContent = error?.message || '지역 정보를 처리하지 못했습니다.';
+    }
+  }
+
+  function renderAdminRegions() {
+    const list = $('#stitchAdminRegionsList');
+    const status = $('#stitchAdminRegionsStatus');
+    if (!list || !status) return;
+    list.innerHTML = adminRegionRows.map(row => {
+      const builtIn = builtInRegionIds.has(row.id);
+      const stateLabel = row.is_active ? '활성' : '비활성';
+      return `<article class="admin-course-item"><strong>${escapeHtml(row.label)} · ${escapeHtml(row.id)}</strong>` +
+        `<small>${stateLabel} · ${Number(row.center_lng).toFixed(3)}, ${Number(row.center_lat).toFixed(3)} · zoom ${Number(row.zoom)}</small>` +
+        `<div class="admin-course-actions"><button type="button" data-admin-region-action="edit" data-region-id="${escapeHtml(row.id)}">수정</button>` +
+        (builtIn ? '<small>기본 지역 · 비활성화 불가</small>' :
+          `<button type="button" data-admin-region-action="toggle" data-region-id="${escapeHtml(row.id)}">${row.is_active ? '비활성화' : '활성화'}</button>`) +
+        '</div></article>';
+    }).join('') || '<p>등록된 지역이 없습니다.</p>';
+    status.classList.remove('error');
+    status.textContent = `${adminRegionRows.length}개 지역`;
+  }
+
+  async function loadAdminRegions() {
+    if (!hasAdminRegionAccess()) return;
+    const status = $('#stitchAdminRegionsStatus');
+    status.classList.remove('error');
+    status.textContent = '지역 목록을 불러오는 중입니다…';
+    const client = supabaseClient;
+    const { data: allowed, error: permissionError } = await client.rpc('is_admin');
+    if (client !== supabaseClient) return;
+    if (permissionError || !allowed) {
+      showAdminRegionError(permissionError || { code: '42501' }, status);
+      return;
+    }
+    const { error } = await loadRegionCatalog(client);
+    if (error) showAdminRegionError(error, status);
+    else renderAdminRegions();
+  }
+
+  function resetAdminRegionForm(row = null) {
+    const form = $('#stitchAdminRegionForm');
+    form.reset();
+    form.dataset.editId = row?.id || '';
+    form.elements.namedItem('id').value = row?.id || '';
+    form.elements.namedItem('id').disabled = Boolean(row);
+    for (const name of ['label', 'center_lng', 'center_lat', 'zoom', 'bearing', 'pitch']) {
+      if (row) form.elements.namedItem(name).value = row[name];
+    }
+    for (const [index, name] of ['west', 'south', 'east', 'north'].entries()) {
+      form.elements.namedItem(name).value = row?.bbox?.[index] ?? '';
+    }
+    $('#stitchAdminRegionFormTitle').textContent = row ? `지역 수정 · ${row.label}` : '지역 추가';
+    $('#stitchAdminRegionFormError').textContent = '';
+    if (row) form.scrollIntoView({ block: 'nearest' });
+  }
+
+  function drawAdminRegionBbox() {
+    if (!map.isStyleLoaded()) return;
+    const bbox = adminRegionPicker?.bbox;
+    const ring = bbox ? [[bbox[0], bbox[1]], [bbox[2], bbox[1]], [bbox[2], bbox[3]],
+      [bbox[0], bbox[3]], [bbox[0], bbox[1]]] : null;
+    const data = { type: 'FeatureCollection', features: ring ? [{
+      type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: {}
+    }] : [] };
+    if (!map.getSource('admin-region-bbox')) {
+      map.addSource('admin-region-bbox', { type: 'geojson', data });
+    } else {
+      map.getSource('admin-region-bbox').setData(data);
+    }
+    if (!map.getLayer('admin-region-bbox-fill')) {
+      map.addLayer({ id: 'admin-region-bbox-fill', type: 'fill', source: 'admin-region-bbox',
+        paint: { 'fill-color': '#38bdf8', 'fill-opacity': .18 } });
+    }
+    if (!map.getLayer('admin-region-bbox-line')) {
+      map.addLayer({ id: 'admin-region-bbox-line', type: 'line', source: 'admin-region-bbox',
+        paint: { 'line-color': '#38bdf8', 'line-width': 3 } });
+    }
+  }
+
+  function enterAdminRegionPicker() {
+    if (!hasAdminRegionAccess() || adminRegionPicker) return;
+    const form = $('#stitchAdminRegionForm');
+    const names = ['center_lng', 'center_lat', 'zoom', 'bearing', 'pitch', 'west', 'south', 'east', 'north'];
+    const snapshot = Object.fromEntries(names.map(name => [name, form.elements.namedItem(name).value]));
+    const bboxValues = ['west', 'south', 'east', 'north'].map(name => snapshot[name]);
+    const bbox = bboxValues.every(value => value !== '') ? bboxValues.map(Number) : null;
+    adminRegionPicker = {
+      snapshot,
+      camera: { center: map.getCenter().toArray(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() },
+      bbox: bbox && bbox[0] < bbox[2] && bbox[1] < bbox[3] ? bbox : null,
+      pickingBbox: false,
+      firstCorner: null
+    };
+    $('#adminRegionMapPicker').hidden = false;
+    document.body.classList.add('admin-region-picking');
+    $('#adminRegionPickerStatus').textContent = '지도를 이동한 뒤 중심을 지정하거나 범위의 두 모서리를 터치하세요.';
+    $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', 'false');
+    setMobileAppView('map');
+    const lng = Number(snapshot.center_lng), lat = Number(snapshot.center_lat);
+    if (snapshot.center_lng !== '' && snapshot.center_lat !== '' &&
+        Number.isFinite(lng) && Number.isFinite(lat)) {
+      map.jumpTo({ center: [lng, lat], zoom: Number(snapshot.zoom),
+        bearing: Number(snapshot.bearing), pitch: Number(snapshot.pitch) });
+    }
+    requestAnimationFrame(() => { map.resize(); drawAdminRegionBbox(); });
+  }
+
+  function exitAdminRegionPicker(apply) {
+    const picker = adminRegionPicker;
+    if (!picker) return;
+    const form = $('#stitchAdminRegionForm');
+    if (!apply) {
+      for (const [name, value] of Object.entries(picker.snapshot)) form.elements.namedItem(name).value = value;
+      map.jumpTo(picker.camera);
+    }
+    adminRegionPicker = null;
+    $('#adminRegionMapPicker').hidden = true;
+    document.body.classList.remove('admin-region-picking');
+    $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', 'false');
+    drawAdminRegionBbox();
+    setMobileAppView('account');
+    setStitchAccountSubView('adminRegions');
+  }
+
+  function pickAdminRegionCenter() {
+    if (!adminRegionPicker) return;
+    const form = $('#stitchAdminRegionForm');
+    const center = map.getCenter();
+    const lng = ((center.lng + 180) % 360 + 360) % 360 - 180;
+    const values = {
+      center_lng: lng.toFixed(6), center_lat: center.lat.toFixed(6),
+      zoom: Math.min(22, map.getZoom()).toFixed(2),
+      bearing: map.getBearing().toFixed(2), pitch: Math.min(75, map.getPitch()).toFixed(2)
+    };
+    for (const [name, value] of Object.entries(values)) form.elements.namedItem(name).value = value;
+    $('#adminRegionPickerStatus').textContent = `중심 지정: ${values.center_lng}, ${values.center_lat}`;
+  }
+
+  map.on('click', event => {
+    const picker = adminRegionPicker;
+    if (!picker?.pickingBbox) return;
+    const lng = ((event.lngLat.lng + 180) % 360 + 360) % 360 - 180;
+    const corner = [lng, event.lngLat.lat];
+    if (!picker.firstCorner) {
+      picker.firstCorner = corner;
+      $('#adminRegionPickerStatus').textContent = '첫 번째 모서리를 지정했습니다. 두 번째 모서리를 터치하세요.';
+      return;
+    }
+    const first = picker.firstCorner;
+    picker.firstCorner = null;
+    const bbox = [Math.min(first[0], corner[0]), Math.min(first[1], corner[1]),
+      Math.max(first[0], corner[0]), Math.max(first[1], corner[1])];
+    if (bbox[0] === bbox[2] || bbox[1] === bbox[3]) {
+      $('#adminRegionPickerStatus').textContent = '서로 다른 두 모서리를 선택해 주세요.';
+      return;
+    }
+    picker.bbox = bbox;
+    picker.pickingBbox = false;
+    $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', 'false');
+    for (const [index, name] of ['west', 'south', 'east', 'north'].entries()) {
+      $('#stitchAdminRegionForm').elements.namedItem(name).value = bbox[index].toFixed(6);
+    }
+    drawAdminRegionBbox();
+    $('#adminRegionPickerStatus').textContent = '선택한 범위를 사각형으로 표시했습니다. 적용하거나 다시 지정할 수 있습니다.';
+  });
+  map.on('style.load', () => { if (adminRegionPicker) drawAdminRegionBbox(); });
+
+  async function saveAdminRegion(event) {
+    event.preventDefault();
+    if (!hasAdminRegionAccess()) return;
+    const form = event.currentTarget;
+    const errorEl = $('#stitchAdminRegionFormError');
+    errorEl.textContent = '';
+    const editId = form.dataset.editId || '';
+    const value = name => form.elements.namedItem(name).value.trim();
+    const bboxFields = ['west', 'south', 'east', 'north'].map(value);
+    const bboxPresent = bboxFields.filter(Boolean).length;
+    if (bboxPresent && bboxPresent !== 4) {
+      errorEl.textContent = 'bbox는 네 좌표를 모두 입력해 주세요.';
+      return;
+    }
+    const bbox = bboxPresent ? bboxFields.map(Number) : null;
+    if (bbox && !(bbox[0] < bbox[2] && bbox[1] < bbox[3])) {
+      errorEl.textContent = 'bbox는 west < east, south < north 순서여야 합니다.';
+      return;
+    }
+    const payload = {
+      label: value('label'), center_lng: Number(value('center_lng')),
+      center_lat: Number(value('center_lat')), zoom: Number(value('zoom')),
+      bearing: Number(value('bearing')), pitch: Number(value('pitch')), bbox
+    };
+    if (!editId) {
+      payload.id = value('id');
+      payload.sort_order = Math.max(0, ...adminRegionRows.map(row => Number(row.sort_order) || 0)) + 1;
+    }
+    const button = $('#stitchAdminRegionSaveBtn');
+    button.disabled = true;
+    try {
+      const query = editId
+        ? supabaseClient.from('powderline_regions').update(payload).eq('id', editId)
+        : supabaseClient.from('powderline_regions').insert(payload);
+      const { error } = await query.select('id').single();
+      if (error) throw error;
+      resetAdminRegionForm();
+      await loadAdminRegions();
+    } catch (error) {
+      showAdminRegionError(error, errorEl);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function toggleAdminRegion(id) {
+    if (!hasAdminRegionAccess() || builtInRegionIds.has(id)) return;
+    const row = adminRegionRows.find(item => item.id === id);
+    if (!row) return;
+    try {
+      const { error } = await supabaseClient.from('powderline_regions')
+        .update({ is_active: !row.is_active }).eq('id', id).select('id').single();
+      if (error) throw error;
+      await loadAdminRegions();
+    } catch (error) {
+      showAdminRegionError(error);
+    }
+  }
+
   function setStitchAccountSubView(subview) {
     const mainView = $('#mobileAccountMainView');
     const adminManageView = $('#mobileAdminManageView');
     const adminUsersView = $('#mobileAdminUsersView');
     const adminCoursesView = $('#mobileAdminCoursesView');
+    const adminRegionsView = $('#mobileAdminRegionsView');
     const deleteView = $('#mobileDeleteAccountView');
     const isAdmin = state.profile?.role === 'admin' && state.profile?.status === 'approved';
-    const nextSubview = (!isAdmin && (subview === 'adminManage' || subview === 'adminUsers' || subview === 'adminCourses')) ? 'main' : subview;
+    const nextSubview = (!isAdmin && (subview === 'adminManage' || subview === 'adminUsers' || subview === 'adminCourses' || subview === 'adminRegions')) ? 'main' : subview;
 
     if (nextSubview !== 'adminCourses') closeAdminRoutePreview();
     if (mainView) mainView.hidden = nextSubview !== 'main';
     if (adminManageView) adminManageView.hidden = nextSubview !== 'adminManage';
     if (adminUsersView) adminUsersView.hidden = nextSubview !== 'adminUsers';
     if (adminCoursesView) adminCoursesView.hidden = nextSubview !== 'adminCourses';
+    if (adminRegionsView) adminRegionsView.hidden = nextSubview !== 'adminRegions';
     if (deleteView) deleteView.hidden = nextSubview !== 'deleteAccount';
 
     if (nextSubview === 'adminManage') {
@@ -3353,6 +3659,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       loadAdminUsersList();
     } else if (nextSubview === 'adminCourses' && adminRoutePage === 0 && !adminRouteLoading) {
       loadAdminRoutes();
+    } else if (nextSubview === 'adminRegions') {
+      loadAdminRegions();
     } else if (nextSubview === 'deleteAccount') {
       resetDeleteAccountView();
     }
@@ -3401,8 +3709,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
     const adminCoursesMenu = $('#stitchOpenAdminCoursesBtn');
     if (adminCoursesMenu) adminCoursesMenu.hidden = !isAdmin || adminRoutesForbiddenForUser === user?.id;
+    const adminRegionsMenu = $('#stitchOpenAdminRegionsBtn');
+    if (adminRegionsMenu) adminRegionsMenu.hidden = !isAdmin || adminRegionsForbiddenForUser === user?.id;
+    if (!isAdmin && adminRegionPicker) exitAdminRegionPicker(false);
+    if (!isAdmin) adminRegionRows = [];
     if (!isAdmin && adminRoutes.length) resetAdminRoutes();
-    if (!isAdmin && !$('#mobileAdminCoursesView')?.hidden) setStitchAccountSubView('main');
+    if (!isAdmin && (!$('#mobileAdminCoursesView')?.hidden || !$('#mobileAdminRegionsView')?.hidden)) setStitchAccountSubView('main');
 
     const count = state.pendingUsers ? state.pendingUsers.length : 0;
     if (pendingCountBadge) {
@@ -3675,6 +3987,58 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     $('#stitchAdminCoursesBackBtn')?.addEventListener('click', () => {
       setStitchAccountSubView('adminManage');
+    });
+
+    $('#stitchOpenAdminRegionsBtn')?.addEventListener('click', () => {
+      if (hasAdminRegionAccess()) setStitchAccountSubView('adminRegions');
+    });
+    $('#stitchAdminRegionsBackBtn')?.addEventListener('click', () => setStitchAccountSubView('adminManage'));
+    $('#stitchAdminRegionCancelBtn')?.addEventListener('click', () => resetAdminRegionForm());
+    $('#stitchAdminRegionForm')?.addEventListener('submit', saveAdminRegion);
+    $('#stitchAdminRegionMapPickBtn')?.addEventListener('click', enterAdminRegionPicker);
+    $('#adminRegionPickCenterBtn')?.addEventListener('click', pickAdminRegionCenter);
+    $('#adminRegionPickBboxBtn')?.addEventListener('click', () => {
+      if (!adminRegionPicker) return;
+      adminRegionPicker.pickingBbox = !adminRegionPicker.pickingBbox;
+      adminRegionPicker.firstCorner = null;
+      $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', String(adminRegionPicker.pickingBbox));
+      $('#adminRegionPickerStatus').textContent = adminRegionPicker.pickingBbox
+        ? '지도의 첫 번째 모서리를 터치하세요. 지도를 끌어 이동할 수도 있습니다.'
+        : '범위 선택을 멈췄습니다.';
+    });
+    $('#adminRegionClearBboxBtn')?.addEventListener('click', () => {
+      if (!adminRegionPicker) return;
+      adminRegionPicker.bbox = null;
+      adminRegionPicker.firstCorner = null;
+      adminRegionPicker.pickingBbox = false;
+      $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', 'false');
+      for (const name of ['west', 'south', 'east', 'north']) {
+        $('#stitchAdminRegionForm').elements.namedItem(name).value = '';
+      }
+      drawAdminRegionBbox();
+      $('#adminRegionPickerStatus').textContent = '범위를 지웠습니다.';
+    });
+    $('#adminRegionPickerApplyBtn')?.addEventListener('click', () => {
+      if (!adminRegionPicker) return;
+      if (adminRegionPicker.pickingBbox || adminRegionPicker.firstCorner) {
+        $('#adminRegionPickerStatus').textContent = '범위의 두 모서리를 모두 선택하거나 범위 지정을 종료해 주세요.';
+        return;
+      }
+      const form = $('#stitchAdminRegionForm');
+      if (!form.elements.namedItem('center_lng').value || !form.elements.namedItem('center_lat').value) {
+        $('#adminRegionPickerStatus').textContent = '현재 지도 중심으로 지정 버튼을 눌러 주세요.';
+        return;
+      }
+      exitAdminRegionPicker(true);
+    });
+    $('#adminRegionPickerCancelBtn')?.addEventListener('click', () => exitAdminRegionPicker(false));
+    $('#stitchAdminRegionsList')?.addEventListener('click', event => {
+      const button = event.target.closest('button[data-admin-region-action]');
+      if (!button) return;
+      const row = adminRegionRows.find(item => item.id === button.dataset.regionId);
+      if (!row || !hasAdminRegionAccess()) return;
+      if (button.dataset.adminRegionAction === 'edit') resetAdminRegionForm(row);
+      else if (button.dataset.adminRegionAction === 'toggle') toggleAdminRegion(row.id);
     });
 
     $('#stitchAdminCoursePreviewCloseBtn')?.addEventListener('click', closeAdminRoutePreview);
