@@ -3520,18 +3520,26 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const submitButton = nicknameForm.querySelector('[type="submit"]');
       submitButton.disabled = true;
       nicknameFeedback.textContent = '';
+      let profileSaved = false;
       try {
         const { data, error } = await client.from('profiles')
           .update({ nickname }).eq('id', userId).select('nickname').single();
         if (error) throw error;
-        if (client !== supabaseClient || state.session?.user?.id !== userId) return;
+        profileSaved = true;
+        if (client !== supabaseClient || state.session?.user?.id !== userId) {
+          throw new Error('로그인 상태가 변경되었습니다.');
+        }
         if (state.profile) state.profile.nickname = data.nickname;
         else await loadUserProfile();
         updateAuthUi();
+        const { error: metadataError } = await client.auth.updateUser({ data: { nickname: data.nickname } });
+        if (metadataError) throw metadataError;
         nicknameForm.hidden = true;
         toast('닉네임이 성공적으로 변경되었습니다.');
       } catch (error) {
-        nicknameFeedback.textContent = error?.message || '닉네임 변경에 실패했습니다.';
+        nicknameFeedback.textContent = profileSaved
+          ? `닉네임은 저장됐지만 계정 정보 동기화에 실패했습니다: ${error?.message || '다시 시도해 주세요.'}`
+          : error?.message || '닉네임 변경에 실패했습니다.';
       } finally {
         submitButton.disabled = false;
       }
