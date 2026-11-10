@@ -120,7 +120,14 @@
           <div class="ride-course-card"><span class="material-symbols-outlined ride-course-icon">map</span><div><small>선택된 코스</small><strong id="rideCourseName">코스를 선택하세요</strong></div><button id="rideExitBtn" type="button" hidden>일반 지도</button></div>
           <div class="ride-left-controls"><button id="rideInfoBtn" type="button" aria-label="코스 정보">ⓘ</button></div>
           <div class="ride-map-controls"><button id="rideCompassBtn" type="button" aria-label="북쪽 정렬"><span id="rideCompassNeedle" class="mobile-compass-needle"><span class="mobile-needle-north"></span><span class="mobile-needle-south"></span><span class="mobile-needle-pivot"></span></span></button><div class="ride-zoom-group"><button id="rideZoomInBtn" type="button" aria-label="확대">＋</button><button id="rideZoomOutBtn" type="button" aria-label="축소">−</button></div><button id="rideLocateBtn" type="button" aria-label="현재 위치"><span class="material-symbols-outlined">my_location</span></button></div>
-          <div class="ride-bottom-deck"><button id="rideShareBtn" type="button"><span class="material-symbols-outlined">share</span>파티 공유</button><button id="rideAnalyticsBtn" type="button">경사도 보기<span class="material-symbols-outlined">keyboard_arrow_up</span></button></div>
+          <div class="ride-bottom-deck">
+            <section id="gpsRecordingPanel" class="gps-recording-panel" hidden aria-live="polite">
+              <div class="gps-recording-mini-status"><strong id="gpsRecordingStatus">기록 중</strong><span id="gpsRecordingSignal">GPS 대기</span><span id="gpsRecordingDistance">0.00 km</span><span id="gpsRecordingElapsed">00:00:00</span><span id="gpsRecordingPointCount">0pt</span></div>
+              <div class="gps-recording-actions"><button id="gpsRecordPauseBtn" type="button">기록 일시정지</button><button id="gpsRecordFinishBtn" type="button">기록 종료</button></div>
+            </section>
+            <button id="rideShareBtn" type="button"><span class="material-symbols-outlined">route</span><span id="rideRecordBtnLabel">내 경로 기록</span></button>
+            <button id="rideAnalyticsBtn" type="button">경사도 보기<span class="material-symbols-outlined">keyboard_arrow_up</span></button>
+          </div>
         </div>
         <section id="mobileRoutesScreen" class="mobile-standalone-screen course-manage-screen" hidden aria-label="코스 관리">
           <header class="course-manage-header">
@@ -334,22 +341,18 @@
       <!-- Subview 1: Main Account View (Admin & User) -->
       <div id="mobileAccountMainView" class="stitch-subview">
         <header class="fixed top-0 w-full z-50 pt-safe bg-surface/80 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)] border-b border-outline-variant/20">
-  <div class="h-16 px-margin flex items-center justify-between">
-    <div class="flex items-center gap-space-xs">
-      <button id="stitchAccountBackBtn" aria-label="뒤로가기" class="w-10 h-10 -ml-2 rounded-full flex items-center justify-center text-on-surface hover:bg-surface-bright active:scale-95 transition-all bg-transparent border-0 cursor-pointer" type="button">
-        <span class="material-symbols-outlined text-[24px]">arrow_back</span>
-      </button>
-      <div class="flex flex-col justify-center">
-        <div class="flex items-center gap-space-xs">
-          <span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span>
-          <span class="font-label-sm text-label-sm uppercase tracking-wider text-primary-container">POWDERLINE</span>
-        </div>
-        <h1 class="font-headline-md text-headline-md text-on-surface">Account</h1>
-      </div>
-    </div>
-    <div class="flex items-center gap-space-sm"></div>
-  </div>
-</header><main class="flex flex-col relative w-full pt-16 pb-28 bg-surface min-h-screen"><div class="flex flex-col w-full px-margin space-y-space-md">
+          <div class="px-margin pt-1.5 flex items-center gap-space-xs">
+            <span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span>
+            <span class="font-label-sm text-label-sm uppercase tracking-wider text-primary-container">POWDERLINE</span>
+          </div>
+          <div class="h-12 px-margin relative flex items-center justify-between">
+            <button id="stitchAccountBackBtn" aria-label="뒤로가기" class="w-10 h-10 -ml-2 rounded-full flex items-center justify-center text-on-surface hover:bg-surface-bright active:scale-95 transition-all bg-transparent border-0 cursor-pointer z-10" type="button">
+              <span class="material-symbols-outlined text-[24px]">arrow_back</span>
+            </button>
+            <h1 class="stitch-account-title font-headline-md text-headline-md text-on-surface">계정 관리</h1>
+            <div class="w-10 h-10 -mr-2 pointer-events-none" aria-hidden="true"></div>
+          </div>
+        </header><main class="flex flex-col relative w-full pt-16 pb-28 bg-surface min-h-screen"><div class="flex flex-col w-full px-margin space-y-space-md">
 <!-- Tactical Telemetry Status Bar -->
 
 <!-- 1. Upper Profile Card -->
@@ -491,7 +494,7 @@
     <span>로그아웃 (Sign Out)</span>
   </button>
   <!-- Red-Themed Dangerous Account Termination UI Card Button -->
-  <button class="w-full h-12 rounded-xl bg-error-container/20 hover:bg-error-container/30 active:scale-[0.99] text-error font-body-md text-body-md font-semibold transition-all flex items-center justify-center gap-space-xs shadow-sm cursor-pointer border border-error/30" id="stitchOpenDeleteAccountBtn" type="button">
+  <button class="w-full h-12 rounded-xl bg-surface-container-high hover:bg-surface-bright active:scale-[0.99] text-error font-body-md text-body-md font-semibold transition-all flex items-center justify-center gap-space-xs shadow-sm cursor-pointer border-0" id="stitchOpenDeleteAccountBtn" type="button">
     <span class="material-symbols-outlined text-[20px] text-error">warning</span>
     <span>회원 탈퇴 (Account Termination)</span>
   </button>
@@ -975,6 +978,10 @@
 
     <div id="mobileAuthContainer" class="mobile-auth-container">
       <section id="mobileAuthCheckingView" class="mobile-auth-view mobile-auth-checking-view" aria-live="polite">
+        <div class="mobile-intro-player">
+          <video id="mobileIntroVideo" class="mobile-intro-video" src="./assets/POWDERLINE_intro_v2.mp4" autoplay muted playsinline preload="auto"></video>
+          <button id="mobileIntroSkipBtn" class="mobile-intro-skip" type="button">건너뛰기</button>
+        </div>
         <div class="mobile-auth-checking-content"><span class="mobile-auth-checking-logo">✦</span><strong>POWDERLINE</strong><span class="mobile-auth-spinner" aria-hidden="true"></span><p>계정 상태를 확인하는 중입니다.</p></div>
       </section>
       <section id="mobileLoginView" class="mobile-auth-view" hidden>
@@ -1009,6 +1016,22 @@
           <div class="mobile-auth-switch-prompt"><span>이미 계정이 있으신가요?</span><button id="mobileReturnLoginBtn" type="button" class="mobile-auth-link-btn">로그인</button></div>
         </div></main>
       </section>
+    </div>
+    <div id="gpsRecordingFinishModal" class="modal-backdrop gps-recording-finish-modal" hidden>
+      <div class="modal-dialog gps-recording-finish-dialog" role="dialog" aria-modal="true" aria-labelledby="gpsRecordingFinishTitle" aria-describedby="gpsRecordingFinishSummary">
+        <h3 id="gpsRecordingFinishTitle">경로 기록 종료</h3>
+        <p id="gpsRecordingFinishSummary">기록을 내 코스에 저장하거나 저장하지 않고 종료할 수 있습니다.</p>
+        <form id="gpsRecordingFinishForm" class="modal-form">
+          <div class="form-field">
+            <label for="gpsRecordingCourseName">코스 이름</label>
+            <input id="gpsRecordingCourseName" type="text" maxlength="80" autocomplete="off" required />
+          </div>
+          <div class="modal-actions gps-recording-finish-actions">
+            <button id="gpsRecordingDiscardBtn" type="button" class="ghost">저장 안 함</button>
+            <button id="gpsRecordingSaveBtn" type="submit" class="primary">저장</button>
+          </div>
+        </form>
+      </div>
     </div>
     <div id="confirmModal" class="modal-backdrop" hidden>
       <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modalTitle">

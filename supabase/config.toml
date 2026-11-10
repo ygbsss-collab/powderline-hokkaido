@@ -1,0 +1,4 @@
+project_id = "lxfsvhwibiaspnaduhri"
+
+[functions.mapbox-public-token]
+verify_jwt = false

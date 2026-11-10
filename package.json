@@ -13,10 +13,13 @@
     "ios:sync": "cap sync ios"
   },
   "devDependencies": {
+    "@capacitor-community/background-geolocation": "1.3.1",
     "@capacitor/android": "8.6.0",
+    "@capacitor/app": "8.1.2",
     "@capacitor/cli": "8.6.0",
     "@capacitor/core": "8.6.0",
     "@capacitor/ios": "8.6.0",
+    "@capacitor/local-notifications": "8.3.1",
     "stream-json": "^1.9.1"
   }
 }

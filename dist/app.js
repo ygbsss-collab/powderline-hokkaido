@@ -376,11 +376,160 @@
   let supabaseAuthSubscription = null;
   let accountPasswordReauthUserId = null;
   let authInitializationComplete = false;
+  let onlineAuthVerified = false;
+  let offlineAccessActive = false;
+  let offlineRevalidationTimer = null;
+  let offlineRevalidationRunning = false;
+  let authConnectivityListenersRegistered = false;
+  let introPlaybackComplete = false;
   let mobileAuthActiveView = 'login';
   let setMobileAppView = () => { };
   const MAPBOX_TOKEN_KEY = 'powderline.mapboxCompareToken';
   const MAPBOX_TOKEN_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/mapbox-public-token`;
   const MAPBOX_STYLES = { satellite: 'mapbox://styles/mapbox/standard-satellite', topo: 'mapbox://styles/mapbox/outdoors-v12' };
+
+  const SUPABASE_AUTH_STORAGE = 'powderline.supabase.auth';
+  const OFFLINE_ACCESS_STORAGE = 'powderline.offlineAccess.v1';
+  const LEGACY_PROFILE_CACHE_PREFIX = 'powderline.profile.';
+  const INITIAL_AUTH_TIMEOUT_MS = 8000;
+  const GPS_RECORDING_STORAGE_PREFIX = 'powderline.gpsRecording.v1.';
+  const GPS_PENDING_ROUTES_PREFIX = 'powderline.gpsPendingRoutes.v1.';
+  const GPS_MAX_ACCURACY_METERS = 80;
+  const GPS_MIN_POINT_DISTANCE_METERS = 2;
+  const GPS_MAX_SPEED_METERS_PER_SECOND = 55;
+  const GPS_ROUTE_RENDER_INTERVAL_MS = 1000;
+  const GPS_PERSIST_INTERVAL_MS = 5000;
+  const gpsRecording = {
+    id: '', ownerId: '', status: 'idle', points: [], region: '', startedAt: null,
+    elapsedBeforePauseMs: 0, lastResumedAt: null, watcherId: null, webWatcherId: null,
+    watcherGeneration: 0, lastError: '', initialized: false
+  };
+  let backgroundGeolocationPlugin = null;
+  let localNotificationsPlugin = null;
+  let gpsRecordingUiTimer = null;
+  let gpsRecordingPersistTimer = null;
+  let gpsRecordingLastPersistAt = 0;
+  let gpsRecordingMapTimer = null;
+  let gpsRecordingLastMapRenderAt = 0;
+  let gpsRecordingMapDirty = false;
+  let gpsRecordingDistanceKmValue = 0;
+  let gpsWatcherTransitionPromise = null;
+  let gpsRecordingLifecycleListenersRegistered = false;
+  let gpsPendingSyncRunning = false;
+  let gpsRecordingAction = '';
+  const gpsProcessingCounts = { panel: 0, modal: 0 };
+  let gpsFinishModalOpening = false;
+  const GPS_PERF_DEBUG = appConfig.debugGpsPerformance === true
+    || (!window.Capacitor?.isNativePlatform?.() && ['localhost', '127.0.0.1'].includes(window.location.hostname));
+
+  function logGpsPerformance(label, startedAt) {
+    if (!GPS_PERF_DEBUG) return;
+    console.debug(`[GPS perf] ${label}: ${(performance.now() - startedAt).toFixed(1)}ms`);
+  }
+
+  function beginGpsWatcherTransition() {
+    let resolveTransition;
+    const transition = new Promise(resolve => { resolveTransition = resolve; });
+    gpsWatcherTransitionPromise = transition;
+    return () => {
+      resolveTransition();
+      if (gpsWatcherTransitionPromise === transition) gpsWatcherTransitionPromise = null;
+    };
+  }
+
+  async function waitForGpsWatcherTransition() {
+    const transition = gpsWatcherTransitionPromise;
+    if (transition) await transition;
+  }
+
+  function withTimeout(promise, timeoutMs, message) {
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+  }
+
+  function getStoredSupabaseSession() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SUPABASE_AUTH_STORAGE) || 'null');
+      const session = stored?.currentSession || stored;
+      const claims = decodeJwtPayload(session?.access_token);
+      return session?.user?.id && claims?.sub === session.user.id && claims?.session_id ? session : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function decodeJwtPayload(token) {
+    try {
+      const payload = String(token || '').split('.')[1];
+      if (!payload) return null;
+      const base64 = payload.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(payload.length / 4) * 4, '=');
+      return JSON.parse(atob(base64));
+    } catch {
+      return null;
+    }
+  }
+
+  function saveOfflineAccessGrant(session, profile) {
+    const claims = decodeJwtPayload(session?.access_token);
+    if (!profile || profile.status !== 'approved' || profile.id !== session?.user?.id ||
+        claims?.sub !== session.user.id || !claims?.session_id) return false;
+    localStorage.setItem(OFFLINE_ACCESS_STORAGE, JSON.stringify({
+      version: 1,
+      userId: session.user.id,
+      sessionId: claims.session_id,
+      approved: true,
+      nickname: profile.nickname || '',
+      verifiedAt: new Date().toISOString()
+    }));
+    localStorage.removeItem(`${LEGACY_PROFILE_CACHE_PREFIX}${session.user.id}`);
+    return true;
+  }
+
+  function getOfflineAccessProfile(session) {
+    try {
+      const grant = JSON.parse(localStorage.getItem(OFFLINE_ACCESS_STORAGE) || 'null');
+      const claims = decodeJwtPayload(session?.access_token);
+      if (grant?.version !== 1 || grant.approved !== true || !session?.user?.id ||
+          grant.userId !== session.user.id || claims?.sub !== grant.userId ||
+          !claims?.session_id || grant.sessionId !== claims.session_id) return null;
+      return {
+        id: grant.userId,
+        email: session.user.email || '',
+        nickname: grant.nickname || '',
+        status: 'offline-approved',
+        role: 'offline'
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function clearOfflineAccessGrant(userId = state.session?.user?.id) {
+    localStorage.removeItem(OFFLINE_ACCESS_STORAGE);
+    if (userId) localStorage.removeItem(`${LEGACY_PROFILE_CACHE_PREFIX}${userId}`);
+    offlineAccessActive = false;
+    onlineAuthVerified = false;
+    clearTimeout(offlineRevalidationTimer);
+    offlineRevalidationTimer = null;
+  }
+
+  function isDefinitiveAuthError(error) {
+    const status = Number(error?.status);
+    const code = String(error?.code || '').toLowerCase();
+    return [400, 401, 403].includes(status) ||
+      /invalid.*token|refresh_token|session.*not.*found|user.*not.*found/.test(code);
+  }
+
+  function isTransientNetworkError(error) {
+    return !Number(error?.status) && /fetch|network|timeout|timed out|offline/i.test(String(error?.message || error || ''));
+  }
+
+  function remainingAuthTime(deadline) {
+    return Math.max(1, deadline - Date.now());
+  }
 
   function getCachedMapboxToken() {
     const token = localStorage.getItem(MAPBOX_TOKEN_KEY) || localStorage.getItem('powderline.mapboxToken') || '';
@@ -597,7 +746,7 @@ geolocateControl.on('error', (e) => {
     const configured = Boolean(supabaseClient);
     const signedIn = Boolean(state.session?.user);
     const profile = state.profile;
-    const isApproved = profile?.status === 'approved';
+    const isApproved = onlineAuthVerified && profile?.status === 'approved';
     const isAdmin = isApproved && profile?.role === 'admin';
 
     // Mobile Auth Display Control (Requirement: unapproved users see Stitch Mobile Auth screens)
@@ -642,7 +791,7 @@ geolocateControl.on('error', (e) => {
     if (mobileSignupSubmit) mobileSignupSubmit.disabled = !configured || !authInitializationComplete || mobileSignupSubmit.dataset.busy === 'true';
     if ($('#logoutBtn')) $('#logoutBtn').disabled = false;
     if ($('#authStatusBadge')) {
-      $('#authStatusBadge').textContent = signedIn ? t('authOnline') : t('authOffline');
+      $('#authStatusBadge').textContent = signedIn && onlineAuthVerified ? t('authOnline') : t('authOffline');
     }
     if ($('#authStatus')) {
       $('#authStatus').textContent = message || (signedIn ? t('authSignedIn', state.session.user.email || '') : configured ? t('authReady') : t('authNeedKey'));
@@ -806,7 +955,11 @@ geolocateControl.on('error', (e) => {
   }
 
   function useLocalRoutes() {
-    state.saved = JSON.parse(localStorage.getItem('powderline.routes') || '[]');
+    const ownerId = state.session?.user?.id || '';
+    const localRoutes = JSON.parse(localStorage.getItem('powderline.routes') || '[]')
+      .filter(route => !route?.recordingOwnerId || route.recordingOwnerId === ownerId);
+    const pendingRoutes = ownerId ? getPendingGpsRoutes(ownerId) : [];
+    state.saved = [...pendingRoutes, ...localRoutes.filter(route => !pendingRoutes.some(pending => pending.id === route.id))];
     renderSaved();
   }
 
@@ -824,16 +977,17 @@ geolocateControl.on('error', (e) => {
       toast(error.message);
       return;
     }
-    state.saved = (data || []).map(row => ({
+    const cloudRoutes = (data || []).map(row => ({
       id: row.id,
       name: row.name,
       region: row.region,
-      points: Array.isArray(row.points) ? row.points.filter(point => Number.isFinite(Number(point?.lng)) && Number.isFinite(Number(point?.lat))).map(point => ({ lng: Number(point.lng), lat: Number(point.lat) })) : [],
+      points: Array.isArray(row.points) ? row.points.filter(point => Number.isFinite(Number(point?.lng)) && Number.isFinite(Number(point?.lat))).map(point => ({ ...point, lng: Number(point.lng), lat: Number(point.lat) })) : [],
       km: Number.isFinite(Number(row.distance_km)) ? Number(row.distance_km) : 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       source: 'cloud'
     }));
+    state.saved = mergePendingGpsRoutes(cloudRoutes, userId);
     renderSaved();
     if (notify) toast(t('toastCloudLoaded'));
   }
@@ -1174,109 +1328,197 @@ async function loadRegionCatalog(client) {
   }
 }
 
+function createAuthVerificationError(error, fallbackMessage, definitive = false) {
+  const verificationError = new Error(error?.message || fallbackMessage);
+  verificationError.cause = error;
+  verificationError.definitive = definitive || isDefinitiveAuthError(error);
+  return verificationError;
+}
+
+async function verifyOnlineAccess(client) {
+  const deadline = Date.now() + INITIAL_AUTH_TIMEOUT_MS;
+  const sessionResult = await withTimeout(
+    client.auth.getSession(), remainingAuthTime(deadline), 'Supabase session restore timed out.'
+  );
+  if (sessionResult.error) throw createAuthVerificationError(sessionResult.error, 'Session restore failed.');
+  const session = sessionResult.data?.session || null;
+  if (!session) return { session: null, profile: null };
+
+  const userResult = await withTimeout(
+    client.auth.getUser(session.access_token), remainingAuthTime(deadline), 'Supabase user verification timed out.'
+  );
+  if (userResult.error || userResult.data?.user?.id !== session.user?.id) {
+    throw createAuthVerificationError(
+      userResult.error,
+      'Supabase user verification failed.',
+      !userResult.error || !isTransientNetworkError(userResult.error)
+    );
+  }
+
+  const profileResult = await withTimeout(
+    client.from('profiles').select('id,email,nickname,status,role').eq('id', session.user.id).single(),
+    remainingAuthTime(deadline),
+    'Profile verification timed out.'
+  );
+  if (profileResult.error || profileResult.data?.id !== session.user.id) {
+    throw createAuthVerificationError(
+      profileResult.error,
+      'Profile verification failed.',
+      !profileResult.error || !isTransientNetworkError(profileResult.error)
+    );
+  }
+  return { session, profile: profileResult.data };
+}
+
+function scheduleOfflineRevalidation(delay = 30000) {
+  clearTimeout(offlineRevalidationTimer);
+  if (!offlineAccessActive) return;
+  offlineRevalidationTimer = setTimeout(() => {
+    if (navigator.onLine !== false) revalidateOfflineAccess();
+    else scheduleOfflineRevalidation(30000);
+  }, delay);
+}
+
+async function revalidateOfflineAccess() {
+  if (!offlineAccessActive || offlineRevalidationRunning) return;
+  offlineRevalidationRunning = true;
+  try {
+    await initializeSupabase();
+  } finally {
+    offlineRevalidationRunning = false;
+  }
+}
+
+function activateOfflineAccess(client, error) {
+  const session = getStoredSupabaseSession();
+  const profile = getOfflineAccessProfile(session);
+  onlineAuthVerified = false;
+  offlineAccessActive = Boolean(session && profile);
+  if (offlineAccessActive) client?.auth?.stopAutoRefresh?.();
+  supabaseClient = offlineAccessActive ? null : client;
+  state.session = offlineAccessActive ? session : null;
+  state.profile = offlineAccessActive ? profile : null;
+  useLocalRoutes();
+  authInitializationComplete = true;
+  updateAuthUi(offlineAccessActive ? '오프라인 모드 · 로컬 기능만 사용할 수 있습니다.' : (error?.message || '온라인 인증이 필요합니다.'));
+  if (offlineAccessActive) scheduleOfflineRevalidation();
+  return offlineAccessActive;
+}
+
 async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)||DEFAULT_SUPABASE_CONFIG.publishableKey){
-  authInitializationComplete=false;
-  syncMobileAuthState();
+  const wasOfflineAccess = offlineAccessActive;
+  if (!wasOfflineAccess) {
+    authInitializationComplete=false;
+    syncMobileAuthState();
+  }
   if (typeof stopPartyGpsRuntime === 'function') stopPartyGpsRuntime({ clearMarkers: true });
   supabaseAuthSubscription?.unsubscribe();
   supabaseAuthSubscription=null;
   supabaseClient=null;
-  state.session=null;
+  onlineAuthVerified=false;
   state.partySchemaReady=false;
   state.myParties=[];
   state.currentParty=null;
   renderPartyMain();
   setPartyCreateAvailability();
   if(!isPublishableKey(key)){
+    if (!wasOfflineAccess) {
+      state.session=null;
+      state.profile=null;
+    }
     authInitializationComplete=true;
     updateAuthUi();
     useLocalRoutes();
     return false;
   }
   if (!window.supabase?.createClient) {
-      authInitializationComplete = true;
-      updateAuthUi(t('toastSupabaseUnavailable'));
-      toast(t('toastSupabaseUnavailable'));
-      return false;
-    }
-    const client = window.supabase.createClient(SUPABASE_URL, key, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'powderline.supabase.auth' }
-    });
-    supabaseClient = client;
-    let session = null;
-    let error = null;
-    try {
-      const result = await client.auth.getSession();
-      session = result.data?.session || null;
-      error = result.error || null;
-    } catch (sessionError) {
-      console.warn('Session restore failed:', sessionError);
-      authInitializationComplete = true;
-      state.session = null;
-      state.profile = null;
-      updateAuthUi(sessionError?.message || t('toastSupabaseUnavailable'));
-      useLocalRoutes();
-      return false;
-    }
-    if (client !== supabaseClient) return false;
-    if (error) {
-      console.warn('Session restore error:', error);
-      updateAuthUi(error.message);
-    }
-    state.session = session;
-    await loadRegionCatalog(client);
-    try {
-      if (session) {
-        await loadUserProfile();
-        if (state.profile?.status === 'approved') {
-          await loadCloudRoutes();
-        } else {
-          useLocalRoutes();
-        }
-      } else {
-        state.profile = null;
-        updateAuthUi();
-        useLocalRoutes();
-      }
-    } catch (initializationError) {
-      console.warn('Supabase account initialization failed:', initializationError);
-      error = initializationError;
-      state.profile = null;
-      useLocalRoutes();
-    }
-    await loadMyParties();
-    await loadReceivedPartyInvites();
-    const { data } = client.auth.onAuthStateChange(async (event, nextSession) => {
-      if (client !== supabaseClient) return;
-      const previousUserId = state.session?.user?.id;
-      state.session = nextSession || null;
-      if (nextSession?.user?.id === previousUserId &&
-          (event === 'USER_UPDATED' || (event === 'SIGNED_IN' && accountPasswordReauthUserId === previousUserId))) {
-        updateAuthUi();
-        return;
-      }
-      if (nextSession?.user) {
-        await loadUserProfile();
-        if (nextSession.user.id !== previousUserId) {
-          if (state.profile?.status === 'approved') {
-            await loadCloudRoutes({ notify: event === 'SIGNED_IN' });
-          } else {
-            useLocalRoutes();
-          }
-        }
-      } else {
-        state.profile = null;
-        updateAuthUi();
-        useLocalRoutes();
-      }
-      await loadMyParties();
-      await loadReceivedPartyInvites();
-    });
-    supabaseAuthSubscription = data?.subscription;
-    authInitializationComplete = true;
-    updateAuthUi(error?.message || '');
-    return true;
+    if (activateOfflineAccess(null, new Error(t('toastSupabaseUnavailable')))) return true;
+    toast(t('toastSupabaseUnavailable'));
+    return false;
   }
+
+  const client = window.supabase.createClient(SUPABASE_URL, key, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: SUPABASE_AUTH_STORAGE }
+  });
+  let verified;
+  try {
+    if (navigator.onLine === false) throw new Error('Network is offline.');
+    verified = await verifyOnlineAccess(client);
+  } catch (error) {
+    console.warn('Online authentication verification failed:', error);
+    if (error.definitive) clearOfflineAccessGrant();
+    return activateOfflineAccess(client, error);
+  }
+  supabaseClient=client;
+
+  const { session, profile } = verified;
+  state.session=session;
+  state.profile=profile;
+  onlineAuthVerified=Boolean(session);
+  if ((!session || profile?.status !== 'approved') && gpsRecording.status === 'recording') {
+    await pauseGpsRecording();
+  }
+  offlineAccessActive=false;
+  clearTimeout(offlineRevalidationTimer);
+  offlineRevalidationTimer=null;
+  if (session && profile?.status === 'approved') saveOfflineAccessGrant(session, profile);
+  else clearOfflineAccessGrant(session?.user?.id);
+  useLocalRoutes();
+
+  const { data } = client.auth.onAuthStateChange(async (event, nextSession) => {
+    if (client !== supabaseClient) return;
+    const previousUserId = state.session?.user?.id;
+    state.session=nextSession||null;
+    if (!nextSession) {
+      await stopGpsRecordingWatcher();
+      resetGpsRecordingState();
+      gpsRecording.initialized=false;
+      if (event === 'SIGNED_OUT') clearOfflineAccessGrant(previousUserId);
+      onlineAuthVerified=false;
+      state.profile=null;
+      updateAuthUi();
+      useLocalRoutes();
+      return;
+    }
+    if (nextSession.user.id === previousUserId &&
+        (event === 'USER_UPDATED' || (event === 'SIGNED_IN' && accountPasswordReauthUserId === previousUserId))) {
+      updateAuthUi();
+      return;
+    }
+    const nextProfile = await loadUserProfile();
+    onlineAuthVerified=Boolean(nextProfile);
+    if (nextProfile?.status === 'approved') {
+      saveOfflineAccessGrant(nextSession, state.profile);
+      if (nextSession.user.id !== previousUserId) await loadCloudRoutes({ notify: event === 'SIGNED_IN' });
+      await restoreGpsRecording();
+      void syncPendingGpsRoutes();
+    } else if (nextProfile) {
+      clearOfflineAccessGrant(nextSession.user.id);
+      useLocalRoutes();
+    } else {
+      activateOfflineAccess(client, new Error('Online profile verification failed.'));
+      return;
+    }
+    await Promise.allSettled([loadMyParties(), loadReceivedPartyInvites()]);
+  });
+  supabaseAuthSubscription=data?.subscription;
+  authInitializationComplete=true;
+  updateAuthUi();
+
+  const backgroundTasks=[
+    withTimeout(loadRegionCatalog(client), INITIAL_AUTH_TIMEOUT_MS, 'Region sync timed out.')
+  ];
+  if (session && profile?.status === 'approved') {
+    backgroundTasks.push(
+      withTimeout((async () => { await loadCloudRoutes(); await syncPendingGpsRoutes(); })(), INITIAL_AUTH_TIMEOUT_MS * 2, 'Route sync timed out.'),
+      withTimeout(loadMyParties(), INITIAL_AUTH_TIMEOUT_MS, 'Party sync timed out.'),
+      withTimeout(loadReceivedPartyInvites(), INITIAL_AUTH_TIMEOUT_MS, 'Invite sync timed out.')
+    );
+  }
+  void Promise.allSettled(backgroundTasks);
+  return true;
+}
+
   function setTerrain() { if (!map.getSource('mapbox-dem')) map.addSource('mapbox-dem', { type: 'raster-dem', url: 'mapbox://mapbox.mapbox-terrain-dem-v1', tileSize: 512, maxzoom: 14 }); map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.0 }) }
 
   function buildLiftDecorations(liftFeatures) {
@@ -1502,6 +1744,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     map.addLayer({ id: 'route-midpoints', type: 'circle', source: 'route-midpoints', paint: { 'circle-radius': 4, 'circle-color': '#f5f6f1', 'circle-stroke-color': '#789012', 'circle-stroke-width': 2 } });
     map.addSource('route-points', { type: 'geojson', data: emptyCollection });
     map.addLayer({ id: 'route-points', type: 'circle', source: 'route-points', paint: { 'circle-radius': ['case', ['has', 'color'], 6, ['==', ['get', 'selected'], true], 7, 5], 'circle-color': ['case', ['has', 'color'], ['get', 'color'], ['==', ['get', 'selected'], true], '#ff9d2e', '#d8ff43'], 'circle-stroke-color': '#14211f', 'circle-stroke-width': 2 } });
+    map.addSource('gps-recording-route', { type: 'geojson', data: emptyCollection });
+    map.addLayer({ id: 'gps-recording-glow', type: 'line', source: 'gps-recording-route', paint: { 'line-color': '#38bdf8', 'line-width': 9, 'line-opacity': 0.25, 'line-blur': 2 } });
+    map.addLayer({ id: 'gps-recording-line', type: 'line', source: 'gps-recording-route', paint: { 'line-color': '#38bdf8', 'line-width': 4, 'line-opacity': 1 } });
   }
   function restoreLayerVisibility() { setLayerVisibility(['ski-lifts-casing', 'ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-towers', 'ski-lift-terminals'], $('#liftsToggle').checked); setLayerVisibility(['ski-runs'], $('#runsToggle').checked); setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints'], $('#gpxToggle').checked) }
   map.on('style.load', () => { if (!hasMapboxToken) { $('#mapStatus').textContent = t('mapStatusNeedToken'); return } $('#mapStatus').textContent = t('mapStatusLoading'); setTerrain(); addSkiLayers(); addRouteLayers(); loadSkiData($('#region').value); render(); restoreLayerVisibility() });
@@ -1856,11 +2101,704 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const curCourse = (typeof getActiveCourse === 'function') ? getActiveCourse() : null;
       mobileCourseNameEl.textContent = (curCourse && curCourse.name) ? curCourse.name : t('brandSubtitle');
     }
+    renderGpsRecordingRoute();
     scheduleProfile();
   }
 
   function distanceKm(ps) { let d = 0; for (let i = 1; i < ps.length; i++) { const a = ps[i - 1], b = ps[i], r = Math.PI / 180, x = (b.lng - a.lng) * r * Math.cos((a.lat + b.lat) * r / 2), y = (b.lat - a.lat) * r; d += 6371 * Math.sqrt(x * x + y * y) } return d }
   function horizontalMeters(a, b) { const r = Math.PI / 180, x = (b.lng - a.lng) * r * Math.cos((a.lat + b.lat) * r / 2), y = (b.lat - a.lat) * r; return 6371000 * Math.sqrt(x * x + y * y) }
+
+  function gpsStorageKey(prefix, userId) {
+    return `${prefix}${userId}`;
+  }
+
+  function createRouteUuid() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    globalThis.crypto?.getRandomValues?.(bytes);
+    if (!bytes.some(Boolean)) for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(value => value.toString(16).padStart(2, '0'));
+    return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
+  }
+
+  function getPendingGpsRoutes(userId = state.session?.user?.id) {
+    if (!userId) return [];
+    try {
+      const routes = JSON.parse(localStorage.getItem(gpsStorageKey(GPS_PENDING_ROUTES_PREFIX, userId)) || '[]');
+      return Array.isArray(routes) ? routes.filter(route => route?.recordingOwnerId === userId && route?.id && Array.isArray(route.points)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function savePendingGpsRoutes(userId, routes) {
+    if (!userId) return;
+    localStorage.setItem(gpsStorageKey(GPS_PENDING_ROUTES_PREFIX, userId), JSON.stringify(routes));
+  }
+
+  function mergePendingGpsRoutes(cloudRoutes, userId) {
+    const cloudIds = new Set(cloudRoutes.map(route => route.id));
+    const pendingRoutes = getPendingGpsRoutes(userId);
+    const remaining = pendingRoutes.filter(route => !cloudIds.has(route.id));
+    if (remaining.length !== pendingRoutes.length) savePendingGpsRoutes(userId, remaining);
+    return [...remaining, ...cloudRoutes];
+  }
+
+  function getGpsRecordingElapsedMs() {
+    return gpsRecording.elapsedBeforePauseMs + (gpsRecording.status === 'recording' && gpsRecording.lastResumedAt
+      ? Math.max(0, Date.now() - gpsRecording.lastResumedAt)
+      : 0);
+  }
+
+  function formatGpsElapsed(milliseconds) {
+    const seconds = Math.floor(Math.max(0, milliseconds) / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return [hours, minutes, seconds % 60].map(value => String(value).padStart(2, '0')).join(':');
+  }
+
+  function persistGpsRecording() {
+    if (gpsRecordingPersistTimer !== null) {
+      clearTimeout(gpsRecordingPersistTimer);
+      gpsRecordingPersistTimer = null;
+    }
+    if (!gpsRecording.ownerId || gpsRecording.status === 'idle') return;
+    const startedAt = performance.now();
+    gpsRecordingLastPersistAt = Date.now();
+    try {
+      localStorage.setItem(gpsStorageKey(GPS_RECORDING_STORAGE_PREFIX, gpsRecording.ownerId), JSON.stringify({
+        version: 1,
+        id: gpsRecording.id,
+        ownerId: gpsRecording.ownerId,
+        status: gpsRecording.status,
+        points: gpsRecording.points,
+        region: gpsRecording.region,
+        startedAt: gpsRecording.startedAt,
+        elapsedBeforePauseMs: gpsRecording.elapsedBeforePauseMs,
+        lastResumedAt: gpsRecording.lastResumedAt,
+        lastError: gpsRecording.lastError
+      }));
+    } catch (error) {
+      gpsRecording.lastError = '로컬 저장 공간이 부족합니다.';
+      console.warn('GPS recording persistence failed:', error);
+    } finally {
+      logGpsPerformance('active recording persist', startedAt);
+    }
+  }
+
+  function clearPersistedGpsRecording(userId = gpsRecording.ownerId) {
+    if (userId) localStorage.removeItem(gpsStorageKey(GPS_RECORDING_STORAGE_PREFIX, userId));
+  }
+
+  function scheduleGpsRecordingPersist() {
+    if (gpsRecordingPersistTimer !== null) return;
+    const elapsed = Date.now() - gpsRecordingLastPersistAt;
+    if (elapsed >= GPS_PERSIST_INTERVAL_MS) {
+      persistGpsRecording();
+      return;
+    }
+    gpsRecordingPersistTimer = setTimeout(() => {
+      gpsRecordingPersistTimer = null;
+      persistGpsRecording();
+    }, GPS_PERSIST_INTERVAL_MS - elapsed);
+  }
+
+  function resetGpsRecordingState() {
+    clearTimeout(gpsRecordingPersistTimer);
+    gpsRecordingPersistTimer = null;
+    clearTimeout(gpsRecordingMapTimer);
+    gpsRecordingMapTimer = null;
+    gpsRecordingMapDirty = false;
+    gpsRecordingLastPersistAt = 0;
+    gpsRecordingDistanceKmValue = 0;
+    gpsRecordingAction = '';
+    Object.assign(gpsRecording, {
+      id: '', ownerId: '', status: 'idle', points: [], region: '', startedAt: null,
+      elapsedBeforePauseMs: 0, lastResumedAt: null, watcherId: null, webWatcherId: null,
+      lastError: ''
+    });
+    const finishModal = $('#gpsRecordingFinishModal');
+    if (finishModal) finishModal.hidden = true;
+    renderGpsRecordingRoute();
+    updateGpsRecordingUi();
+  }
+
+  function renderGpsRecordingRoute() {
+    const startedAt = performance.now();
+    gpsRecordingLastMapRenderAt = startedAt;
+    const source = typeof map?.getSource === 'function' ? map.getSource('gps-recording-route') : null;
+    if (!source) return;
+    const coordinates = gpsRecording.points.map(point => [point.lng, point.lat]);
+    source.setData(coordinates.length > 1 ? {
+      type: 'FeatureCollection',
+      features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } }]
+    } : emptyCollection);
+    logGpsPerformance('route setData', startedAt);
+  }
+
+  function scheduleGpsRecordingRouteRender() {
+    gpsRecordingMapDirty = true;
+    if (gpsRecordingMapTimer !== null) return;
+    const elapsed = performance.now() - gpsRecordingLastMapRenderAt;
+    const delay = Math.max(0, GPS_ROUTE_RENDER_INTERVAL_MS - elapsed);
+    gpsRecordingMapTimer = setTimeout(() => {
+      gpsRecordingMapTimer = null;
+      if (!gpsRecordingMapDirty) return;
+      gpsRecordingMapDirty = false;
+      renderGpsRecordingRoute();
+    }, delay);
+  }
+
+  function updateGpsRecordingUi() {
+    const active = gpsRecording.status === 'recording' || gpsRecording.status === 'paused' || Boolean(gpsRecordingAction);
+    const recording = gpsRecording.status === 'recording';
+    const panel = $('#gpsRecordingPanel');
+    if (panel) {
+      panel.hidden = !active;
+      panel.classList.toggle('paused', gpsRecording.status === 'paused');
+    }
+    const mainButton = $('#rideShareBtn');
+    if (mainButton) mainButton.hidden = active;
+    mainButton?.classList.toggle('recording', recording);
+    mainButton?.classList.toggle('paused', gpsRecording.status === 'paused');
+    const analyticsButton = $('#rideAnalyticsBtn');
+    if (analyticsButton) analyticsButton.hidden = active;
+    const label = $('#rideRecordBtnLabel');
+    const labelText = recording ? '경로 기록 중' : gpsRecording.status === 'paused' ? '기록 일시정지' : '내 경로 기록';
+    if (label && label.textContent !== labelText) label.textContent = labelText;
+    const status = $('#gpsRecordingStatus');
+    const statusText = gpsRecordingAction === 'starting' ? '시작 중…'
+      : gpsRecordingAction === 'pausing' ? '일시정지 중…'
+        : gpsRecordingAction === 'resuming' ? '재개 중…'
+          : recording ? '기록 중' : gpsRecording.status === 'paused' ? '일시정지' : '기록 준비';
+    if (status && status.textContent !== statusText) status.textContent = statusText;
+    const signal = $('#gpsRecordingSignal');
+    const signalText = gpsRecording.lastError || (gpsRecording.points.length ? 'GPS 정상' : 'GPS 신호 대기');
+    if (signal && signal.textContent !== signalText) signal.textContent = signalText;
+    const distance = $('#gpsRecordingDistance');
+    const distanceText = `${gpsRecordingDistanceKmValue.toFixed(2)} km`;
+    if (distance && distance.textContent !== distanceText) distance.textContent = distanceText;
+    const elapsed = $('#gpsRecordingElapsed');
+    const elapsedText = formatGpsElapsed(getGpsRecordingElapsedMs());
+    if (elapsed && elapsed.textContent !== elapsedText) elapsed.textContent = elapsedText;
+    const count = $('#gpsRecordingPointCount');
+    const countText = `${gpsRecording.points.length}pt`;
+    if (count && count.textContent !== countText) count.textContent = countText;
+    const pauseButton = $('#gpsRecordPauseBtn');
+    if (pauseButton) {
+      pauseButton.setAttribute('aria-busy', String(Boolean(gpsRecordingAction)));
+      pauseButton.classList.toggle('busy', Boolean(gpsRecordingAction));
+      const pauseButtonText = gpsRecordingAction ? '처리 중…' : recording ? '기록 일시정지' : '기록 재개';
+      if (pauseButton.textContent !== pauseButtonText) pauseButton.textContent = pauseButtonText;
+    }
+  }
+
+  function ensureGpsProcessingIndicators() {
+    const ensureIndicator = (id, targetSelector) => {
+      let indicator = document.getElementById(id);
+      if (indicator) return indicator;
+      const target = document.querySelector(targetSelector);
+      if (!target) return null;
+      indicator = document.createElement('div');
+      indicator.id = id;
+      indicator.className = 'gps-recording-processing';
+      indicator.setAttribute('role', 'status');
+      indicator.setAttribute('aria-live', 'polite');
+      indicator.hidden = true;
+      indicator.innerHTML = '<span class="gps-recording-processing-spinner" aria-hidden="true"></span><span>처리 중…</span>';
+      target.insertAdjacentElement('beforebegin', indicator);
+      return indicator;
+    };
+    ensureIndicator('gpsRecordingPanelProcessing', '#gpsRecordingPanel .gps-recording-actions');
+    ensureIndicator('gpsRecordingModalProcessing', '#gpsRecordingFinishModal .gps-recording-finish-actions');
+  }
+
+  function beginGpsProcessing(area) {
+    ensureGpsProcessingIndicators();
+    gpsProcessingCounts[area] += 1;
+    const indicator = area === 'modal' ? $('#gpsRecordingModalProcessing') : $('#gpsRecordingPanelProcessing');
+    if (indicator) indicator.hidden = false;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      gpsProcessingCounts[area] = Math.max(0, gpsProcessingCounts[area] - 1);
+      if (indicator && gpsProcessingCounts[area] === 0) indicator.hidden = true;
+    };
+  }
+
+  function waitForGpsUiPaint() {
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
+
+  function acceptGpsRecordingLocation(location) {
+    if (gpsRecording.status !== 'recording' || !location || location.simulated === true) return;
+    const lat = Number(location.latitude ?? location.coords?.latitude);
+    const lng = Number(location.longitude ?? location.coords?.longitude);
+    const accuracy = Number(location.accuracy ?? location.coords?.accuracy);
+    const rawTime = Number(location.time ?? location.timestamp ?? Date.now());
+    const time = Number.isFinite(rawTime) ? rawTime : Date.now();
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+    if (!Number.isFinite(accuracy) || accuracy > GPS_MAX_ACCURACY_METERS) {
+      gpsRecording.lastError = Number.isFinite(accuracy) ? `GPS 정확도 낮음 (${Math.round(accuracy)}m)` : 'GPS 정확도 확인 중';
+      updateGpsRecordingUi();
+      return;
+    }
+    if (Math.abs(Date.now() - time) > 120000) return;
+    const point = {
+      lng, lat,
+      elevation: Number.isFinite(Number(location.altitude ?? location.coords?.altitude)) ? Number(location.altitude ?? location.coords?.altitude) : null,
+      altitude: Number.isFinite(Number(location.altitude ?? location.coords?.altitude)) ? Number(location.altitude ?? location.coords?.altitude) : null,
+      time: new Date(time).toISOString(),
+      accuracy
+    };
+    const previous = gpsRecording.points.at(-1);
+    let segmentDistanceMeters = 0;
+    if (previous) {
+      const distance = horizontalMeters(previous, point);
+      segmentDistanceMeters = distance;
+      const previousTime = new Date(previous.time).getTime();
+      const elapsedSeconds = Math.max(0.001, (time - previousTime) / 1000);
+      if (distance < GPS_MIN_POINT_DISTANCE_METERS || time <= previousTime) return;
+      const accuracyAllowance = Math.max(100, (Number(previous.accuracy) + accuracy) * 2);
+      if (distance / elapsedSeconds > GPS_MAX_SPEED_METERS_PER_SECOND && distance > accuracyAllowance) {
+        gpsRecording.lastError = '비정상적인 GPS 이동값을 제외했습니다.';
+        updateGpsRecordingUi();
+        return;
+      }
+    }
+    gpsRecording.points.push(point);
+    gpsRecordingDistanceKmValue += segmentDistanceMeters / 1000;
+    gpsRecording.lastError = '';
+    scheduleGpsRecordingPersist();
+    scheduleGpsRecordingRouteRender();
+  }
+
+  function getBackgroundGeolocationPlugin() {
+    if (backgroundGeolocationPlugin) return backgroundGeolocationPlugin;
+    const capacitor = window.Capacitor;
+    if (capacitor?.getPlatform?.() !== 'android') return null;
+    backgroundGeolocationPlugin = capacitor.registerPlugin
+      ? capacitor.registerPlugin('BackgroundGeolocation')
+      : capacitor.Plugins?.BackgroundGeolocation || null;
+    return backgroundGeolocationPlugin;
+  }
+
+  async function ensureAndroidNotificationPermission() {
+    const capacitor = window.Capacitor;
+    if (capacitor?.getPlatform?.() !== 'android') return;
+    localNotificationsPlugin ||= capacitor.registerPlugin
+      ? capacitor.registerPlugin('LocalNotifications')
+      : capacitor.Plugins?.LocalNotifications || null;
+    if (!localNotificationsPlugin?.checkPermissions || !localNotificationsPlugin?.requestPermissions) {
+      throw new Error('알림 권한 플러그인을 사용할 수 없습니다.');
+    }
+    let permission = await localNotificationsPlugin.checkPermissions();
+    if (permission?.display !== 'granted') permission = await localNotificationsPlugin.requestPermissions();
+    if (permission?.display !== 'granted') throw new Error('백그라운드 기록 알림 권한이 필요합니다.');
+  }
+
+  async function stopGpsRecordingWatcher() {
+    const generation = ++gpsRecording.watcherGeneration;
+    const watcherId = gpsRecording.watcherId;
+    const webWatcherId = gpsRecording.webWatcherId;
+    gpsRecording.watcherId = null;
+    gpsRecording.webWatcherId = null;
+    if (watcherId !== null) {
+      try { await getBackgroundGeolocationPlugin()?.removeWatcher?.({ id: watcherId }); } catch (error) { console.warn('Background GPS watcher cleanup failed:', error); }
+    }
+    if (webWatcherId !== null && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(webWatcherId); } catch {}
+    }
+    return generation;
+  }
+
+  async function handleGpsRecordingError(error) {
+    const unauthorized = error?.code === 'NOT_AUTHORIZED' || error?.code === 1 || /permission|authoriz|denied/i.test(String(error?.message || error || ''));
+    gpsRecording.lastError = unauthorized ? '위치 권한이 필요합니다.' : (error?.message || 'GPS 신호를 받을 수 없습니다.');
+    if (unauthorized && gpsRecording.status === 'recording' && !gpsRecordingAction) {
+      gpsRecording.elapsedBeforePauseMs = getGpsRecordingElapsedMs();
+      gpsRecording.lastResumedAt = null;
+      gpsRecording.status = 'paused';
+      await stopGpsRecordingWatcher();
+      persistGpsRecording();
+    }
+    updateGpsRecordingUi();
+  }
+
+  async function startGpsRecordingWatcher() {
+    await stopGpsRecordingWatcher();
+    const generation = gpsRecording.watcherGeneration;
+    if (window.Capacitor?.getPlatform?.() === 'android') {
+      await ensureAndroidNotificationPermission();
+      const plugin = getBackgroundGeolocationPlugin();
+      if (!plugin?.addWatcher) throw new Error('백그라운드 GPS 플러그인을 사용할 수 없습니다.');
+      const watcherId = await plugin.addWatcher({
+        backgroundTitle: 'POWDERLINE 경로 기록 중',
+        backgroundMessage: '화면이 꺼져도 GPS 이동 경로를 기록하고 있습니다.',
+        requestPermissions: true,
+        stale: false,
+        distanceFilter: GPS_MIN_POINT_DISTANCE_METERS
+      }, (location, error) => {
+        if (error) void handleGpsRecordingError(error);
+        else acceptGpsRecordingLocation(location);
+      });
+      const watcherStartPending = gpsRecordingAction === 'starting' || gpsRecordingAction === 'resuming';
+      if (generation !== gpsRecording.watcherGeneration || (gpsRecording.status !== 'recording' && !watcherStartPending)) {
+        await plugin.removeWatcher({ id: watcherId });
+        return;
+      }
+      gpsRecording.watcherId = watcherId;
+      return;
+    }
+    if (!navigator.geolocation) throw new Error('이 브라우저에서는 GPS를 사용할 수 없습니다.');
+    gpsRecording.webWatcherId = navigator.geolocation.watchPosition(
+      position => acceptGpsRecordingLocation(position),
+      error => { void handleGpsRecordingError(error); },
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+    );
+  }
+
+  async function startGpsRecording() {
+    if (gpsRecordingAction) return toast('GPS 요청을 처리 중입니다. 잠시만 기다려 주세요.');
+    if (gpsRecording.status !== 'idle') return;
+    const ownerId = state.session?.user?.id;
+    if (!ownerId) return toast('승인된 계정 확인 후 경로를 기록할 수 있습니다.');
+    gpsRecordingAction = 'starting';
+    const finishTransition = beginGpsWatcherTransition();
+    const finishProcessing = beginGpsProcessing('panel');
+    const transitionStartedAt = performance.now();
+    Object.assign(gpsRecording, {
+      id: createRouteUuid(), ownerId, status: 'idle', points: [], region: $('#region')?.value || 'furano',
+      startedAt: new Date().toISOString(), elapsedBeforePauseMs: 0, lastResumedAt: null, lastError: ''
+    });
+    gpsRecordingDistanceKmValue = 0;
+    updateGpsRecordingUi();
+    try {
+      await waitForGpsUiPaint();
+      await startGpsRecordingWatcher();
+      if (gpsRecordingAction !== 'starting') return;
+      gpsRecording.status = 'recording';
+      gpsRecording.lastResumedAt = Date.now();
+      persistGpsRecording();
+      toast(window.Capacitor?.getPlatform?.() === 'android' ? '백그라운드 GPS 경로 기록을 시작했습니다.' : '웹 포그라운드 GPS 기록을 시작했습니다.');
+    } catch (error) {
+      const message = error?.message || 'GPS 기록을 시작하지 못했습니다.';
+      gpsRecording.lastError = message;
+      await stopGpsRecordingWatcher();
+      resetGpsRecordingState();
+      toast(message);
+    } finally {
+      if (gpsRecordingAction === 'starting') gpsRecordingAction = '';
+      finishTransition();
+      finishProcessing();
+      updateGpsRecordingUi();
+      logGpsPerformance('watcher start transition', transitionStartedAt);
+    }
+  }
+
+  async function pauseGpsRecording() {
+    if (gpsRecordingAction) return toast('GPS 요청을 처리 중입니다. 잠시만 기다려 주세요.');
+    if (gpsRecording.status !== 'recording') return;
+    gpsRecordingAction = 'pausing';
+    const finishTransition = beginGpsWatcherTransition();
+    const finishProcessing = beginGpsProcessing('panel');
+    const transitionStartedAt = performance.now();
+    updateGpsRecordingUi();
+    try {
+      await waitForGpsUiPaint();
+      await stopGpsRecordingWatcher();
+      if (gpsRecordingAction !== 'pausing' || gpsRecording.status !== 'recording') return;
+      gpsRecording.elapsedBeforePauseMs = getGpsRecordingElapsedMs();
+      gpsRecording.lastResumedAt = null;
+      gpsRecording.status = 'paused';
+      persistGpsRecording();
+      toast('경로 기록을 일시정지했습니다.');
+    } catch (error) {
+      gpsRecording.lastError = error?.message || 'GPS 일시정지를 완료하지 못했습니다.';
+      persistGpsRecording();
+      toast(gpsRecording.lastError);
+    } finally {
+      if (gpsRecordingAction === 'pausing') gpsRecordingAction = '';
+      finishTransition();
+      finishProcessing();
+      updateGpsRecordingUi();
+      logGpsPerformance('watcher pause transition', transitionStartedAt);
+    }
+  }
+
+  async function resumeGpsRecording() {
+    if (gpsRecordingAction) return toast('GPS 요청을 처리 중입니다. 잠시만 기다려 주세요.');
+    if (gpsRecording.status !== 'paused') return;
+    gpsRecordingAction = 'resuming';
+    const finishTransition = beginGpsWatcherTransition();
+    const finishProcessing = beginGpsProcessing('panel');
+    const transitionStartedAt = performance.now();
+    updateGpsRecordingUi();
+    try {
+      await waitForGpsUiPaint();
+      await startGpsRecordingWatcher();
+      if (gpsRecordingAction !== 'resuming' || gpsRecording.status !== 'paused') return;
+      gpsRecording.status = 'recording';
+      gpsRecording.lastResumedAt = Date.now();
+      gpsRecording.lastError = '';
+      persistGpsRecording();
+      toast('경로 기록을 재개했습니다.');
+    } catch (error) {
+      gpsRecording.lastError = error?.message || 'GPS 기록을 재개하지 못했습니다.';
+      persistGpsRecording();
+      toast(gpsRecording.lastError);
+    } finally {
+      if (gpsRecordingAction === 'resuming') gpsRecordingAction = '';
+      finishTransition();
+      finishProcessing();
+      updateGpsRecordingUi();
+      logGpsPerformance('watcher resume transition', transitionStartedAt);
+    }
+  }
+
+  function gpsRecordingDefaultName() {
+    return `GPS 기록 ${new Date().toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
+  }
+
+  async function finishGpsRecording() {
+    if (!['recording', 'paused'].includes(gpsRecording.status)) return;
+    if (gpsFinishModalOpening) return toast('종료 화면을 여는 중입니다. 잠시만 기다려 주세요.');
+    gpsFinishModalOpening = true;
+    const finishProcessing = beginGpsProcessing('panel');
+    const modal = $('#gpsRecordingFinishModal');
+    const nameInput = $('#gpsRecordingCourseName');
+    const summary = $('#gpsRecordingFinishSummary');
+    try {
+      await waitForGpsUiPaint();
+      if (!modal || !nameInput) return;
+      nameInput.value = gpsRecordingDefaultName();
+      if (summary) {
+        summary.textContent = `${distanceKm(gpsRecording.points).toFixed(2)} km · ${formatGpsElapsed(getGpsRecordingElapsedMs())} · ${gpsRecording.points.length}pt 기록을 저장하시겠습니까?`;
+      }
+      modal.hidden = false;
+      requestAnimationFrame(() => {
+        nameInput.focus();
+        nameInput.select();
+      });
+    } finally {
+      gpsFinishModalOpening = false;
+      finishProcessing();
+    }
+  }
+
+  async function saveFinishedGpsRecording() {
+    if (!['recording', 'paused'].includes(gpsRecording.status)) return;
+    const saveButton = $('#gpsRecordingSaveBtn');
+    const discardButton = $('#gpsRecordingDiscardBtn');
+    const nameInput = $('#gpsRecordingCourseName');
+    const name = nameInput?.value.trim().slice(0, 80) || gpsRecordingDefaultName();
+    if (saveButton) saveButton.disabled = true;
+    if (discardButton) discardButton.disabled = true;
+    const saveLabel = saveButton?.textContent || '저장';
+    if (saveButton) saveButton.textContent = '저장 중…';
+    const finishProcessing = beginGpsProcessing('modal');
+    try {
+      await waitForGpsUiPaint();
+      await waitForGpsWatcherTransition();
+      const ownerId = gpsRecording.ownerId;
+      const points = gpsRecording.points.map(point => ({ ...point }));
+      const savedRoute = {
+        id: gpsRecording.id,
+        name,
+        region: gpsRecording.region,
+        km: distanceKm(points),
+        points,
+        createdAt: gpsRecording.startedAt,
+        updatedAt: new Date().toISOString(),
+        source: 'local',
+        syncStatus: 'pending',
+        recordingOwnerId: ownerId
+      };
+      const pendingRoutes = getPendingGpsRoutes(ownerId).filter(route => route.id !== savedRoute.id);
+      savePendingGpsRoutes(ownerId, [savedRoute, ...pendingRoutes]);
+      await stopGpsRecordingWatcher();
+      try { clearPersistedGpsRecording(ownerId); } catch (error) { console.warn('GPS active recording cleanup failed:', error); }
+      resetGpsRecordingState();
+      state.saved = [savedRoute, ...state.saved.filter(route => route.id !== savedRoute.id)];
+      renderSaved();
+      toast(onlineAuthVerified ? '내 코스에 저장했습니다. 서버 동기화를 시작합니다.' : '내 코스에 저장했습니다. 온라인 복구 시 동기화됩니다.');
+      void syncPendingGpsRoutes();
+    } catch (error) {
+      console.warn('GPS recording save failed:', error);
+      toast('기록을 로컬에 저장하지 못했습니다. 다시 시도하세요.');
+    } finally {
+      if (saveButton) {
+        saveButton.disabled = false;
+        saveButton.textContent = saveLabel;
+      }
+      if (discardButton) discardButton.disabled = false;
+      finishProcessing();
+    }
+  }
+
+  async function discardFinishedGpsRecording() {
+    if (!['recording', 'paused'].includes(gpsRecording.status)) return;
+    const saveButton = $('#gpsRecordingSaveBtn');
+    const discardButton = $('#gpsRecordingDiscardBtn');
+    if (saveButton) saveButton.disabled = true;
+    if (discardButton) discardButton.disabled = true;
+    const discardLabel = discardButton?.textContent || '저장 안 함';
+    if (discardButton) discardButton.textContent = '종료 중…';
+    const finishProcessing = beginGpsProcessing('modal');
+    try {
+      await waitForGpsUiPaint();
+      await waitForGpsWatcherTransition();
+      const ownerId = gpsRecording.ownerId;
+      await stopGpsRecordingWatcher();
+      try { clearPersistedGpsRecording(ownerId); } catch (error) { console.warn('GPS discarded recording cleanup failed:', error); }
+      resetGpsRecordingState();
+      toast('GPS 경로 기록을 저장하지 않고 종료했습니다.');
+    } catch (error) {
+      console.warn('GPS recording discard failed:', error);
+      toast('기록 종료를 완료하지 못했습니다. 다시 시도하세요.');
+    } finally {
+      if (saveButton) saveButton.disabled = false;
+      if (discardButton) {
+        discardButton.disabled = false;
+        discardButton.textContent = discardLabel;
+      }
+      finishProcessing();
+    }
+  }
+
+  async function syncPendingGpsRoutes() {
+    const client = supabaseClient;
+    const userId = state.session?.user?.id;
+    if (gpsPendingSyncRunning || !client || !userId || !onlineAuthVerified || state.profile?.status !== 'approved') return;
+    gpsPendingSyncRunning = true;
+    try {
+      let pendingRoutes = getPendingGpsRoutes(userId);
+      for (const route of [...pendingRoutes]) {
+        const payload = {
+          id: route.id,
+          user_id: userId,
+          name: route.name,
+          region: route.region,
+          points: route.points,
+          distance_km: route.km,
+          updated_at: route.updatedAt || new Date().toISOString()
+        };
+        let response;
+        try {
+          response = await withTimeout(
+            client.from('powderline_routes').insert(payload).select('id,name,region,points,distance_km,created_at,updated_at').single(),
+            INITIAL_AUTH_TIMEOUT_MS,
+            'GPS route sync timed out.'
+          );
+          if (response.error?.code === '23505') {
+            response = await withTimeout(
+              client.from('powderline_routes').select('id,name,region,points,distance_km,created_at,updated_at').eq('id', route.id).eq('user_id', userId).single(),
+              INITIAL_AUTH_TIMEOUT_MS,
+              'GPS route verification timed out.'
+            );
+          }
+        } catch (error) {
+          console.warn('GPS route sync deferred:', error);
+          break;
+        }
+        if (response?.error || !response?.data) {
+          console.warn('GPS route sync deferred:', response?.error);
+          break;
+        }
+        const row = response.data;
+        const cloudRoute = {
+          id: row.id, name: row.name, region: row.region,
+          points: Array.isArray(row.points) ? row.points.map(point => ({ ...point, lng: Number(point.lng), lat: Number(point.lat) })) : route.points,
+          km: Number(row.distance_km) || route.km,
+          createdAt: row.created_at, updatedAt: row.updated_at, source: 'cloud'
+        };
+        pendingRoutes = pendingRoutes.filter(item => item.id !== route.id);
+        savePendingGpsRoutes(userId, pendingRoutes);
+        state.saved = [cloudRoute, ...state.saved.filter(item => item.id !== route.id)];
+      }
+      renderSaved();
+    } finally {
+      gpsPendingSyncRunning = false;
+    }
+  }
+
+  async function restoreGpsRecording() {
+    if (gpsRecording.initialized) return;
+    gpsRecording.initialized = true;
+    const ownerId = state.session?.user?.id;
+    if (!ownerId) return updateGpsRecordingUi();
+    try {
+      const saved = JSON.parse(localStorage.getItem(gpsStorageKey(GPS_RECORDING_STORAGE_PREFIX, ownerId)) || 'null');
+      if (saved?.version !== 1 || saved.ownerId !== ownerId || !['recording', 'paused'].includes(saved.status) || !Array.isArray(saved.points)) {
+        updateGpsRecordingUi();
+        return;
+      }
+      Object.assign(gpsRecording, {
+        id: saved.id || createRouteUuid(), ownerId, status: saved.status,
+        points: saved.points.filter(point => Number.isFinite(Number(point?.lng)) && Number.isFinite(Number(point?.lat))),
+        region: saved.region || $('#region')?.value || 'furano', startedAt: saved.startedAt || new Date().toISOString(),
+        elapsedBeforePauseMs: Number(saved.elapsedBeforePauseMs) || 0,
+        lastResumedAt: saved.status === 'recording' ? (Number(saved.lastResumedAt) || Date.now()) : null,
+        lastError: saved.lastError || ''
+      });
+      gpsRecordingDistanceKmValue = distanceKm(gpsRecording.points);
+      renderGpsRecordingRoute();
+      updateGpsRecordingUi();
+      if (gpsRecording.status === 'recording') {
+        gpsRecordingAction = 'starting';
+        const finishTransition = beginGpsWatcherTransition();
+        updateGpsRecordingUi();
+        try { await startGpsRecordingWatcher(); } catch (error) { await handleGpsRecordingError(error); }
+        finally {
+          if (gpsRecordingAction === 'starting') gpsRecordingAction = '';
+          finishTransition();
+          updateGpsRecordingUi();
+        }
+      }
+      toast('저장된 GPS 경로 기록을 복구했습니다.');
+    } catch (error) {
+      console.warn('GPS recording restore failed:', error);
+      updateGpsRecordingUi();
+    }
+  }
+
+  function initGpsRecordingInteractions() {
+    ensureGpsProcessingIndicators();
+    $('#rideShareBtn')?.addEventListener('click', () => {
+      if (gpsRecording.status === 'idle') void startGpsRecording();
+      else $('#gpsRecordingPanel')?.scrollIntoView?.({ block: 'nearest' });
+    });
+    $('#gpsRecordPauseBtn')?.addEventListener('click', () => {
+      if (gpsRecordingAction) return toast('GPS 요청을 처리 중입니다. 잠시만 기다려 주세요.');
+      if (gpsRecording.status === 'recording') void pauseGpsRecording();
+      else if (gpsRecording.status === 'paused') void resumeGpsRecording();
+    });
+    $('#gpsRecordFinishBtn')?.addEventListener('click', () => {
+      if (gpsRecordingAction === 'starting') return toast('GPS 기록 시작을 처리 중입니다. 잠시만 기다려 주세요.');
+      void finishGpsRecording();
+    });
+    $('#gpsRecordingFinishForm')?.addEventListener('submit', event => {
+      event.preventDefault();
+      void saveFinishedGpsRecording();
+    });
+    $('#gpsRecordingDiscardBtn')?.addEventListener('click', () => { void discardFinishedGpsRecording(); });
+    gpsRecordingUiTimer = setInterval(() => {
+      if (gpsRecording.status === 'recording') updateGpsRecordingUi();
+    }, 1000);
+    if (!gpsRecordingLifecycleListenersRegistered) {
+      gpsRecordingLifecycleListenersRegistered = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden' && ['recording', 'paused'].includes(gpsRecording.status)) persistGpsRecording();
+      });
+      window.addEventListener('pagehide', () => {
+        if (['recording', 'paused'].includes(gpsRecording.status)) persistGpsRecording();
+      });
+    }
+    updateGpsRecordingUi();
+  }
   function resetProfile(message) { profile.samples = []; profile.layout = null; profile.pending = false; clearTimeout(profile.timer); $('#profileMessage').textContent = message; $('#profileMessage').hidden = false; $('#profileTooltip').hidden = true;['#profileDistance', '#profileAscent', '#profileDescent', '#profileAverage', '#profileMaximum'].forEach(id => $(id).textContent = '—'); const canvas = $('#profileChart'), ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); if (profile.marker) { profile.marker.remove(); profile.marker = null } renderMobileCourseProfiles() }
   function routeSamples() { if (state.points.length < 2) return []; const samples = [{ ...state.points[0], distance: 0 }], totalBySegment = []; let total = 0; for (let i = 1; i < state.points.length; i++) { const a = state.points[i - 1], b = state.points[i], length = horizontalMeters(a, b), steps = Math.max(1, Math.round(length / PROFILE_SAMPLE_METERS)); totalBySegment.push({ a, b, length, start: total, steps }); total += length } for (const segment of totalBySegment) { for (let step = 1; step <= segment.steps; step++) { const t = step / segment.steps; samples.push({ lng: segment.a.lng + (segment.b.lng - segment.a.lng) * t, lat: segment.a.lat + (segment.b.lat - segment.a.lat) * t, distance: segment.start + segment.length * t }) } } return samples }
   function scheduleProfile(delay = 180) { const generation = ++profile.generation; clearTimeout(profile.timer); if (state.points.length < 2) { resetProfile(t('profileEmptyMsg')); return } resetProfile(t('profileWaitingDem')); profile.pending = true; profile.timer = setTimeout(() => calculateProfile(generation), delay) }
@@ -2144,7 +3082,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       el.innerHTML = '<p class="empty" data-i18n="emptySaved">' + t('emptySaved') + '</p>';
       return;
     }
-    el.innerHTML = state.saved.map((r, i) => '<button class="saved-item" data-i="' + i + '"><span>' + escapeHtml(r.name) + '</span><small>' + r.km.toFixed(1) + ' km</small></button>').join('');
+    el.innerHTML = state.saved.map((r, i) => '<button class="saved-item" data-i="' + i + '"><span>' + escapeHtml(r.name) + '</span><small>' + r.km.toFixed(1) + ' km' + (r.syncStatus === 'pending' ? ' · 동기화 대기' : '') + '</small></button>').join('');
     renderMobileSavedRoutes();
     el.querySelectorAll('.saved-item').forEach(b => b.addEventListener('click', () => {
       const item = state.saved[+b.dataset.i];
@@ -2215,7 +3153,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const previousIndex = state.saved.indexOf(mobileEditingSavedRoute);
       if (previousIndex >= 0) state.saved.splice(previousIndex, 1, savedRoute);
       else state.saved.unshift(savedRoute);
-      localStorage.setItem('powderline.routes', JSON.stringify(state.saved));
+      localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(route => !route.recordingOwnerId)));
       toast(t('toastSavedLocal'));
     }
     mobileEditingSavedRoute = null;
@@ -2229,6 +3167,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   async function deleteActiveCourse() {
     const cur = getActiveCourse();
     if (!cur) return;
+    if (mobileEditingSavedRoute?.syncStatus === 'pending') {
+      toast('서버 동기화가 완료되기 전에는 기록 코스를 삭제할 수 없습니다.');
+      return;
+    }
     const confirmMsg = state.lang === 'ko' ? '이 코스를 삭제하시겠습니까?' : 'Are you sure you want to delete this course?';
     if (!window.confirm(confirmMsg)) return;
 
@@ -2251,7 +3193,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     } else {
       state.saved = state.saved.filter(r => r.name !== cur.name);
     }
-    localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(r => r.source !== 'cloud')));
+    localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(r => r.source !== 'cloud' && !r.recordingOwnerId)));
     renderSaved();
     renderMobileSavedRoutes();
 
@@ -2405,6 +3347,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       return;
     }
     state.session = data?.session || null;
+    await loadUserProfile();
+    if (!state.profile) {
+      activateOfflineAccess(supabaseClient, new Error('Online profile verification failed.'));
+      return;
+    }
+    onlineAuthVerified = Boolean(state.profile);
+    if (state.profile?.status === 'approved') saveOfflineAccessGrant(state.session, state.profile);
+    else clearOfflineAccessGrant(state.session?.user?.id);
     $('#authPassword').value = '';
     updateAuthUi();
     toast(t('toastLoginSuccess'));
@@ -2572,6 +3522,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (data?.session) {
         const { error: signOutError } = await supabaseClient.auth.signOut();
         if (signOutError) throw signOutError;
+        clearOfflineAccessGrant(data.session.user?.id);
         state.session = null;
         state.profile = null;
         updateAuthUi();
@@ -2593,9 +3544,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   });
   $('#logoutBtn')?.addEventListener('click', async e => {
-    if (!supabaseClient) return;
     e.currentTarget.disabled = true;
-    const { error } = await supabaseClient.auth.signOut();
+    clearOfflineAccessGrant();
+    const { error } = supabaseClient ? await supabaseClient.auth.signOut() : { error: null };
     e.currentTarget.disabled = false;
     if (error) {
       updateAuthUi(error.message);
@@ -2945,7 +3896,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const isMobile = window.matchMedia('(max-width: 768px)').matches;
     const signedIn = Boolean(state.session?.user);
     const profile = state.profile;
-    const isApproved = profile?.status === 'approved';
+    const isApproved = (onlineAuthVerified && profile?.status === 'approved') || offlineAccessActive;
     const container = $('#mobileAuthContainer');
     const checkingView = $('#mobileAuthCheckingView');
     const loginView = $('#mobileLoginView');
@@ -2957,10 +3908,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       return;
     }
 
-    if (!authInitializationComplete) {
+    if (!introPlaybackComplete || !authInitializationComplete) {
       document.body.dataset.mobileAuth = 'checking';
       if (container) container.hidden = false;
       if (checkingView) checkingView.hidden = false;
+      checkingView?.classList.toggle('intro-finished', introPlaybackComplete);
       if (loginView) loginView.hidden = true;
       if (signupView) signupView.hidden = true;
       return;
@@ -3004,6 +3956,19 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function initMobileAuthInteractions() {
+    const introVideo = $('#mobileIntroVideo');
+    const finishIntro = () => {
+      if (introPlaybackComplete) return;
+      introPlaybackComplete = true;
+      introVideo?.pause();
+      syncMobileAuthState();
+    };
+    $('#mobileIntroSkipBtn')?.addEventListener('click', finishIntro);
+    introVideo?.addEventListener('ended', finishIntro, { once: true });
+    introVideo?.addEventListener('error', finishIntro, { once: true });
+    if (introVideo?.ended || introVideo?.error) finishIntro();
+    else introVideo?.play().catch(finishIntro);
+
     const rememberedEmailKey = 'powderline.mobileLoginEmail';
     const rememberEmail = $('#mobileRememberEmail');
     const loginEmail = $('#mobileLoginEmail');
@@ -3075,8 +4040,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         state.session = data?.session || null;
         // Load user profile to check approval status
         await loadUserProfile();
+        if (!state.profile) {
+          activateOfflineAccess(supabaseClient, new Error('Online profile verification failed.'));
+          return;
+        }
+        onlineAuthVerified = Boolean(state.profile);
 
         if (state.profile?.status !== 'approved') {
+          clearOfflineAccessGrant(state.session?.user?.id);
           const isPending = state.profile?.status === 'pending';
           const msg = isPending ? t('toastPendingNotice') : t('toastRejectedNotice');
           if (feedback) {
@@ -3089,6 +4060,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         }
 
         // Approved!
+        saveOfflineAccessGrant(state.session, state.profile);
         $('#mobileLoginPassword').value = '';
         if ($('#authPassword')) $('#authPassword').value = '';
         syncMobileAuthState();
@@ -3170,6 +4142,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         // If session automatically created by Supabase, sign out so account stays on pending login state
         if (data?.session) {
           await supabaseClient.auth.signOut();
+          clearOfflineAccessGrant(data.session.user?.id);
           state.session = null;
           state.profile = null;
         }
@@ -4272,6 +5245,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         confirmDeleteBtn.innerHTML = '<span class="material-symbols-outlined animate-spin text-[20px]">sync</span> 처리 중...';
 
         try {
+          clearOfflineAccessGrant();
           if (supabaseClient) {
             await supabaseClient.auth.signOut();
           }
@@ -4287,10 +5261,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     // Logout action
     $('#stitchLogoutBtn')?.addEventListener('click', async () => {
-      if (!supabaseClient) return;
       if (!confirm('POWDERLINE 세션을 안전하게 종료하고 로그아웃하시겠습니까?')) return;
       try {
-        await supabaseClient.auth.signOut();
+        clearOfflineAccessGrant();
+        if (supabaseClient) await supabaseClient.auth.signOut();
         state.session = null;
         state.profile = null;
         updateAuthUi();
@@ -4507,7 +5481,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const courses = state.saved.map((route, index) => ({ route, index })).filter(({ route }) => !route.region || route.region === region);
     const select = $('#mobileRoutesCourseSelect');
     if (select) {
-      select.innerHTML = '<option value="">코스 미선택</option>' + courses.map(({ route, index }) => `<option value="${index}">${escapeHtml(route.name)}</option>`).join('');
+      select.innerHTML = '<option value="">코스 미선택</option>' + courses.map(({ route, index }) => `<option value="${index}">${escapeHtml(route.name)}${route.syncStatus === 'pending' ? ' · 동기화 대기' : ''}</option>`).join('');
       select.value = courses.some(({ index }) => String(index) === mobileSelectedSavedIndex) ? mobileSelectedSavedIndex : '';
     }
     syncMobileRoutesActions();
@@ -6039,6 +7013,10 @@ async function startPartyMemberRideOn() {
         toast(state.lang === 'ko' ? '삭제할 코스를 먼저 선택하세요.' : 'Please select a course to delete.');
         return;
       }
+      if (item.syncStatus === 'pending') {
+        toast('서버 동기화가 완료되기 전에는 기록 코스를 삭제할 수 없습니다.');
+        return;
+      }
       const confirmMsg = state.lang === 'ko' ? `"${item.name}" 코스를 삭제하시겠습니까?` : `Delete course "${item.name}"?`;
       if (!window.confirm(confirmMsg)) return;
 
@@ -6055,7 +7033,7 @@ async function startPartyMemberRideOn() {
       }
 
       state.saved.splice(idx, 1);
-      localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(r => r.source !== 'cloud')));
+      localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(r => r.source !== 'cloud' && !r.recordingOwnerId)));
 
       state.points = [];
       state.selectedVertex = null;
@@ -6209,10 +7187,148 @@ async function startPartyMemberRideOn() {
     $('#splitCancelBtn')?.addEventListener('click', cancelSplit);
   }
 
+  let androidBackButtonRegistered = false;
+  let exitConfirmationOpen = false;
+
+  function clickVisibleControl(containerId, controlId) {
+    const container = $(containerId);
+    if (!container || container.hidden) return false;
+    $(controlId)?.click();
+    return true;
+  }
+
+  async function handleAndroidBackButton(appPlugin) {
+    if (!introPlaybackComplete) {
+      $('#mobileIntroSkipBtn')?.click();
+      return;
+    }
+
+    if (!$('#gpsRecordingFinishModal')?.hidden) {
+      toast('저장 또는 저장 안 함을 선택해 기록 종료를 완료하세요.');
+      return;
+    }
+
+    const modalCloseControls = [
+      ['#confirmModal', '#modalCancelBtn'],
+      ['#signupModal', '#closeSignupModalBtn'],
+      ['#partyCreateCourseModal', '#partyCreateCourseCloseBtn'],
+      ['#partyJoinedLeaveModal', '#partyJoinedLeaveCloseBtn'],
+      ['#partyLeaderDisbandModal', '#partyLeaderDisbandCloseBtn']
+    ];
+    for (const [modalId, closeId] of modalCloseControls) {
+      if (clickVisibleControl(modalId, closeId)) return;
+    }
+
+    if (clickVisibleControl('#stitchAdminCoursePreview', '#stitchAdminCoursePreviewCloseBtn')) return;
+    if (clickVisibleControl('#adminRegionMapPicker', '#adminRegionPickerCancelBtn')) return;
+    if (!$('#courseSplitHUD')?.hidden) {
+      $('#splitCancelBtn')?.click();
+      return;
+    }
+
+    if (document.body.dataset.mobileAuth === 'signup') {
+      $('#mobileSignupBackBtn')?.click();
+      return;
+    }
+
+    const mobileView = document.body.dataset.mobileView || 'home';
+    if (mobileView === 'account') {
+      const accountBackControls = [
+        ['#mobileAdminCoursesView', '#stitchAdminCoursesBackBtn'],
+        ['#mobileAdminRegionsView', '#stitchAdminRegionsBackBtn'],
+        ['#mobileAdminUsersView', '#stitchAdminUsersBackBtn'],
+        ['#mobileAdminManageView', '#stitchAdminManageHeaderBackBtn'],
+        ['#mobileDeleteAccountView', '#stitchDeleteAccountBackBtn'],
+        ['#mobileAccountMainView', '#stitchAccountBackBtn']
+      ];
+      for (const [viewId, backId] of accountBackControls) {
+        if (clickVisibleControl(viewId, backId)) return;
+      }
+    }
+
+    const partyBackControls = {
+      'party-create': '#partyCreateBackBtn',
+      'party-leader': '#partyLeaderBackBtn',
+      'party-invite': '#partyInviteBackBtn',
+      'party-joined': '#partyJoinedBackBtn',
+      'party-received': '#partyReceivedBackBtn'
+    };
+    if (partyBackControls[mobileView]) {
+      $(partyBackControls[mobileView])?.click();
+      return;
+    }
+    if (mobileView === 'party') {
+      setMobileAppView('map');
+      return;
+    }
+
+    if (mobileView === 'course-editor') {
+      requestCloseCourseEditor();
+      return;
+    }
+    if (mobileView === 'ride') {
+      $('#rideExitBtn')?.click();
+      return;
+    }
+    if (mobileView === 'routes') {
+      setMobileAppView('map');
+      return;
+    }
+    if (!['home', 'map'].includes(mobileView)) {
+      setMobileAppView('home');
+      return;
+    }
+
+    if (exitConfirmationOpen) return;
+    exitConfirmationOpen = true;
+    try {
+      if (window.confirm('POWDERLINE 앱을 종료하시겠습니까?')) await appPlugin.exitApp();
+    } finally {
+      exitConfirmationOpen = false;
+    }
+  }
+
+  function initAndroidBackButton() {
+    const capacitor = window.Capacitor;
+    const appPlugin = capacitor?.Plugins?.App;
+    if (androidBackButtonRegistered || capacitor?.getPlatform?.() !== 'android' || !appPlugin?.addListener) return;
+    androidBackButtonRegistered = true;
+    try {
+      const listenerRegistration = appPlugin.addListener('backButton', () => {
+        void handleAndroidBackButton(appPlugin);
+      });
+      if (listenerRegistration && typeof listenerRegistration.then === 'function') {
+        listenerRegistration.catch(error => {
+          androidBackButtonRegistered = false;
+          console.warn('Android back button listener registration failed:', error);
+        });
+      }
+    } catch (error) {
+      androidBackButtonRegistered = false;
+      console.warn('Android back button listener registration failed:', error);
+    }
+  }
+
+  function initAuthConnectivityRevalidation() {
+    if (authConnectivityListenersRegistered) return;
+    authConnectivityListenersRegistered = true;
+    window.addEventListener('online', () => {
+      if (offlineAccessActive) revalidateOfflineAccess();
+      else void syncPendingGpsRoutes();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && offlineAccessActive && navigator.onLine !== false) revalidateOfflineAccess();
+      else if (!document.hidden && navigator.onLine !== false) void syncPendingGpsRoutes();
+    });
+  }
+
   initSplitHUDInteractions();
   initStitchAccountInteractions();
   initMobileHomeInteractions();
   initMobileStandaloneInteractions();
+  initGpsRecordingInteractions();
+  initAndroidBackButton();
+  initAuthConnectivityRevalidation();
 
-  initializeSupabase();
+  initializeSupabase().finally(() => { void restoreGpsRecording(); });
 })();
