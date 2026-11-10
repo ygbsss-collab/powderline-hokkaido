@@ -355,6 +355,13 @@
   let mobileEditingSavedRoute = null;
   let mobileRoutePointsHidden = false;
   let mobileSelectedSavedIndex = '';
+  let mobileHomeMapMode = 'online';
+  let offlineMapTestPlugin = null;
+  let offlineRegionStatusRequest = 0;
+  let offlineRegionOpenInProgress = false;
+  let mobileHomeCatalogRefreshPromise = null;
+  const offlineRegionStatuses = new Map();
+  const offlineRegionDownloads = new Set();
   const mobileCustomCourseRegions = (() => { try { const saved = JSON.parse(localStorage.getItem('powderline.courseRegions') || '[]'); return Array.isArray(saved) ? saved.filter(item => item && /^course-region-\d+$/.test(item.id) && typeof item.label === 'string' && Array.isArray(item.center) && item.center.length === 2 && item.center.every(Number.isFinite)) : [] } catch { return [] } })();
   const $ = s => document.querySelector(s);
   function t(key, ...args) {
@@ -1299,6 +1306,18 @@ function syncRegionSelectors() {
   renderMobileHome();
 }
 
+function parseRegionBbox(value) {
+  let bbox = value;
+  if (typeof bbox === 'string') {
+    try { bbox = JSON.parse(bbox); } catch { return null; }
+  }
+  if (!Array.isArray(bbox) || bbox.length !== 4) return null;
+  const numbers = bbox.map(Number);
+  return numbers.every(Number.isFinite) && numbers[0] < numbers[2] && numbers[1] < numbers[3]
+    ? numbers
+    : null;
+}
+
 async function loadRegionCatalog(client) {
   try {
     const { data, error } = await client.from('powderline_regions')
@@ -1314,13 +1333,15 @@ async function loadRegionCatalog(client) {
       regions[row.id] = {
         label: row.label, center: [row.center_lng, row.center_lat],
         zoom: row.zoom, bearing: row.bearing, pitch: row.pitch,
-        sortOrder: row.sort_order, isActive: row.is_active
+        sortOrder: row.sort_order, isActive: row.is_active,
+        bbox: parseRegionBbox(row.bbox)
       };
       catalogRegionIds.add(row.id);
     }
     if (state.profile?.id === state.session?.user?.id &&
         state.profile?.role === 'admin' && state.profile?.status === 'approved') adminRegionRows = data;
     syncRegionSelectors();
+    if (mobileHomeMapMode === 'offline') void refreshOfflineRegionStatuses();
     return { data };
   } catch (error) {
     console.warn('Region catalog unavailable; keeping existing regions:', error);
@@ -3031,48 +3052,92 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     ].join('\n');
   }
 
-  $('#exportBtn').addEventListener('click', () => {
+  let gpxFileSaverPlugin = null;
+  function getGpxFileSaverPlugin() {
+    const capacitor = window.Capacitor;
+    if (capacitor?.getPlatform?.() !== 'android') return null;
+    gpxFileSaverPlugin ||= capacitor.registerPlugin
+      ? capacitor.registerPlugin('GpxFileSaver')
+      : capacitor.Plugins?.GpxFileSaver || null;
+    return gpxFileSaverPlugin;
+  }
+
+  // Android: 시스템 저장창(SAF)으로 저장. 결과 { saved, cancelled } — 실패 시 throw.
+  async function saveGpxWithNativeSaver(xml, fileName) {
+    const plugin = getGpxFileSaverPlugin();
+    if (!plugin?.saveGpx) throw new Error('GPX 저장 기능을 사용할 수 없습니다.');
+    return plugin.saveGpx({ content: xml, fileName });
+  }
+
+  $('#exportBtn').addEventListener('click', async () => {
     if (state.points.length < 2) return toast(t('toastNeedRouteFirst'));
     const xml = gpxString();
     if (!xml) return toast(t('toastNeedRouteFirst'));
+    const cur = getActiveCourse();
+    const fname = (cur?.name || 'powderline-route').trim().replace(/[/\\?%*:|"<>]/g, '-') || 'powderline-route';
+    const gpxSaver = getGpxFileSaverPlugin();
+    if (gpxSaver) {
+      try {
+        const result = await saveGpxWithNativeSaver(xml, fname + '.gpx');
+        if (result?.saved === true) toast(t('toastExportedGpx'));
+      } catch (error) {
+        toast(error?.message || 'GPX 파일을 저장하지 못했습니다.');
+      }
+      return;
+    }
     const a = document.createElement('a');
     const url = URL.createObjectURL(new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' }));
     a.href = url;
-    const cur = getActiveCourse();
-    const fname = (cur?.name || 'powderline-route').trim().replace(/[/\\?%*:|"<>]/g, '-') || 'powderline-route';
     a.download = fname + '.gpx';
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast(t('toastExportedGpx'));
   });
 
+  const gpxInputEl = $('#gpxInput');
+  if (gpxInputEl && (window.Capacitor?.getPlatform?.() === 'android' || /Android/i.test(navigator.userAgent))) {
+    gpxInputEl.accept = '.gpx,application/gpx+xml,application/octet-stream,application/xml,text/xml,*/*';
+  }
+
   $('#gpxInput').addEventListener('change', async e => {
-    const f = e.target.files[0];
+    const f = e.target.files?.[0];
     if (!f) return;
-    const xml = new DOMParser().parseFromString(await f.text(), 'application/xml');
-    const pts = [...xml.querySelectorAll('trkpt,rtept')].map(n => ({ lat: +n.getAttribute('lat'), lng: +n.getAttribute('lon') }));
-    if (!pts.length) return;
-    pushHistory();
-    state.points = pts;
-    state.selectedVertex = null;
-    const name = xml.querySelector('trk>name,name')?.textContent?.trim() || f.name.replace(/\.gpx$/i, '');
-    const cur = getActiveCourse();
-    if (cur) {
-      cur.name = name;
-      cur.points = [...pts];
-      cur.isDirty = true;
-      $('#courseName').value = name;
-      const mobileName = $('#mobileEditorCourseName');
-      if (mobileName) mobileName.value = name;
+    if (f.name && !/\.gpx$/i.test(f.name)) {
+      toast('GPX 파일(.gpx)을 선택해 주세요.');
+      e.target.value = '';
+      return;
     }
-    renderCourseWorkList();
-    render();
-    if (document.body.dataset.mobileView === 'routes') openCourseEditor();
-    if (state.points.length) {
-      const bounds = state.points.reduce((b, p) => b.extend([p.lng, p.lat]), new mapboxgl.LngLatBounds([state.points[0].lng, state.points[0].lat], [state.points[0].lng, state.points[0].lat]));
-      map.fitBounds(bounds, { padding: 90, duration: 900, maxZoom: 13 });
+    try {
+      const xml = new DOMParser().parseFromString(await f.text(), 'application/xml');
+      const pts = [...xml.querySelectorAll('trkpt,rtept')].map(n => ({ lat: +n.getAttribute('lat'), lng: +n.getAttribute('lon') }));
+      if (!pts.length) {
+        toast('유효한 GPX 트랙 좌표가 없습니다.');
+        return;
+      }
+      pushHistory();
+      state.points = pts;
+      state.selectedVertex = null;
+      const name = xml.querySelector('trk>name,name')?.textContent?.trim() || f.name.replace(/\.gpx$/i, '');
+      const cur = getActiveCourse();
+      if (cur) {
+        cur.name = name;
+        cur.points = [...pts];
+        cur.isDirty = true;
+        $('#courseName').value = name;
+        const mobileName = $('#mobileEditorCourseName');
+        if (mobileName) mobileName.value = name;
+      }
+      renderCourseWorkList();
+      render();
+      if (document.body.dataset.mobileView === 'routes') openCourseEditor();
+      if (state.points.length) {
+        const bounds = state.points.reduce((b, p) => b.extend([p.lng, p.lat]), new mapboxgl.LngLatBounds([state.points[0].lng, state.points[0].lat], [state.points[0].lng, state.points[0].lat]));
+        map.fitBounds(bounds, { padding: 90, duration: 900, maxZoom: 13 });
+      }
+      toast(t('toastImportedGpx', state.points.length));
+    } finally {
+      e.target.value = '';
     }
-    toast(t('toastImportedGpx', state.points.length));
   });
 
   function renderSaved() {
@@ -3672,7 +3737,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         mobileHud.classList.toggle('mobile-hud-ride-hidden', nextView === 'ride');
       }
       if (homeScreen) homeScreen.hidden = nextView !== 'home';
-      if (nextView === 'home' && typeof renderMobileHome === 'function') renderMobileHome();
+      if (nextView === 'home' && typeof renderMobileHome === 'function') {
+        renderMobileHome();
+        void refreshMobileHomeCatalog();
+      }
       if (nextView === 'map') renderMobileMapCourses();
       if (routesScreen) routesScreen.hidden = nextView !== 'routes';
       if (partyScreen) partyScreen.hidden = nextView !== 'party';
@@ -4339,12 +4407,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       } else {
         const xml = gpxString({ name: data.name, points: data.points });
         if (!xml) throw new Error('GPX로 내보낼 코스 좌표가 부족합니다.');
-        const url = URL.createObjectURL(new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' }));
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = ((data.name || 'powderline-route').trim().replace(/[/\\?%*:|"<>]/g, '-') || 'powderline-route') + '.gpx';
-        anchor.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        const adminGpxName = ((data.name || 'powderline-route').trim().replace(/[/\\?%*:|"<>]/g, '-') || 'powderline-route') + '.gpx';
+        if (getGpxFileSaverPlugin()) {
+          const result = await saveGpxWithNativeSaver(xml, adminGpxName);
+          if (result?.saved === true) toast(t('toastExportedGpx'));
+        } else {
+          const url = URL.createObjectURL(new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' }));
+          const anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = adminGpxName;
+          anchor.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
       }
       adminRouteLoadError = '';
       renderAdminRoutes();
@@ -4430,8 +4504,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     for (const name of ['label', 'center_lng', 'center_lat', 'zoom', 'bearing', 'pitch']) {
       if (row) form.elements.namedItem(name).value = row[name];
     }
+    const rowBbox = parseRegionBbox(row?.bbox);
     for (const [index, name] of ['west', 'south', 'east', 'north'].entries()) {
-      form.elements.namedItem(name).value = row?.bbox?.[index] ?? '';
+      form.elements.namedItem(name).value = rowBbox?.[index] ?? '';
     }
     $('#stitchAdminRegionFormTitle').textContent = row ? `지역 수정 · ${row.label}` : '지역 추가';
     $('#stitchAdminRegionFormError').textContent = '';
@@ -4477,7 +4552,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     };
     $('#adminRegionMapPicker').hidden = false;
     document.body.classList.add('admin-region-picking');
-    $('#adminRegionPickerStatus').textContent = '지도를 이동한 뒤 중심을 지정하거나 범위의 두 모서리를 터치하세요.';
+    $('#adminRegionPickerStatus').textContent = '지도를 이동한 뒤 중심을 지정하거나 범위의 두 모서리를 클릭·터치하세요.';
     $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', 'false');
     setMobileAppView('map');
     const lng = Number(snapshot.center_lng), lat = Number(snapshot.center_lat);
@@ -4504,6 +4579,25 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     drawAdminRegionBbox();
     setMobileAppView('account');
     setStitchAccountSubView('adminRegions');
+    if (apply) toast('지정한 위치·범위가 폼에 반영되었습니다. 저장 버튼을 눌러 완료하세요.');
+  }
+
+  function openDesktopAdminRegions() {
+    if (!window.matchMedia('(min-width: 769px)').matches || !hasAdminRegionAccess()) return;
+    const accountScreen = $('#mobileAccountScreen');
+    if (!accountScreen) return;
+    document.body.classList.add('desktop-admin-regions-open');
+    accountScreen.hidden = false;
+    setStitchAccountSubView('adminRegions');
+    syncStitchAccountUI();
+  }
+
+  function closeDesktopAdminRegions() {
+    if (!document.body.classList.contains('desktop-admin-regions-open')) return;
+    if (adminRegionPicker) exitAdminRegionPicker(false);
+    document.body.classList.remove('desktop-admin-regions-open');
+    const accountScreen = $('#mobileAccountScreen');
+    if (accountScreen) accountScreen.hidden = true;
   }
 
   function pickAdminRegionCenter() {
@@ -4527,7 +4621,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const corner = [lng, event.lngLat.lat];
     if (!picker.firstCorner) {
       picker.firstCorner = corner;
-      $('#adminRegionPickerStatus').textContent = '첫 번째 모서리를 지정했습니다. 두 번째 모서리를 터치하세요.';
+      $('#adminRegionPickerStatus').textContent = '첫 번째 모서리를 지정했습니다. 두 번째 모서리를 클릭·터치하세요.';
       return;
     }
     const first = picker.firstCorner;
@@ -4685,6 +4779,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const adminRegionsMenu = $('#stitchOpenAdminRegionsBtn');
     if (adminRegionsMenu) adminRegionsMenu.hidden = !isAdmin || adminRegionsForbiddenForUser === user?.id;
     if (!isAdmin && adminRegionPicker) exitAdminRegionPicker(false);
+    if (!isAdmin) closeDesktopAdminRegions();
     if (!isAdmin) adminRegionRows = [];
     if (!isAdmin && adminRoutes.length) resetAdminRoutes();
     if (!isAdmin && (!$('#mobileAdminCoursesView')?.hidden || !$('#mobileAdminRegionsView')?.hidden)) setStitchAccountSubView('main');
@@ -4965,7 +5060,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     $('#stitchOpenAdminRegionsBtn')?.addEventListener('click', () => {
       if (hasAdminRegionAccess()) setStitchAccountSubView('adminRegions');
     });
-    $('#stitchAdminRegionsBackBtn')?.addEventListener('click', () => setStitchAccountSubView('adminManage'));
+    $('#desktopOpenAdminRegionsBtn')?.addEventListener('click', openDesktopAdminRegions);
+    $('#stitchAdminRegionsBackBtn')?.addEventListener('click', () => {
+      if (document.body.classList.contains('desktop-admin-regions-open')) closeDesktopAdminRegions();
+      else setStitchAccountSubView('adminManage');
+    });
     $('#stitchAdminRegionCancelBtn')?.addEventListener('click', () => resetAdminRegionForm());
     $('#stitchAdminRegionForm')?.addEventListener('submit', saveAdminRegion);
     $('#stitchAdminRegionMapPickBtn')?.addEventListener('click', enterAdminRegionPicker);
@@ -4976,7 +5075,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       adminRegionPicker.firstCorner = null;
       $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', String(adminRegionPicker.pickingBbox));
       $('#adminRegionPickerStatus').textContent = adminRegionPicker.pickingBbox
-        ? '지도의 첫 번째 모서리를 터치하세요. 지도를 끌어 이동할 수도 있습니다.'
+        ? '지도의 첫 번째 모서리를 클릭·터치하세요. 지도를 끌어 이동할 수도 있습니다.'
         : '범위 선택을 멈췄습니다.';
     });
     $('#adminRegionClearBboxBtn')?.addEventListener('click', () => {
@@ -5005,6 +5104,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       exitAdminRegionPicker(true);
     });
     $('#adminRegionPickerCancelBtn')?.addEventListener('click', () => exitAdminRegionPicker(false));
+    window.matchMedia('(min-width: 769px)').addEventListener('change', event => {
+      if (!event.matches) closeDesktopAdminRegions();
+    });
     $('#stitchAdminRegionsList')?.addEventListener('click', event => {
       const button = event.target.closest('button[data-admin-region-action]');
       if (!button) return;
@@ -5277,6 +5379,228 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     });
   }
 
+  function updateMobileHomeMapModeUi() {
+    const rideOnButton = $('#homeRideOnBtn');
+    const hint = $('#homeMapModeHint');
+    const offlinePanel = $('#homeOfflineRegionsPanel');
+    const selectedRegionId = $('#homeRegionSelect')?.value || '';
+    const selectedRegion = regions[selectedRegionId];
+    const selectedPayload = selectedRegion ? createOfflineRegionPayload(selectedRegionId, selectedRegion).payload : null;
+    const selectedOfflineStatus = offlineRegionStatuses.get(selectedRegionId);
+    const onlineReady = mobileHomeMapMode === 'online';
+    const offlineReady = mobileHomeMapMode === 'offline' && Boolean(selectedPayload) &&
+      selectedOfflineStatus?.complete === true && !offlineRegionOpenInProgress;
+    const rideOnDisabled = !(onlineReady || offlineReady);
+    document.querySelectorAll('[data-home-map-mode]').forEach(button => {
+      button.setAttribute('aria-checked', String(button.dataset.homeMapMode === mobileHomeMapMode));
+    });
+    if (rideOnButton) {
+      rideOnButton.disabled = rideOnDisabled;
+      rideOnButton.toggleAttribute('disabled', rideOnDisabled);
+      rideOnButton.setAttribute('aria-disabled', String(rideOnDisabled));
+    }
+    if (offlinePanel) offlinePanel.hidden = mobileHomeMapMode !== 'offline';
+    if (hint) {
+      hint.classList.toggle('offline', mobileHomeMapMode === 'offline');
+      hint.textContent = mobileHomeMapMode === 'online'
+        ? '온라인 3D 지도로 진입할 수 있습니다.'
+        : mobileHomeMapMode === 'offline'
+          ? offlineRegionOpenInProgress
+            ? '오프라인 3D 지도를 여는 중입니다…'
+            : selectedOfflineStatus?.complete === true
+              ? '다운로드 완료 지역입니다. RIDE ON으로 진입할 수 있습니다.'
+              : selectedOfflineStatus?.loading
+                ? '선택 지역의 저장 상태를 확인하는 중입니다…'
+                : '선택 지역을 먼저 다운로드해 주세요.'
+          : '지도 모드를 선택하세요.';
+    }
+    if (mobileHomeMapMode === 'offline') renderOfflineRegionList();
+  }
+
+  function setMobileHomeMapMode(mode) {
+    mobileHomeMapMode = mode === 'online' || mode === 'offline' ? mode : '';
+    updateMobileHomeMapModeUi();
+    if (mobileHomeMapMode === 'offline') void refreshOfflineRegionStatuses();
+  }
+
+  async function refreshMobileHomeCatalog() {
+    if (!supabaseClient) {
+      renderMobileHome();
+      return;
+    }
+    if (mobileHomeCatalogRefreshPromise) return mobileHomeCatalogRefreshPromise;
+    const client = supabaseClient;
+    mobileHomeCatalogRefreshPromise = withTimeout(
+      loadRegionCatalog(client), INITIAL_AUTH_TIMEOUT_MS, 'Region sync timed out.'
+    ).catch(error => {
+      console.warn('Mobile home region refresh failed:', error);
+      return { error };
+    }).finally(() => {
+      mobileHomeCatalogRefreshPromise = null;
+    });
+    const result = await mobileHomeCatalogRefreshPromise;
+    if (client === supabaseClient) {
+      renderMobileHome();
+    }
+    return result;
+  }
+
+  function getOfflineMapTestPlugin() {
+    const capacitor = window.Capacitor;
+    if (capacitor?.getPlatform?.() !== 'android') return null;
+    offlineMapTestPlugin ||= capacitor.registerPlugin
+      ? capacitor.registerPlugin('OfflineMapTest')
+      : capacitor.Plugins?.OfflineMapTest || null;
+    return offlineMapTestPlugin;
+  }
+
+  function getOfflineCatalogRegions() {
+    return Object.entries(regions)
+      .filter(([id, details]) => catalogRegionIds.has(id) && !details.custom && details.isActive !== false)
+      .sort((a, b) => (a[1].sortOrder ?? 999) - (b[1].sortOrder ?? 999));
+  }
+
+  function createOfflineRegionPayload(id, details) {
+    const center = Array.isArray(details.center) ? details.center.map(Number) : null;
+    const bounds = parseRegionBbox(details.bbox);
+    const centerValid = center?.length === 2 && center.every(Number.isFinite);
+    const boundsValid = bounds?.length === 4 && bounds.every(Number.isFinite) &&
+      bounds[0] < bounds[2] && bounds[1] < bounds[3];
+    return {
+      payload: centerValid && boundsValid
+        ? { regionId: id, regionName: details.label, center, bounds }
+        : null,
+      unavailableReason: !centerValid ? '중심 좌표가 없습니다.' : !boundsValid ? '경계 좌표가 없습니다.' : ''
+    };
+  }
+
+  function renderOfflineRegionList() {
+    const list = $('#homeOfflineRegionList');
+    if (!list) return;
+    const entries = getOfflineCatalogRegions();
+    if (!entries.length) {
+      list.innerHTML = '<p class="home-offline-region-empty">지역 목록을 불러오는 중입니다…</p>';
+      return;
+    }
+    const androidAvailable = Boolean(getOfflineMapTestPlugin());
+    list.innerHTML = entries.map(([id, details]) => {
+      const { payload, unavailableReason } = createOfflineRegionPayload(id, details);
+      const status = offlineRegionStatuses.get(id);
+      const downloading = offlineRegionDownloads.has(id);
+      let stateClass = 'available';
+      let stateLabel = androidAvailable ? '다운로드 가능' : 'Android 앱에서 다운로드 가능';
+      let buttonLabel = '다운로드';
+      let disabled = !androidAvailable;
+      if (!payload) {
+        stateClass = 'unavailable';
+        stateLabel = `다운로드 불가 · ${unavailableReason}`;
+        disabled = true;
+      } else if (downloading) {
+        stateClass = 'loading';
+        stateLabel = '다운로드 중…';
+        buttonLabel = '처리 중…';
+        disabled = true;
+      } else if (status?.loading) {
+        stateClass = 'loading';
+        stateLabel = '저장 상태 확인 중…';
+        disabled = true;
+      } else if (status?.complete) {
+        stateClass = 'complete';
+        stateLabel = '다운로드 완료';
+        buttonLabel = '완료';
+        disabled = true;
+      } else if (status?.downloaded) {
+        stateClass = 'incomplete';
+        stateLabel = '다운로드 미완료';
+        buttonLabel = '다시 다운로드';
+      } else if (status?.error) {
+        stateClass = 'incomplete';
+        stateLabel = '상태 확인 실패 · 다운로드 가능';
+      }
+      return `<article class="home-offline-region-item" data-offline-region-id="${escapeHtml(id)}">` +
+        `<div><strong>${escapeHtml(details.label)}</strong><small>${escapeHtml(id)}</small>` +
+        `<span class="home-offline-region-state ${stateClass}">${escapeHtml(stateLabel)}</span></div>` +
+        `<button type="button" data-offline-region-download="${escapeHtml(id)}"${disabled ? ' disabled' : ''}>${escapeHtml(buttonLabel)}</button>` +
+        '</article>';
+    }).join('');
+  }
+
+  async function refreshOfflineRegionStatuses() {
+    const plugin = getOfflineMapTestPlugin();
+    const entries = getOfflineCatalogRegions();
+    if (!plugin?.getOfflineStatus || !entries.length) {
+      updateMobileHomeMapModeUi();
+      return;
+    }
+    const requestId = ++offlineRegionStatusRequest;
+    for (const [id] of entries) offlineRegionStatuses.set(id, { loading: true });
+    updateMobileHomeMapModeUi();
+    await Promise.all(entries.map(async ([id]) => {
+      try {
+        const status = await plugin.getOfflineStatus({ regionId: id });
+        if (requestId === offlineRegionStatusRequest) offlineRegionStatuses.set(id, status || {});
+      } catch (error) {
+        if (requestId === offlineRegionStatusRequest) offlineRegionStatuses.set(id, { error: error?.message || '상태 조회 실패' });
+      }
+    }));
+    if (requestId === offlineRegionStatusRequest) updateMobileHomeMapModeUi();
+  }
+
+  async function downloadOfflineRegion(id) {
+    if (offlineRegionDownloads.has(id)) return;
+    const details = regions[id];
+    const plugin = getOfflineMapTestPlugin();
+    const { payload, unavailableReason } = createOfflineRegionPayload(id, details || {});
+    if (!payload || !plugin?.downloadRegion) {
+      toast(unavailableReason || 'Android 앱에서만 다운로드할 수 있습니다.');
+      return;
+    }
+    offlineRegionDownloads.add(id);
+    renderOfflineRegionList();
+    try {
+      await plugin.downloadRegion(payload);
+      const verifiedStatus = await plugin.getOfflineStatus({ regionId: id });
+      offlineRegionStatuses.set(id, verifiedStatus || {});
+      if (verifiedStatus?.complete === true) toast(`${details.label} 오프라인 지도 다운로드를 완료했습니다.`);
+      else toast(`${details.label} 다운로드가 아직 완료되지 않았습니다.`);
+    } catch (error) {
+      offlineRegionStatuses.set(id, { error: error?.message || '다운로드 실패' });
+      toast(error?.message || '오프라인 지도 다운로드에 실패했습니다.');
+    } finally {
+      offlineRegionDownloads.delete(id);
+      updateMobileHomeMapModeUi();
+    }
+  }
+
+  async function openOfflineHomeRegion() {
+    if (offlineRegionOpenInProgress) return;
+    const regionId = $('#homeRegionSelect')?.value || '';
+    const details = regions[regionId];
+    const plugin = getOfflineMapTestPlugin();
+    const { payload, unavailableReason } = createOfflineRegionPayload(regionId, details || {});
+    if (!payload || !plugin?.getOfflineStatus || !plugin?.openRegionScreen) {
+      toast(unavailableReason || 'Android 앱에서만 오프라인 지도를 열 수 있습니다.');
+      return;
+    }
+    offlineRegionOpenInProgress = true;
+    offlineRegionStatuses.set(regionId, { loading: true });
+    updateMobileHomeMapModeUi();
+    try {
+      const status = await plugin.getOfflineStatus({ regionId });
+      offlineRegionStatuses.set(regionId, status || {});
+      if (status?.complete !== true) {
+        toast('선택 지역의 오프라인 다운로드를 먼저 완료해 주세요.');
+        return;
+      }
+      await plugin.openRegionScreen(payload);
+    } catch (error) {
+      toast(error?.message || '오프라인 지도를 열지 못했습니다.');
+    } finally {
+      offlineRegionOpenInProgress = false;
+      updateMobileHomeMapModeUi();
+    }
+  }
+
   function renderMobileHome() {
     const regionSel = $('#homeRegionSelect');
     const courseSel = $('#homeCourseSelect');
@@ -5293,6 +5617,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       courses.map(({ r, i }) => `<option value="${i}">${escapeHtml(r.name)} · ${Number(r.km || 0).toFixed(1)} km</option>`).join('');
     if (prevCourse && courses.some(({ i }) => String(i) === prevCourse)) courseSel.value = prevCourse;
     updateMobileHomeMeta();
+    updateMobileHomeMapModeUi();
   }
 
   function updateMobileHomeMeta() {
@@ -5328,8 +5653,35 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       map.fitBounds(bounds, { padding: 90, duration: 900, maxZoom: 13 });
     }
     toast(t('toastLoadedSaved'));
-    if (typeof setMobileAppView === 'function') {
-      setMobileAppView(destinationView);
+    if (window.matchMedia('(max-width: 768px)').matches) {
+      if (typeof setMobileAppView === 'function') {
+        setMobileAppView(destinationView);
+      }
+    } else {
+      const homeScreen = $('#mobileHomeScreen');
+      if (homeScreen) homeScreen.hidden = true;
+      delete document.body.dataset.mobileView;
+      map.resize();
+    }
+  }
+
+  function syncMobileHomeSelectionHud(idx) {
+    const region = $('#region')?.value;
+    for (const id of ['rideRegionSelect', 'mobileRegionSelect']) {
+      const select = $(`#${id}`);
+      if (select && region && select.value !== region) select.value = region;
+    }
+    if (typeof renderMobileMapCourses === 'function') renderMobileMapCourses({ reset: true });
+    const item = idx !== '' && idx != null ? state.saved[+idx] : null;
+    const mapCourse = $('#mobileMapCourseSelect');
+    if (mapCourse && item && [...mapCourse.options].some(option => option.value === String(idx))) {
+      mapCourse.value = String(idx);
+    }
+    if (!item) {
+      const rideName = $('#rideCourseName');
+      if (rideName) rideName.textContent = '코스를 선택하세요';
+      const mobileCourseNameEl = $('#mobileCourseNameDisplay');
+      if (mobileCourseNameEl) mobileCourseNameEl.textContent = t('brandSubtitle');
     }
   }
 
@@ -5337,6 +5689,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const regionSel = $('#homeRegionSelect');
     const courseSel = $('#homeCourseSelect');
     const srcRegion = $('#region');
+    const homeScreen = $('#mobileHomeScreen');
     if (regionSel && srcRegion && regionSel.value && regionSel.value !== srcRegion.value) {
       srcRegion.value = regionSel.value;
       srcRegion.dispatchEvent(new Event('change'));
@@ -5345,16 +5698,21 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (idx !== undefined && idx !== '') {
       const selectedItem = state.saved[+idx];
       if (selectedItem) {
+        syncMobileHomeSelectionHud(idx);
         applySavedRoute(selectedItem, destinationView);
         return;
       }
     }
-    const active = getActiveCourse();
-    const rideName = $('#rideCourseName');
-    if (rideName) rideName.textContent = active?.name || '코스를 선택하세요';
-    const mobileCourseNameEl = $('#mobileCourseNameDisplay');
-    if (mobileCourseNameEl) mobileCourseNameEl.textContent = active?.name || t('brandSubtitle');
-    setMobileAppView(destinationView);
+    setRegion();
+    syncMobileHomeSelectionHud('');
+    if (window.matchMedia('(max-width: 768px)').matches) {
+      setMobileAppView(destinationView);
+    } else {
+      if (homeScreen) homeScreen.hidden = true;
+      delete document.body.dataset.mobileView;
+      map.resize();
+    }
+    if (homeScreen) homeScreen.hidden = true;
   }
 
   function initMobileHomeInteractions() {
@@ -5362,10 +5720,23 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const courseSel = $('#homeCourseSelect');
       if (courseSel) courseSel.value = '';
       renderMobileHome();
+      if (mobileHomeMapMode === 'offline') void refreshOfflineRegionStatuses();
     });
     $('#homeCourseSelect')?.addEventListener('change', updateMobileHomeMeta);
-    $('#homeRideOnBtn')?.addEventListener('click', () => mobileHomeRideOn('ride'));
-    $('#homeOpenMapBtn')?.addEventListener('click', () => mobileHomeRideOn('map'));
+    document.querySelectorAll('[data-home-map-mode]').forEach(button => {
+      button.addEventListener('click', () => setMobileHomeMapMode(button.dataset.homeMapMode));
+    });
+    $('#homeOfflineRegionList')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-offline-region-download]');
+      if (button && !button.disabled) void downloadOfflineRegion(button.dataset.offlineRegionDownload);
+    });
+    $('#homeRideOnBtn')?.addEventListener('click', () => {
+      if (mobileHomeMapMode === 'offline') void openOfflineHomeRegion();
+      else mobileHomeRideOn('ride');
+    });
+    window.addEventListener('online', () => {
+      if (document.body.dataset.mobileView === 'home') void refreshMobileHomeCatalog();
+    });
     const rideRegion = $('#rideRegionSelect');
     const regularRegion = $('#region');
     if (rideRegion && regularRegion) {
@@ -7319,6 +7690,7 @@ async function startPartyMemberRideOn() {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && offlineAccessActive && navigator.onLine !== false) revalidateOfflineAccess();
       else if (!document.hidden && navigator.onLine !== false) void syncPendingGpsRoutes();
+      if (!document.hidden && navigator.onLine !== false) void refreshMobileHomeCatalog();
     });
   }
 

@@ -71,6 +71,7 @@
               <p class="empty" data-i18n="emptyPending">대기 중인 가입 요청이 없습니다.</p>
             </div>
             <button id="refreshAdminBtn" type="button" class="ghost wide-sm" data-i18n="btnRefresh">새로고침 🔄</button>
+            <button id="desktopOpenAdminRegionsBtn" type="button" class="ghost wide-sm desktop-admin-regions-btn">지역 등록·수정</button>
           </div>
         </section>
         <section class="saved"><div class="section-title"><span data-i18n="labelSavedRoutes">저장된 경로</span><span id="savedCount">0</span></div><div id="savedList" class="saved-list"><p class="empty" data-i18n="emptySaved">저장된 경로가 없습니다.</p></div></section>
@@ -223,11 +224,27 @@
           <div class="home-field"><label for="homeCourseSelect" class="home-field-label">코스 선택</label><div class="home-select-wrap"><select id="homeCourseSelect" class="home-select"></select><span class="material-symbols-outlined home-select-icon">expand_more</span></div></div>
         </section>
         <section class="home-map-card">
-          <svg class="home-map-svg" fill="none" viewBox="0 0 500 450" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="homeMtnGrad" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#1e4063"></stop><stop offset="35%" stop-color="#132b42"></stop><stop offset="70%" stop-color="#0e1f30"></stop><stop offset="100%" stop-color="#07111b"></stop></linearGradient><linearGradient id="homeSnowGrad" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stop-color="#93c5fd" stop-opacity="0.7"></stop><stop offset="40%" stop-color="#38bdf8" stop-opacity="0.35"></stop><stop offset="100%" stop-color="#0c2237" stop-opacity="0.1"></stop></linearGradient></defs><rect width="500" height="450" fill="#071320"></rect><path d="M 0 280 Q 250 230 500 280 M 0 330 Q 250 280 500 330 M 0 380 Q 250 330 500 380" stroke="#38bdf8" stroke-opacity="0.2" stroke-width="1.2" fill="none"></path><polygon points="30,340 150,170 250,280" fill="#112538" opacity="0.7"></polygon><polygon points="0,450 0,230 140,110 270,185 380,50 500,240 500,450" fill="url(#homeMtnGrad)"></polygon><polygon points="140,110 220,175 180,250 95,290 40,245" fill="url(#homeSnowGrad)"></polygon><polygon points="380,50 450,165 410,275 325,260 270,185" fill="url(#homeSnowGrad)"></polygon><polygon points="270,185 340,290 250,360 160,310" fill="#081726"></polygon><path class="home-route-glow" d="M 70 380 C 140 340, 190 280, 270 230 C 325 200, 365 140, 380 90" stroke="#00f2fe" stroke-linecap="round" stroke-linejoin="round" stroke-width="7"></path><path d="M 70 380 C 140 340, 190 280, 270 230 C 325 200, 365 140, 380 90" stroke="#ffffff" stroke-dasharray="4 8" stroke-linecap="round" stroke-width="3"></path><circle class="home-route-glow" cx="380" cy="90" fill="#00f2fe" r="11"></circle><circle cx="380" cy="90" fill="#ffffff" r="5"></circle><path d="M 380 90 L 380 60 L 406 72 L 380 82" fill="#38bdf8" stroke="#ffffff" stroke-width="2"></path><circle cx="245" cy="245" fill="#38bdf8" r="7"></circle><circle cx="245" cy="245" fill="#ffffff" r="3"></circle><circle cx="135" cy="335" fill="#38bdf8" r="7"></circle><circle cx="135" cy="335" fill="#ffffff" r="3"></circle></svg>
+          <img class="home-map-image" src="assets/course-select-topographic-3d.png" alt="" aria-hidden="true" />
           <div class="home-map-top"><div class="home-map-chip home-map-chip-live"><span class="home-live-dot"></span><span>TOPOGRAPHIC 3D</span></div><div class="home-map-chip"><span id="homeCourseMeta">—</span></div></div>
-          <div class="home-map-bottom"><button id="homeOpenMapBtn" type="button" class="home-open-map-btn"><span>3D 지도 열기</span></button></div>
+          <div class="home-map-bottom">
+            <section class="home-map-mode-selector" aria-labelledby="homeMapModeTitle">
+              <div class="home-map-mode-heading"><span id="homeMapModeTitle">지도 모드</span><small>MAP MODE</small></div>
+              <div class="home-map-mode-options" role="radiogroup" aria-labelledby="homeMapModeTitle">
+                <button id="homeOnlineMapModeBtn" type="button" class="home-map-mode-option" role="radio" aria-checked="false" data-home-map-mode="online"><span class="material-symbols-outlined" aria-hidden="true">public</span><span><strong>온라인 3D</strong><small>실시간 지도</small></span></button>
+                <button id="homeOfflineMapModeBtn" type="button" class="home-map-mode-option" role="radio" aria-checked="false" data-home-map-mode="offline"><span class="material-symbols-outlined" aria-hidden="true">download_for_offline</span><span><strong>오프라인 3D</strong><small>다운로드 지도</small></span></button>
+              </div>
+              <p id="homeMapModeHint" class="home-map-mode-hint" aria-live="polite">지도 모드를 선택하세요.</p>
+            </section>
+          </div>
         </section>
-        <section class="home-cta"><button id="homeRideOnBtn" type="button" class="home-ride-on-btn"><span>RIDE ON</span></button></section>
+        <section id="homeOfflineRegionsPanel" class="home-offline-regions-panel" aria-labelledby="homeOfflineRegionsTitle" hidden>
+          <div class="home-offline-regions-heading">
+            <span id="homeOfflineRegionsTitle">오프라인 다운로드 지역</span>
+            <small>OFFLINE MAPS</small>
+          </div>
+          <div id="homeOfflineRegionList" class="home-offline-region-list" aria-live="polite"></div>
+        </section>
+        <section class="home-cta"><button id="homeRideOnBtn" type="button" class="home-ride-on-btn" disabled aria-describedby="homeMapModeHint"><span>RIDE ON</span></button></section>
         <p class="home-credit">POWDERLINE HOKKAIDO BACKCOUNTRY | YK Lab - GYOHYEOK YUN</p>
       </main>
     </div>

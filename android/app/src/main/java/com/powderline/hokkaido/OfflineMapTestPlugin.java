@@ -117,6 +117,10 @@ public class OfflineMapTestPlugin extends Plugin {
     private static final String STYLE_STANDARD_SATELLITE = Style.STANDARD_SATELLITE;
     private static final String DEM_TILESET_URI = "mapbox://mapbox.mapbox-terrain-dem-v1";
     private static final String DONGTAN_TILE_REGION_ID = "dongtan-offline-test-v1";
+    private static final String TILE_REGION_ID_PREFIX = "powderline-offline-v1-";
+    private static final double MAX_REGION_LONGITUDE_SPAN = 0.5;
+    private static final double MAX_REGION_LATITUDE_SPAN = 0.5;
+    private static final double MAX_REGION_BBOX_AREA = 0.05;
 
     // Explicit test BBox for Dongtan [minLng, minLat, maxLng, maxLat]
     private static final double[] EXPLICIT_DONGTAN_BBOX = new double[]{
@@ -147,8 +151,12 @@ public class OfflineMapTestPlugin extends Plugin {
     private TileStore tileStore;
     private Cancelable activeStyleCancelable;
     private Cancelable activeTileCancelable;
+    private volatile long downloadGeneration = 0L;
 
     private boolean mapboxOfflineForced = false;
+    private String activeRegionId = "dongtan";
+    private String activeRegionName = "동탄";
+    private String activeTileRegionId = DONGTAN_TILE_REGION_ID;
     private double[] activeBbox = EXPLICIT_DONGTAN_BBOX.clone();
     private double[] activeCenter = EXPLICIT_DONGTAN_CENTER.clone();
     private String activeBboxSource = "명시적 시험용 BBox (기본값)";
@@ -190,6 +198,73 @@ public class OfflineMapTestPlugin extends Plugin {
         }
     }
 
+    private void activateDongtanRegion() {
+        activeRegionId = "dongtan";
+        activeRegionName = "동탄";
+        activeTileRegionId = DONGTAN_TILE_REGION_ID;
+        activeBbox = EXPLICIT_DONGTAN_BBOX.clone();
+        activeCenter = EXPLICIT_DONGTAN_CENTER.clone();
+        activeBboxSource = "명시적 시험용 BBox (기본값)";
+        loadCachedMetadata();
+    }
+
+    private void configureActiveRegion(PluginCall call) {
+        JSONObject data = call.getData();
+        String regionId = data.optString("regionId", "").trim().toLowerCase(Locale.ROOT);
+        String regionName = data.optString("regionName", "").trim();
+        JSONArray center = data.optJSONArray("center");
+        JSONArray bounds = data.optJSONArray("bounds");
+        if (bounds == null) bounds = data.optJSONArray("bbox");
+
+        if (!regionId.matches("[a-z0-9][a-z0-9._-]{0,63}")) {
+            throw new IllegalArgumentException("regionId는 영문 소문자·숫자·점·밑줄·하이픈으로 입력하세요.");
+        }
+        if (TextUtils.isEmpty(regionName) || regionName.length() > 80) {
+            throw new IllegalArgumentException("regionName은 1~80자로 입력하세요.");
+        }
+        if (center == null || center.length() != 2 || bounds == null || bounds.length() != 4) {
+            throw new IllegalArgumentException("center는 [lng,lat], bounds는 [minLng,minLat,maxLng,maxLat] 형식이어야 합니다.");
+        }
+
+        try {
+            double centerLng = center.getDouble(0);
+            double centerLat = center.getDouble(1);
+            double minLng = bounds.getDouble(0);
+            double minLat = bounds.getDouble(1);
+            double maxLng = bounds.getDouble(2);
+            double maxLat = bounds.getDouble(3);
+            boolean finite = Double.isFinite(centerLng) && Double.isFinite(centerLat)
+                && Double.isFinite(minLng) && Double.isFinite(minLat)
+                && Double.isFinite(maxLng) && Double.isFinite(maxLat);
+            boolean validWorldBounds = minLng >= -180.0 && maxLng <= 180.0
+                && minLat >= -85.0 && maxLat <= 85.0;
+            boolean ordered = maxLng > minLng && maxLat > minLat;
+            boolean boundedSize = maxLng - minLng <= MAX_REGION_LONGITUDE_SPAN
+                && maxLat - minLat <= MAX_REGION_LATITUDE_SPAN
+                && (maxLng - minLng) * (maxLat - minLat) <= MAX_REGION_BBOX_AREA;
+            boolean centerInside = centerLng >= minLng && centerLng <= maxLng
+                && centerLat >= minLat && centerLat <= maxLat;
+            if (!finite || !validWorldBounds || !ordered || !boundedSize || !centerInside) {
+                throw new IllegalArgumentException("지역 중심·경계 좌표가 유효하지 않거나 다운로드 허용 범위를 초과했습니다.");
+            }
+
+            activeRegionId = regionId;
+            activeRegionName = regionName;
+            activeTileRegionId = tileRegionIdFor(regionId);
+            activeCenter = new double[]{centerLng, centerLat};
+            activeBbox = new double[]{minLng, minLat, maxLng, maxLat};
+            activeBboxSource = "Capacitor 지역 입력 (" + regionId + ")";
+        } catch (IllegalArgumentException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IllegalArgumentException("지역 좌표를 읽을 수 없습니다.");
+        }
+    }
+
+    private static String tileRegionIdFor(String regionId) {
+        return "dongtan".equals(regionId) ? DONGTAN_TILE_REGION_ID : TILE_REGION_ID_PREFIX + regionId;
+    }
+
     /**
      * Attaches a non-intrusive Native Android test button over the Activity decorView
      * so the existing Home/WebView HTML/JS/CSS remains 100% untouched.
@@ -226,14 +301,20 @@ public class OfflineMapTestPlugin extends Plugin {
         lp.topMargin = dp(activity, 88);
         lp.rightMargin = dp(activity, 10);
 
-        btn.setOnClickListener(v -> openTestScreenInternal(null));
+        btn.setOnClickListener(v -> {
+            activateDongtanRegion();
+            openTestScreenInternal(null);
+        });
         rootFrame.addView(btn, lp);
         floatingEntryBtn = btn;
     }
 
     @PluginMethod
     public void openTestScreen(PluginCall call) {
-        mainHandler.post(() -> openTestScreenInternal(call));
+        mainHandler.post(() -> {
+            activateDongtanRegion();
+            openTestScreenInternal(call);
+        });
     }
 
     @PluginMethod
@@ -251,10 +332,53 @@ public class OfflineMapTestPlugin extends Plugin {
     @PluginMethod
     public void downloadDongtan(PluginCall call) {
         mainHandler.post(() -> {
-            if (testDialog == null || !testDialog.isShowing()) {
-                openTestScreenInternal(null);
+            activateDongtanRegion();
+            syncTokenAndRegionBeforeOpen(true, () -> {
+                if (testDialog == null || !testDialog.isShowing()) {
+                    Activity activity = getActivity();
+                    if (activity != null && !activity.isFinishing()) showNativeOfflineTestDialog(activity);
+                }
+                startDongtanDownload(call);
+            });
+        });
+    }
+
+    @PluginMethod
+    public void openRegionScreen(PluginCall call) {
+        mainHandler.post(() -> {
+            try {
+                configureActiveRegion(call);
+            } catch (IllegalArgumentException error) {
+                call.reject(error.getMessage());
+                return;
             }
-            startDongtanDownload(call);
+            if (testDialog != null && testDialog.isShowing()) dismissTestDialog();
+            syncTokenAndRegionBeforeOpen(false, () -> {
+                Activity activity = getActivity();
+                if (activity == null || activity.isFinishing()) {
+                    call.reject("Activity unavailable");
+                    return;
+                }
+                showNativeOfflineTestDialog(activity);
+                JSObject ret = new JSObject();
+                ret.put("opened", true);
+                ret.put("regionId", activeRegionId);
+                ret.put("tileRegionId", activeTileRegionId);
+                call.resolve(ret);
+            });
+        });
+    }
+
+    @PluginMethod
+    public void downloadRegion(PluginCall call) {
+        mainHandler.post(() -> {
+            try {
+                configureActiveRegion(call);
+            } catch (IllegalArgumentException error) {
+                call.reject(error.getMessage());
+                return;
+            }
+            syncTokenAndRegionBeforeOpen(false, () -> startRegionDownload(call));
         });
     }
 
@@ -278,7 +402,7 @@ public class OfflineMapTestPlugin extends Plugin {
             return;
         }
 
-        syncTokenAndRegionBeforeOpen(() -> {
+        syncTokenAndRegionBeforeOpen(true, () -> {
             showNativeOfflineTestDialog(activity);
             if (call != null) {
                 JSObject ret = new JSObject();
@@ -293,7 +417,7 @@ public class OfflineMapTestPlugin extends Plugin {
      * Reads cached Mapbox token from WebView localStorage or SharedPreferences,
      * and checks DB (powderline_regions) for Dongtan BBox if online.
      */
-    private void syncTokenAndRegionBeforeOpen(Runnable onReady) {
+    private void syncTokenAndRegionBeforeOpen(boolean resolveDongtanRegion, Runnable onReady) {
         Activity activity = getActivity();
         if (activity == null) {
             onReady.run();
@@ -322,13 +446,13 @@ public class OfflineMapTestPlugin extends Plugin {
                         supabaseKey = obj.optString("key", DEFAULT_SUPABASE_KEY).trim();
                     } catch (Exception ignored) {
                     }
-                    resolveTokenAndDongtanBbox(activity, token, supabaseUrl, supabaseKey);
+                    resolveTokenAndDongtanBbox(activity, token, supabaseUrl, supabaseKey, resolveDongtanRegion);
                     mainHandler.post(onReady);
                 })
             );
         } else {
             ioExecutor.execute(() -> {
-                resolveTokenAndDongtanBbox(activity, "", DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY);
+                resolveTokenAndDongtanBbox(activity, "", DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, resolveDongtanRegion);
                 mainHandler.post(onReady);
             });
         }
@@ -338,7 +462,8 @@ public class OfflineMapTestPlugin extends Plugin {
         Activity activity,
         String webToken,
         String supabaseUrl,
-        String supabaseKey
+        String supabaseKey,
+        boolean resolveDongtanRegion
     ) {
         SharedPreferences prefs = activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String token = webToken;
@@ -361,6 +486,7 @@ public class OfflineMapTestPlugin extends Plugin {
         }
 
         // Requirement 7: Check DB (powderline_regions) for Dongtan BBox; fallback to explicit test BBox
+        if (!resolveDongtanRegion) return;
         boolean loadedFromDb = tryLoadDongtanBboxFromSupabase(prefs, supabaseUrl, supabaseKey);
         if (!loadedFromDb) {
             String cachedSource = prefs.getString(PREF_DONGTAN_SOURCE, "");
@@ -468,7 +594,7 @@ public class OfflineMapTestPlugin extends Plugin {
         header.setPadding(dp(activity, 12), dp(activity, 10), dp(activity, 12), dp(activity, 10));
 
         TextView titleView = new TextView(activity);
-        titleView.setText("Mapbox Native 오프라인 3D 시험 (동탄)");
+        titleView.setText("Mapbox Native 오프라인 3D 시험 (" + activeRegionName + ")");
         titleView.setTextColor(Color.WHITE);
         titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f);
         titleView.setTypeface(Typeface.DEFAULT_BOLD);
@@ -504,7 +630,7 @@ public class OfflineMapTestPlugin extends Plugin {
         if (TextUtils.isEmpty(currentToken) || !currentToken.startsWith("pk.")) {
             statusTextView.setText("상태: Mapbox 공개 토큰(pk.)을 찾지 못했습니다. 온라인 상태에서 한 번 실행해 토큰을 캐시하세요.");
         } else {
-            statusTextView.setText("상태: 준비됨 — [동탄 다운로드] 후 비행기 모드에서 3D 지형·GPS를 확인하세요.");
+            statusTextView.setText("상태: 준비됨 — [" + activeRegionName + " 다운로드] 후 비행기 모드에서 3D 지형·GPS를 확인하세요.");
         }
         infoBox.addView(statusTextView);
         root.addView(infoBox, new LinearLayout.LayoutParams(
@@ -519,8 +645,8 @@ public class OfflineMapTestPlugin extends Plugin {
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setPadding(dp(activity, 8), dp(activity, 6), dp(activity, 8), dp(activity, 6));
 
-        Button downloadBtn = createActionButton(activity, "동탄 다운로드", "#0284C7");
-        downloadBtn.setOnClickListener(v -> startDongtanDownload(null));
+        Button downloadBtn = createActionButton(activity, activeRegionName + " 다운로드", "#0284C7");
+        downloadBtn.setOnClickListener(v -> startRegionDownload(null));
         btnRow.addView(downloadBtn);
 
         Button checkStatusBtn = createActionButton(activity, "저장 상태 확인", "#334155");
@@ -535,13 +661,15 @@ public class OfflineMapTestPlugin extends Plugin {
         gpsBtn.setOnClickListener(v -> enableAndCenterGps());
         btnRow.addView(gpsBtn);
 
-        Button dongtanCamBtn = createActionButton(activity, "동탄 3D 시점", "#4F46E5");
-        dongtanCamBtn.setOnClickListener(v -> moveCameraToDongtan3D());
+        Button dongtanCamBtn = createActionButton(activity, activeRegionName + " 3D 시점", "#4F46E5");
+        dongtanCamBtn.setOnClickListener(v -> moveCameraToActiveRegion3D());
         btnRow.addView(dongtanCamBtn);
 
-        Button clearBtn = createActionButton(activity, "캐시 삭제", "#B91C1C");
-        clearBtn.setOnClickListener(v -> clearDongtanOfflineCache());
-        btnRow.addView(clearBtn);
+        if ("dongtan".equals(activeRegionId)) {
+            Button clearBtn = createActionButton(activity, "캐시 삭제", "#B91C1C");
+            clearBtn.setOnClickListener(v -> clearDongtanOfflineCache());
+            btnRow.addView(clearBtn);
+        }
 
         scrollBar.addView(btnRow);
         root.addView(scrollBar, new LinearLayout.LayoutParams(
@@ -684,68 +812,6 @@ public class OfflineMapTestPlugin extends Plugin {
                     Log.i(TAG, "3D Terrain enabled (mapbox-dem, exaggeration=1.5)");
                 }
             }
-
-            // 2. Draw Dongtan BBox outline + sample 3D route inside activeBbox
-            double minLng = activeBbox[0];
-            double minLat = activeBbox[1];
-            double maxLng = activeBbox[2];
-            double maxLat = activeBbox[3];
-            double cLng = activeCenter[0];
-            double cLat = activeCenter[1];
-            double dLng = (maxLng - minLng) * 0.32;
-            double dLat = (maxLat - minLat) * 0.32;
-
-            String overlayGeoJson = "{"
-                + "\"type\":\"FeatureCollection\","
-                + "\"features\":["
-                + "{"
-                + "\"type\":\"Feature\","
-                + "\"properties\":{\"kind\":\"bbox\"},"
-                + "\"geometry\":{\"type\":\"LineString\",\"coordinates\":["
-                + "[" + minLng + "," + minLat + "],"
-                + "[" + maxLng + "," + minLat + "],"
-                + "[" + maxLng + "," + maxLat + "],"
-                + "[" + minLng + "," + maxLat + "],"
-                + "[" + minLng + "," + minLat + "]"
-                + "]}"
-                + "},"
-                + "{"
-                + "\"type\":\"Feature\","
-                + "\"properties\":{\"kind\":\"route\"},"
-                + "\"geometry\":{\"type\":\"LineString\",\"coordinates\":["
-                + "[" + (cLng - dLng) + "," + (cLat - dLat) + "],"
-                + "[" + (cLng - dLng * 0.3) + "," + (cLat - dLat * 0.1) + "],"
-                + "[" + cLng + "," + cLat + "],"
-                + "[" + (cLng + dLng * 0.4) + "," + (cLat + dLat * 0.3) + "],"
-                + "[" + (cLng + dLng) + "," + (cLat + dLat) + "]"
-                + "]}"
-                + "}"
-                + "]}";
-
-            if (!style.styleSourceExists("dongtan-test-overlay")) {
-                JSONObject srcObj = new JSONObject();
-                srcObj.put("type", "geojson");
-                srcObj.put("data", new JSONObject(overlayGeoJson));
-                Expected<String, Value> srcVal = Value.fromJson(srcObj.toString());
-                if (srcVal.isValue() && srcVal.getValue() != null) {
-                    style.addStyleSource("dongtan-test-overlay", srcVal.getValue());
-                }
-            }
-            if (!style.styleLayerExists("dongtan-test-bbox-layer")) {
-                String layerJson = "{"
-                    + "\"id\":\"dongtan-test-bbox-layer\","
-                    + "\"type\":\"line\","
-                    + "\"source\":\"dongtan-test-overlay\","
-                    + "\"paint\":{"
-                    + "\"line-color\":\"#38BDF8\","
-                    + "\"line-width\":3.5"
-                    + "}"
-                    + "}";
-                Expected<String, Value> layerVal = Value.fromJson(layerJson);
-                if (layerVal.isValue() && layerVal.getValue() != null) {
-                    style.addStyleLayer(layerVal.getValue(), new LayerPosition(null, null, null));
-                }
-            }
         } catch (Throwable e) {
             Log.e(TAG, "apply3DTerrainAndOverlay error", e);
             updateStatus("3D 지형 설정 경고: " + e.getMessage());
@@ -762,6 +828,10 @@ public class OfflineMapTestPlugin extends Plugin {
     }
 
     private void startDongtanDownload(PluginCall call) {
+        startRegionDownload(call);
+    }
+
+    private void startRegionDownload(PluginCall call) {
         try {
             String token = MapboxOptions.getAccessToken();
             if (TextUtils.isEmpty(token) || !token.startsWith("pk.")) {
@@ -777,6 +847,11 @@ public class OfflineMapTestPlugin extends Plugin {
 
             ensureOfflineManagers();
             cancelActiveDownloads();
+            final long generation = downloadGeneration;
+            final String regionId = activeRegionId;
+            final String regionName = activeRegionName;
+            final String tileRegionId = activeTileRegionId;
+            final double[] regionBbox = activeBbox.clone();
 
             final String styleUri = !TextUtils.isEmpty(STYLE_STANDARD_SATELLITE)
                 ? STYLE_STANDARD_SATELLITE
@@ -793,6 +868,7 @@ public class OfflineMapTestPlugin extends Plugin {
                 styleUri,
                 styleOptions,
                 progress -> {
+                    if (generation != downloadGeneration) return;
                     long done = progress.getCompletedResourceCount();
                     long req = Math.max(1, progress.getRequiredResourceCount());
                     int pct = (int) Math.min(100, (done * 100) / req);
@@ -803,12 +879,18 @@ public class OfflineMapTestPlugin extends Plugin {
                     )));
                 },
                 expected -> {
+                    if (generation != downloadGeneration) return;
                     if (expected.isError()) {
                         StylePackError err = expected.getError();
                         String errMsg = err != null ? err.getMessage() : "Unknown StylePack error";
-                        mainHandler.post(() -> updateStatus("스타일 팩 오류 (타일 다운로드 계속 진행): " + errMsg));
+                        String msg = "스타일 팩 다운로드 실패: " + errMsg;
+                        mainHandler.post(() -> updateStatus(msg));
+                        if (call != null) call.reject(msg);
+                        return;
                     }
-                    mainHandler.post(() -> startTileRegionDownload(call));
+                    mainHandler.post(() -> startTileRegionDownload(
+                        call, generation, regionId, regionName, tileRegionId, regionBbox
+                    ));
                 }
             );
         } catch (Throwable e) {
@@ -818,18 +900,26 @@ public class OfflineMapTestPlugin extends Plugin {
         }
     }
 
-    private void startTileRegionDownload(PluginCall call) {
+    private void startTileRegionDownload(
+        PluginCall call,
+        long generation,
+        String regionId,
+        String regionName,
+        String tileRegionId,
+        double[] regionBbox
+    ) {
         try {
+            if (generation != downloadGeneration) return;
             ensureOfflineManagers();
 
             final String styleUri = !TextUtils.isEmpty(STYLE_STANDARD_SATELLITE)
                 ? STYLE_STANDARD_SATELLITE
                 : "mapbox://styles/mapbox/standard-satellite";
 
-            double minLng = activeBbox[0];
-            double minLat = activeBbox[1];
-            double maxLng = activeBbox[2];
-            double maxLat = activeBbox[3];
+            double minLng = regionBbox[0];
+            double minLat = regionBbox[1];
+            double maxLng = regionBbox[2];
+            double maxLat = regionBbox[3];
 
             List<Point> ring = Arrays.asList(
                 Point.fromLngLat(minLng, minLat),
@@ -840,7 +930,7 @@ public class OfflineMapTestPlugin extends Plugin {
             );
             Polygon bboxPolygon = Polygon.fromLngLats(Collections.singletonList(ring));
 
-            // Descriptor 1: Standard Satellite (Z10 ~ Z15)
+            // Descriptor 1: Standard Satellite (Z10 ~ Z16)
             TilesetDescriptor satDescriptor = offlineManager.createTilesetDescriptor(
                 new TilesetDescriptorOptions.Builder()
                     .styleURI(styleUri)
@@ -868,23 +958,25 @@ public class OfflineMapTestPlugin extends Plugin {
                 .acceptExpired(true)
                 .build();
 
-            updateStatus("2/2 동탄 위성 + 3D DEM 타일 리전 다운로드 시작...");
+            updateStatus("2/2 " + regionName + " 위성 + 3D DEM 타일 리전 다운로드 시작...");
 
             activeTileCancelable = tileStore.loadTileRegion(
-                DONGTAN_TILE_REGION_ID,
+                tileRegionId,
                 regionLoadOptions,
                 progress -> {
+                    if (generation != downloadGeneration) return;
                     long done = progress.getCompletedResourceCount();
                     long req = Math.max(1, progress.getRequiredResourceCount());
                     double mb = progress.getCompletedResourceSize() / (1024.0 * 1024.0);
                     int pct = (int) Math.min(100, (done * 100) / req);
                     mainHandler.post(() -> updateStatus(String.format(
                         Locale.KOREA,
-                        "2/2 동탄 위성+DEM 타일 다운로드 중: %d%% (%d/%d 타일, %.2f MB)",
-                        pct, done, req, mb
+                        "2/2 %s 위성+DEM 타일 다운로드 중: %d%% (%d/%d 타일, %.2f MB)",
+                        regionName, pct, done, req, mb
                     )));
                 },
                 expected -> {
+                    if (generation != downloadGeneration) return;
                     if (expected.isError()) {
                         TileRegionError err = expected.getError();
                         String msg = "타일 다운로드 실패: " + (err != null ? err.getType() + " - " + err.getMessage() : "알 수 없는 오류");
@@ -893,22 +985,38 @@ public class OfflineMapTestPlugin extends Plugin {
                     } else {
                         TileRegion region = expected.getValue();
                         long count = region != null ? region.getCompletedResourceCount() : 0;
+                        long required = region != null ? region.getRequiredResourceCount() : 0;
+                        boolean complete = region != null && count > 0 && (required == 0 || count >= required);
+                        if (!complete) {
+                            String msg = String.format(
+                                Locale.KOREA,
+                                "타일 다운로드 미완료: %d/%d 리소스. 완료 상태로 저장하지 않습니다.",
+                                count, required
+                            );
+                            mainHandler.post(() -> updateStatus(msg));
+                            if (call != null) call.reject(msg);
+                            return;
+                        }
                         double mb = region != null ? (region.getCompletedResourceSize() / (1024.0 * 1024.0)) : 0.0;
                         String okMsg = String.format(
                             Locale.KOREA,
-                            "다운로드 완료! 동탄 위성+3D DEM (%d 리소스, %.2f MB) 저장됨. 이제 비행기 모드에서 확인하세요.",
-                            count, mb
+                            "다운로드 완료! %s 위성+3D DEM (%d 리소스, %.2f MB) 저장됨. 이제 비행기 모드에서 확인하세요.",
+                            regionName, count, mb
                         );
                         mainHandler.post(() -> {
                             updateStatus(okMsg);
-                            if (mapView != null) {
+                            if (mapView != null && regionId.equals(activeRegionId)) {
                                 setupMapStyleAnd3DTerrain();
-                                moveCameraToDongtan3D();
+                                moveCameraToActiveRegion3D();
                             }
                         });
                         if (call != null) {
                             JSObject ret = new JSObject();
-                            ret.put("regionId", DONGTAN_TILE_REGION_ID);
+                            ret.put("regionId", regionId);
+                            ret.put("regionName", regionName);
+                            ret.put("tileRegionId", tileRegionId);
+                            ret.put("includesTerrainDemDescriptor", true);
+                            ret.put("complete", true);
                             ret.put("completedResourceCount", count);
                             ret.put("sizeMb", mb);
                             call.resolve(ret);
@@ -925,6 +1033,17 @@ public class OfflineMapTestPlugin extends Plugin {
 
     private void queryOfflineInventory(PluginCall call) {
         ensureOfflineManagers();
+        String requestedRegionId = call != null ? call.getString("regionId") : null;
+        if (!TextUtils.isEmpty(requestedRegionId)) {
+            requestedRegionId = requestedRegionId.trim().toLowerCase(Locale.ROOT);
+            if (!requestedRegionId.matches("[a-z0-9][a-z0-9._-]{0,63}")) {
+                call.reject("regionId 형식이 올바르지 않습니다.");
+                return;
+            }
+        }
+        final String statusRegionId = TextUtils.isEmpty(requestedRegionId) ? activeRegionId : requestedRegionId;
+        final String statusRegionName = statusRegionId.equals(activeRegionId) ? activeRegionName : statusRegionId;
+        final String statusTileRegionId = tileRegionIdFor(statusRegionId);
         tileStore.getAllTileRegions(expected -> {
             if (expected.isError()) {
                 String msg = "TileStore 조회 오류: " + expected.getError().getMessage();
@@ -933,25 +1052,30 @@ public class OfflineMapTestPlugin extends Plugin {
                 return;
             }
             List<TileRegion> regions = expected.getValue();
-            TileRegion dongtan = null;
+            TileRegion matchedRegion = null;
             if (regions != null) {
                 for (TileRegion r : regions) {
-                    if (DONGTAN_TILE_REGION_ID.equals(r.getId())) {
-                        dongtan = r;
+                    if (statusTileRegionId.equals(r.getId())) {
+                        matchedRegion = r;
                         break;
                     }
                 }
             }
-            final TileRegion found = dongtan;
+            final TileRegion found = matchedRegion;
             offlineManager.getAllStylePacks(styleExpected -> {
                 int styleCount = (styleExpected.isValue() && styleExpected.getValue() != null)
                     ? styleExpected.getValue().size() : 0;
                 mainHandler.post(() -> {
                     if (found != null) {
                         double mb = found.getCompletedResourceSize() / (1024.0 * 1024.0);
+                        boolean complete = styleCount > 0 && (found.getRequiredResourceCount() == 0
+                            ? found.getCompletedResourceCount() > 0
+                            : found.getCompletedResourceCount() >= found.getRequiredResourceCount());
                         updateStatus(String.format(
                             Locale.KOREA,
-                            "오프라인 저장 확인됨: [%s] 타일 %d/%d (%.2f MB), 스타일팩 %d개",
+                            "%s 오프라인 저장 %s: [%s] 타일 %d/%d (%.2f MB), 스타일팩 %d개",
+                            statusRegionName,
+                            complete ? "완료" : "미완료",
                             found.getId(),
                             found.getCompletedResourceCount(),
                             found.getRequiredResourceCount(),
@@ -961,15 +1085,24 @@ public class OfflineMapTestPlugin extends Plugin {
                     } else {
                         updateStatus(String.format(
                             Locale.KOREA,
-                            "저장된 동탄 타일 리전 없음 (스타일팩 %d개). [동탄 다운로드]를 눌러 저장하세요.",
-                            styleCount
+                            "저장된 %s 타일 리전 없음 (스타일팩 %d개). 다운로드 후 다시 확인하세요.",
+                            statusRegionName, styleCount
                         ));
                     }
                 });
                 if (call != null) {
+                    long completed = found != null ? found.getCompletedResourceCount() : 0;
+                    long required = found != null ? found.getRequiredResourceCount() : 0;
+                    boolean complete = found != null && styleCount > 0
+                        && (required == 0 ? completed > 0 : completed >= required);
                     JSObject ret = new JSObject();
-                    ret.put("hasDongtanRegion", found != null);
-                    ret.put("completedResourceCount", found != null ? found.getCompletedResourceCount() : 0);
+                    ret.put("regionId", statusRegionId);
+                    ret.put("tileRegionId", statusTileRegionId);
+                    ret.put("downloaded", found != null);
+                    ret.put("complete", complete);
+                    ret.put("hasDongtanRegion", "dongtan".equals(statusRegionId) && found != null);
+                    ret.put("completedResourceCount", completed);
+                    ret.put("requiredResourceCount", required);
                     ret.put("sizeBytes", found != null ? found.getCompletedResourceSize() : 0);
                     ret.put("stylePackCount", styleCount);
                     call.resolve(ret);
@@ -982,8 +1115,7 @@ public class OfflineMapTestPlugin extends Plugin {
         ensureOfflineManagers();
         cancelActiveDownloads();
         tileStore.removeTileRegion(DONGTAN_TILE_REGION_ID);
-        offlineManager.removeStylePack(STYLE_STANDARD_SATELLITE);
-        updateStatus("동탄 타일 리전 및 스타일 팩 캐시 삭제 요청 완료.");
+        updateStatus("동탄 타일 리전 삭제 요청 완료. 다른 지역과 공유하는 스타일 팩은 유지합니다.");
     }
 
     private void toggleMapboxOfflineSwitch() {
@@ -1002,8 +1134,12 @@ public class OfflineMapTestPlugin extends Plugin {
     }
 
     private void moveCameraToDongtan3D() {
+        moveCameraToActiveRegion3D();
+    }
+
+    private void moveCameraToActiveRegion3D() {
         if (mapView == null) {
-            Log.e(TAG, "moveCameraToDongtan3D failed: mapView is null");
+            Log.e(TAG, "moveCameraToActiveRegion3D failed: mapView is null");
             updateStatus("오류: MapView가 생성되지 않아 시점을 이동할 수 없습니다.");
             return;
         }
@@ -1015,14 +1151,14 @@ public class OfflineMapTestPlugin extends Plugin {
                 .bearing(28.0)
                 .build();
             mapView.getMapboxMap().setCamera(cameraOptions);
-            Log.i(TAG, "Moved camera to Dongtan 3D: " + activeCenter[0] + "," + activeCenter[1]);
+            Log.i(TAG, "Moved camera to offline region 3D: " + activeRegionId + " " + activeCenter[0] + "," + activeCenter[1]);
             updateStatus(String.format(
                 Locale.KOREA,
-                "동탄 3D 지형 시점 이동 (중심 %.4f, %.4f / Pitch 60° / Zoom 14.8)",
-                activeCenter[1], activeCenter[0]
+                "%s 3D 지형 시점 이동 (중심 %.4f, %.4f / Pitch 60° / Zoom 14.8)",
+                activeRegionName, activeCenter[1], activeCenter[0]
             ));
         } catch (Throwable e) {
-            Log.e(TAG, "moveCameraToDongtan3D error", e);
+            Log.e(TAG, "moveCameraToActiveRegion3D error", e);
             updateStatus("카메라 이동 오류: " + e.getMessage());
         }
     }
@@ -1149,7 +1285,9 @@ public class OfflineMapTestPlugin extends Plugin {
         if (bboxInfoView == null) return;
         bboxInfoView.setText(String.format(
             Locale.KOREA,
-            "출처: %s | BBox: [%.4f, %.4f ~ %.4f, %.4f] | 위성 Z%d~Z%d, 3D DEM Z%d~Z%d",
+            "%s (%s) | 출처: %s | BBox: [%.4f, %.4f ~ %.4f, %.4f] | 위성 Z%d~Z%d, 3D DEM Z%d~Z%d",
+            activeRegionName,
+            activeRegionId,
             activeBboxSource,
             activeBbox[0], activeBbox[1], activeBbox[2], activeBbox[3],
             SAT_MIN_ZOOM, SAT_MAX_ZOOM, DEM_MIN_ZOOM, DEM_MAX_ZOOM
@@ -1188,6 +1326,7 @@ public class OfflineMapTestPlugin extends Plugin {
     }
 
     private void cancelActiveDownloads() {
+        downloadGeneration++;
         if (activeStyleCancelable != null) {
             try { activeStyleCancelable.cancel(); } catch (Exception ignored) {}
             activeStyleCancelable = null;
