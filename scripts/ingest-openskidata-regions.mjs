@@ -27,6 +27,7 @@ import {homedir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {builtinRegions, defaultInputs, extractRegions, sourceUrls, validateBbox} from './extract-openskidata.mjs';
+import {normalizeRunGeometries} from './ski-centerline.mjs';
 
 const BUCKET = 'ski-data';
 const MAX_GEOJSON_BYTES = 6 * 1024 * 1024;
@@ -361,11 +362,12 @@ async function runLocal(args) {
   if (builtinRegions[id]) throw new Error(`${id} is a built-in region.`);
   await ensureSources({allowDownload: !args.includes('--no-download')});
   const collections = await extractRegions({[id]: {bbox}});
+  const {collection, stats} = normalizeRunGeometries(collections[id]); // run outlines -> centerlines
   const outDir = option(args, '--out') || 'work/region-output';
   await mkdir(outDir, {recursive: true});
-  const bytes = Buffer.from(`${JSON.stringify(collections[id])}\n`);
+  const bytes = Buffer.from(`${JSON.stringify(collection)}\n`);
   await writeFile(`${outDir}/${id}.geojson`, bytes);
-  console.log(JSON.stringify({region: id, counts: collections[id].metadata.counts, bytes: bytes.length, file: `${outDir}/${id}.geojson`, note: 'local only; nothing uploaded'}, null, 2));
+  console.log(JSON.stringify({region: id, counts: collection.metadata.counts, centerline: stats, bytes: bytes.length, file: `${outDir}/${id}.geojson`, note: 'local only; nothing uploaded'}, null, 2));
 }
 
 async function runUpload(args) {
@@ -413,9 +415,11 @@ async function runUpload(args) {
 
   for (const claim of runnable) {
     const id = claim.region_id;
-    const collection = collections[id];
-    const count = collection.features.length;
     try {
+      // Run outlines are replaced by centerlines; outlines without a usable centerline are dropped and counted.
+      const {collection, stats: centerline} = normalizeRunGeometries(collections[id]);
+      const count = collection.features.length;
+      console.log(`${id}: centerlines generated ${centerline.generated}, failed ${centerline.failed}, duplicates skipped ${centerline.duplicateSkipped}`);
       const completedAt = new Date().toISOString();
       if (!count) {
         // Nothing to publish: keep any existing Storage file untouched.

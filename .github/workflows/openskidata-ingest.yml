@@ -11,6 +11,10 @@ name: OpenSkiData ingest
 on:
   schedule:
     - cron: '17 * * * *'
+  # Optional immediate trigger: POST /repos/{owner}/{repo}/dispatches {"event_type":"region-saved"}
+  # (e.g. from a Supabase webhook after an admin saves a region). The hourly schedule remains the fallback.
+  repository_dispatch:
+    types: [region-saved]
   workflow_dispatch:
     inputs:
       region:
