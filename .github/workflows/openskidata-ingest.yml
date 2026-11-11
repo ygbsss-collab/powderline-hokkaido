@@ -1,0 +1,104 @@
+name: OpenSkiData ingest
+
+# Hourly: collects ski lifts/runs from OpenSkiData for regions registered in the admin UI
+# (powderline_regions.ski_data_status = pending, or failed and older than 6h) and publishes
+# them to Supabase Storage (ski-data/{regionId}.geojson).
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   SUPABASE_URL                 e.g. https://<project-ref>.supabase.co
+#   SUPABASE_SERVICE_ROLE_KEY    the Supabase secret key (sb_secret_...)
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  # Optional immediate trigger: POST /repos/{owner}/{repo}/dispatches {"event_type":"region-saved"}
+  # (e.g. from a Supabase webhook after an admin saves a region). The hourly schedule remains the fallback.
+  repository_dispatch:
+    types: [region-saved]
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'Optional regionId to process now (built-in regions are refused)'
+        required: false
+        type: string
+
+# One run at a time; a queued run waits instead of cancelling the one in progress.
+concurrency:
+  group: openskidata-ingest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      REGION: ${{ inputs.region }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Cheap REST read, plain Node (no npm install). Ends the run early when nothing is waiting.
+      - name: Check queue
+        id: queue
+        run: node scripts/ingest-openskidata-regions.mjs --check-queue ${REGION:+--region "$REGION"}
+
+      - name: Nothing to do
+        if: steps.queue.outputs.pending == '0'
+        run: echo "No pending regions - no download, no scan."
+
+      - name: Install dependencies
+        if: steps.queue.outputs.pending != '0'
+        # Pinned to the version in package-lock.json; works without a package.json (e.g. on a minimal main branch).
+        run: npm install --no-save --no-package-lock --ignore-scripts stream-json@1.9.1
+
+      # The ~320 MB OpenSkiData cache (and its download-throttle metadata) persists between runs.
+      # The key never matches exactly, so restore-keys always picks the newest saved cache.
+      - name: Restore OpenSkiData cache
+        if: steps.queue.outputs.pending != '0'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            work/openskidata-*.geojson.gz
+            work/.openskidata-cache.json
+          key: openskidata-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            openskidata-
+
+      - name: Fingerprint cache metadata (before)
+        if: steps.queue.outputs.pending != '0'
+        id: before
+        run: echo "hash=$(sha256sum work/.openskidata-cache.json 2>/dev/null | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Collect, upload and update status
+        if: steps.queue.outputs.pending != '0'
+        run: node scripts/ingest-openskidata-regions.mjs --upload ${REGION:+--region "$REGION"}
+
+      # Runs even when ingestion failed: the throttle metadata (last download attempt) must survive
+      # a failed run so the next run cannot exceed one download per day.
+      - name: Fingerprint cache metadata (after)
+        if: always() && steps.queue.outputs.pending != '0'
+        id: after
+        run: |
+          after="$(sha256sum work/.openskidata-cache.json 2>/dev/null | cut -d' ' -f1)"
+          if [ -n "$after" ] && [ "$after" != "${{ steps.before.outputs.hash }}" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save OpenSkiData cache
+        if: always() && steps.after.outputs.changed == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            work/openskidata-*.geojson.gz
+            work/.openskidata-cache.json
+          key: openskidata-${{ github.run_id }}-${{ github.run_attempt }}
