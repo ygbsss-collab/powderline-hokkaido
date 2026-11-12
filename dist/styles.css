@@ -4468,6 +4468,8 @@ select {
   .home-offline-region-state.incomplete { color: #fbbf24; }
   .home-offline-region-state.unavailable { color: #f87171; }
   .home-offline-region-state.loading { color: #cbd5e1; }
+  .home-offline-region-bar { display: block; height: 3px; margin-top: 5px; border-radius: 2px; background: rgba(255,255,255,.1); overflow: hidden; }
+  .home-offline-region-bar b { display: block; height: 100%; background: #38bdf8; transition: width .4s linear; }
   .home-offline-region-item button { flex: 0 0 auto; min-height: 36px; padding: 7px 10px; border: 1px solid rgba(34, 211, 238, .55); border-radius: 9px; background: rgba(8, 74, 96, .72); color: #e0f2fe; font-size: 11px; font-weight: 800; touch-action: manipulation; }
   .home-offline-region-item button:disabled { border-color: rgba(100, 116, 139, .35); background: rgba(30, 41, 59, .65); color: #64748b; }
   .home-cta { margin-top: auto; padding: 4px 0; }

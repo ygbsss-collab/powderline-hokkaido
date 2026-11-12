@@ -361,7 +361,13 @@
   let offlineRegionOpenInProgress = false;
   let mobileHomeCatalogRefreshPromise = null;
   const offlineRegionStatuses = new Map();
-  const offlineRegionDownloads = new Set();
+  const offlineRegionDownloads = new Set(); // the one region Native is downloading right now (at most 1)
+  const offlineDownloadQueue = []; // FIFO of region ids waiting for their turn
+  const offlineRegionOutcome = new Map(); // id -> { state: 'failed' | 'cancelled', message } for the last attempt
+  const offlineRegionProgress = new Map();
+  let offlineActiveJob = null; // { id, jobId, lastChangeAt, sig, cancelRequested }
+  let offlineStallTimer = null;
+  const OFFLINE_STALL_MS = 60000;
   const mobileCustomCourseRegions = (() => { try { const saved = JSON.parse(localStorage.getItem('powderline.courseRegions') || '[]'); return Array.isArray(saved) ? saved.filter(item => item && /^course-region-\d+$/.test(item.id) && typeof item.label === 'string' && Array.isArray(item.center) && item.center.length === 2 && item.center.every(Number.isFinite)) : [] } catch { return [] } })();
   const $ = s => document.querySelector(s);
   function t(key, ...args) {
@@ -6260,6 +6266,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const { payload, unavailableReason } = createOfflineRegionPayload(id, details);
       const status = offlineRegionStatuses.get(id);
       const downloading = offlineRegionDownloads.has(id);
+      const queuePosition = offlineDownloadQueue.indexOf(id);
+      const outcome = offlineRegionOutcome.get(id);
       let stateClass = 'available';
       const skiStatus = details.skiDataStatus;
       const skiNote = skiStatus === 'pending' || skiStatus === 'processing' ? ' · 리프트·슬로프 데이터 준비 중' : skiStatus === 'failed' ? ' · 리프트·슬로프 데이터 준비 실패' : '';
@@ -6272,9 +6280,19 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         disabled = true;
       } else if (downloading) {
         stateClass = 'loading';
-        stateLabel = '다운로드 중…';
-        buttonLabel = '처리 중…';
-        disabled = true;
+        stateLabel = offlineActiveJob?.cancelRequested ? '취소하는 중…' : offlineProgressText(offlineRegionProgress.get(id), offlineStalled());
+        buttonLabel = '취소';
+        disabled = Boolean(offlineActiveJob?.cancelRequested);
+      } else if (queuePosition >= 0) {
+        stateClass = 'loading';
+        stateLabel = `대기 중 · ${queuePosition + 1}번째`;
+        buttonLabel = '취소';
+        disabled = false;
+      } else if (outcome && !status?.complete) {
+        stateClass = 'incomplete';
+        stateLabel = outcome.state === 'cancelled' ? '취소됨 · 다시 다운로드 가능' : `다운로드 실패 · 다시 다운로드 가능${outcome.message ? ' (' + outcome.message + ')' : ''}`;
+        buttonLabel = '다시 다운로드';
+        disabled = !androidAvailable || navigator.onLine === false;
       } else if (status?.loading) {
         stateClass = 'loading';
         stateLabel = '저장 상태 확인 중…';
@@ -6303,7 +6321,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       }
       return `<article class="home-offline-region-item" data-offline-region-id="${escapeHtml(id)}">` +
         `<div><strong>${escapeHtml(details.label)}</strong><small>${escapeHtml(id)}</small>` +
-        `<span class="home-offline-region-state ${stateClass}">${escapeHtml(stateLabel)}</span></div>` +
+        `<span class="home-offline-region-state ${stateClass}">${escapeHtml(stateLabel)}</span>` +
+        (downloading ? `<i class="home-offline-region-bar"><b style="width:${offlineProgressPercent(offlineRegionProgress.get(id))}%"></b></i>` : '') + '</div>' +
         `<button type="button" data-offline-region-download="${escapeHtml(id)}"${disabled ? ' disabled' : ''}>${escapeHtml(buttonLabel)}</button>` +
         '</article>';
     }).join('');
@@ -6384,30 +6403,137 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   }
 
-  async function downloadOfflineRegion(id) {
-    if (offlineRegionDownloads.has(id)) return;
-    const details = regions[id];
+  // Native reports real TileStore resource counts (event "offlineDownloadProgress", ~2/s) tagged with regionId + jobId.
+  const OFFLINE_PHASE_LABEL = { style: '스타일', tiles: '지도 타일', context: '주변 타일' };
+  function offlineProgressPercent(p) {
+    return p && Number.isFinite(p.percent) && p.percent >= 0 ? Math.min(100, Math.round(p.percent)) : 0;
+  }
+  function offlineStalled(now = Date.now()) {
+    return Boolean(offlineActiveJob && !offlineActiveJob.cancelRequested && now - offlineActiveJob.lastChangeAt >= OFFLINE_STALL_MS);
+  }
+  function offlineProgressText(p, stalled = false) {
+    const parts = [];
+    if (stalled) parts.push('진행 정체 · 네트워크 확인 필요');
+    if (!p) { parts.push('다운로드 준비 중…'); return parts.join(' · '); }
+    parts.push(`${OFFLINE_PHASE_LABEL[p.phase] || '다운로드'} ${p.percent >= 0 ? offlineProgressPercent(p) + '%' : '계산 중'}`);
+    if (p.required > 0) parts.push(`${Number(p.done).toLocaleString('ko-KR')}/${Number(p.required).toLocaleString('ko-KR')}`);
+    if (p.mb > 0) parts.push(`${p.mb.toFixed(1)}MB`);
+    if (!stalled && p.etaSec > 0) parts.push(p.etaSec >= 90 ? `약 ${Math.ceil(p.etaSec / 60)}분 남음` : `약 ${p.etaSec}초 남음`);
+    if (p.errored > 0) parts.push(`실패 ${p.errored}개`);
+    return parts.join(' · ');
+  }
+  function paintOfflineProgress(id) {
+    const item = document.querySelector(`[data-offline-region-id="${CSS.escape(id)}"]`);
+    const label = item?.querySelector('.home-offline-region-state');
+    if (!label || !offlineActiveJob || offlineActiveJob.id !== id || offlineActiveJob.cancelRequested) return;
+    const p = offlineRegionProgress.get(id);
+    label.textContent = offlineProgressText(p, offlineStalled());
+    const bar = item.querySelector('.home-offline-region-bar b');
+    if (bar) bar.style.width = offlineProgressPercent(p) + '%';
+  }
+  let offlineProgressListenerBound = false;
+  function bindOfflineDownloadProgress(plugin) {
+    if (offlineProgressListenerBound || !plugin?.addListener) return;
+    offlineProgressListenerBound = true;
+    plugin.addListener('offlineDownloadProgress', event => {
+      const job = offlineActiveJob;
+      // Only events of the job that is running now; late events of a cancelled/finished job are dropped.
+      if (!job || job.cancelRequested || event?.regionId !== job.id || (event.jobId && event.jobId !== job.jobId)) return;
+      const sig = `${event.phase}:${event.done}:${Math.round((event.mb || 0) * 100)}`;
+      if (sig !== job.sig) { job.sig = sig; job.lastChangeAt = Date.now(); }
+      offlineRegionProgress.set(job.id, event);
+      paintOfflineProgress(job.id);
+    });
+  }
+
+  // Queue: Native downloads exactly one region at a time; further regions wait here in FIFO order.
+  function enqueueOfflineRegionDownload(id) {
+    if (offlineRegionDownloads.has(id) || offlineDownloadQueue.includes(id)) return;
     const plugin = getOfflineMapTestPlugin();
-    const { payload, unavailableReason } = createOfflineRegionPayload(id, details || {});
+    const { payload, unavailableReason } = createOfflineRegionPayload(id, regions[id] || {});
     if (!payload || !plugin?.downloadRegion) {
       toast(unavailableReason || 'Android 앱에서만 다운로드할 수 있습니다.');
       return;
     }
+    offlineRegionOutcome.delete(id);
+    offlineDownloadQueue.push(id);
+    renderOfflineRegionList();
+    void pumpOfflineDownloads();
+  }
+  async function pumpOfflineDownloads() {
+    if (offlineActiveJob || !offlineDownloadQueue.length) return;
+    const id = offlineDownloadQueue.shift();
+    await runOfflineRegionDownload(id);
+  }
+  async function runOfflineRegionDownload(id) {
+    const details = regions[id];
+    const plugin = getOfflineMapTestPlugin();
+    const { payload } = createOfflineRegionPayload(id, details || {});
+    const job = { id, jobId: `${id}-${Date.now()}`, lastChangeAt: Date.now(), sig: '', cancelRequested: false };
+    if (!payload || !plugin?.downloadRegion) {
+      offlineRegionOutcome.set(id, { state: 'failed', message: '다운로드할 수 없는 지역' });
+      renderOfflineRegionList();
+      void pumpOfflineDownloads();
+      return;
+    }
+    bindOfflineDownloadProgress(plugin);
+    offlineActiveJob = job;
+    offlineRegionProgress.delete(id);
     offlineRegionDownloads.add(id);
+    clearInterval(offlineStallTimer);
+    offlineStallTimer = setInterval(() => paintOfflineProgress(id), 5000);
     renderOfflineRegionList();
     try {
-      await plugin.downloadRegion(payload);
+      await plugin.downloadRegion({ ...payload, jobId: job.jobId });
+      offlineRegionOutcome.delete(id);
       const verifiedStatus = await plugin.getOfflineStatus({ regionId: id });
       offlineRegionStatuses.set(id, verifiedStatus || {});
       if (verifiedStatus?.complete === true) toast(`${details.label} 오프라인 지도 다운로드를 완료했습니다.`);
       else if (offlineUsable(verifiedStatus)) toast(`${details.label} 지도는 저장됐지만 보완이 필요합니다${offlineMissingText(verifiedStatus.missing)}.`);
       else toast(`${details.label} 다운로드가 아직 완료되지 않았습니다.`);
     } catch (error) {
-      offlineRegionStatuses.set(id, { error: error?.message || '다운로드 실패' });
-      toast(error?.message || '오프라인 지도 다운로드에 실패했습니다.');
+      if (job.cancelRequested || error?.code === 'CANCELLED') {
+        offlineRegionOutcome.set(id, { state: 'cancelled', message: '' });
+      } else {
+        offlineRegionOutcome.set(id, { state: 'failed', message: String(error?.message || '다운로드 실패').slice(0, 80) });
+        toast(error?.message || '오프라인 지도 다운로드에 실패했습니다.');
+      }
+      // Stored tiles are kept by Native; refresh what is really on the device for the list.
+      try { offlineRegionStatuses.set(id, (await plugin.getOfflineStatus({ regionId: id })) || {}); } catch { }
     } finally {
+      if (offlineActiveJob === job) offlineActiveJob = null;
       offlineRegionDownloads.delete(id);
+      offlineRegionProgress.delete(id);
+      clearInterval(offlineStallTimer);
+      offlineStallTimer = null;
       updateMobileHomeMapModeUi();
+      renderOfflineRegionList();
+      void pumpOfflineDownloads(); // next region starts only after this job has fully ended
+    }
+  }
+  // Waiting regions are simply dropped from the queue; the running one is stopped for real in Native.
+  async function cancelOfflineRegionDownload(id) {
+    const queued = offlineDownloadQueue.indexOf(id);
+    if (queued >= 0) {
+      offlineDownloadQueue.splice(queued, 1);
+      offlineRegionOutcome.set(id, { state: 'cancelled', message: '' });
+      renderOfflineRegionList();
+      return;
+    }
+    const job = offlineActiveJob;
+    if (!job || job.id !== id || job.cancelRequested) return;
+    const plugin = getOfflineMapTestPlugin();
+    if (!plugin?.cancelRegionDownload) { toast('이 앱 버전은 다운로드 취소를 지원하지 않습니다. 앱을 업데이트해 주세요.'); return; }
+    job.cancelRequested = true;
+    renderOfflineRegionList();
+    try {
+      const result = await plugin.cancelRegionDownload({ regionId: id, jobId: job.jobId });
+      // cancelled:false = the download had already ended; its own result handling shows the real state.
+      if (!result?.cancelled) job.cancelRequested = false;
+    } catch (error) {
+      job.cancelRequested = false;
+      toast(`취소하지 못했습니다: ${error?.message || '알 수 없는 오류'}`);
+      renderOfflineRegionList();
     }
   }
 
@@ -6765,7 +6891,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     });
     $('#homeOfflineRegionList')?.addEventListener('click', event => {
       const button = event.target.closest('[data-offline-region-download]');
-      if (button && !button.disabled) void downloadOfflineRegion(button.dataset.offlineRegionDownload);
+      if (!button || button.disabled) return;
+      const id = button.dataset.offlineRegionDownload;
+      if (offlineRegionDownloads.has(id) || offlineDownloadQueue.includes(id)) void cancelOfflineRegionDownload(id);
+      else enqueueOfflineRegionDownload(id);
     });
     $('#homeRideOnBtn')?.addEventListener('click', () => {
       if (mobileHomeMapMode === 'offline') void openOfflineHomeRegion();

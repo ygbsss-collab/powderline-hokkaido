@@ -204,6 +204,10 @@ public class OfflineMapTestPlugin extends Plugin {
     private Cancelable activeStyleCancelable;
     private Cancelable activeTileCancelable;
     private volatile long downloadGeneration = 0L;
+    // One region download at a time. The PluginCall is settled exactly once (resolve/reject/cancel) and then cleared.
+    private PluginCall activeDownloadCall;
+    private String activeDownloadRegionId = "";
+    private String activeDownloadJobId = "";
 
     private boolean mapboxOfflineForced = false;
     private String activeRegionId = "dongtan";
@@ -634,14 +638,53 @@ public class OfflineMapTestPlugin extends Plugin {
     @PluginMethod
     public void downloadRegion(PluginCall call) {
         mainHandler.post(() -> {
+            if (activeDownloadCall != null) {
+                // Starting another download would cancel the running one and leave its call unresolved forever.
+                call.reject("다른 지역(" + activeDownloadRegionId + ")을 다운로드 중입니다.", "BUSY");
+                return;
+            }
             try {
                 configureActiveRegion(call);
             } catch (IllegalArgumentException error) {
                 call.reject(error.getMessage());
                 return;
             }
+            activeDownloadCall = call;
+            activeDownloadRegionId = activeRegionId;
+            activeDownloadJobId = call.getString("jobId", "");
             syncTokenAndRegionBeforeOpen(false, () -> startRegionDownload(call));
         });
+    }
+
+    /** Real cancel: stops the running StylePack/TileRegion load (stored resources stay) and settles the pending call. */
+    @PluginMethod
+    public void cancelRegionDownload(PluginCall call) {
+        mainHandler.post(() -> {
+            JSObject ret = new JSObject();
+            String regionId = call.getString("regionId", "");
+            String jobId = call.getString("jobId", "");
+            boolean matches = activeDownloadCall != null
+                && (regionId.isEmpty() || regionId.equals(activeDownloadRegionId))
+                && (jobId.isEmpty() || jobId.equals(activeDownloadJobId));
+            if (!matches) {
+                ret.put("cancelled", false);
+                ret.put("reason", activeDownloadCall == null ? "idle" : "other-job");
+                call.resolve(ret);
+                return;
+            }
+            ret.put("cancelled", true);
+            ret.put("regionId", activeDownloadRegionId);
+            cancelActiveDownloads();
+            updateStatus("다운로드가 취소되었습니다. 이미 저장된 타일은 유지됩니다.");
+            reapplyEmbeddedNetworkBlock();
+            call.resolve(ret);
+        });
+    }
+
+    /** Settles the in-flight download call once and frees the single download slot. */
+    private void rejectDownload(PluginCall call, String msg) {
+        if (call != null && call == activeDownloadCall) activeDownloadCall = null;
+        if (call != null) call.reject(msg);
     }
 
     @PluginMethod
@@ -768,13 +811,21 @@ public class OfflineMapTestPlugin extends Plugin {
                         supabaseKey = obj.optString("key", DEFAULT_SUPABASE_KEY).trim();
                     } catch (Exception ignored) {
                     }
-                    resolveTokenAndDongtanBbox(activity, token, supabaseUrl, supabaseKey, resolveDongtanRegion);
+                    try {
+                        resolveTokenAndDongtanBbox(activity, token, supabaseUrl, supabaseKey, resolveDongtanRegion);
+                    } catch (Throwable error) {
+                        Log.w(TAG, "Token/region sync failed: " + error.getMessage());
+                    }
                     mainHandler.post(onReady);
                 })
             );
         } else {
             ioExecutor.execute(() -> {
-                resolveTokenAndDongtanBbox(activity, "", DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, resolveDongtanRegion);
+                try {
+                    resolveTokenAndDongtanBbox(activity, "", DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_KEY, resolveDongtanRegion);
+                } catch (Throwable error) {
+                    Log.w(TAG, "Token/region sync failed: " + error.getMessage());
+                }
                 mainHandler.post(onReady);
             });
         }
@@ -1319,12 +1370,13 @@ public class OfflineMapTestPlugin extends Plugin {
     }
 
     private void startRegionDownload(PluginCall call) {
+        if (call != null && call != activeDownloadCall) return; // cancelled while the token/region sync was running
         try {
             String token = MapboxOptions.getAccessToken();
             if (TextUtils.isEmpty(token) || !token.startsWith("pk.")) {
                 String msg = "오류: 유효한 Mapbox 토큰(pk.)이 없습니다. 온라인 상태에서 먼저 토큰을 로드하세요.";
                 updateStatus(msg);
-                if (call != null) call.reject(msg);
+                rejectDownload(call, msg);
                 return;
             }
 
@@ -1333,7 +1385,7 @@ public class OfflineMapTestPlugin extends Plugin {
             }
 
             ensureOfflineManagers();
-            cancelActiveDownloads();
+            cancelDownloadWork();
             final long generation = downloadGeneration;
             final String regionId = activeRegionId;
             final String regionName = activeRegionName;
@@ -1361,7 +1413,7 @@ public class OfflineMapTestPlugin extends Plugin {
         } catch (Throwable e) {
             String msg = "스타일 팩 다운로드 설정 오류: " + e.getMessage();
             updateStatus(msg);
-            if (call != null) call.reject(msg);
+            rejectDownload(call, msg);
         }
     }
 
@@ -1386,6 +1438,7 @@ public class OfflineMapTestPlugin extends Plugin {
                 .acceptExpired(true)
                 .build();
 
+            final DownloadReporter styleReporter = new DownloadReporter(regionId, "style");
             activeStyleCancelable = offlineManager.loadStylePack(
                 styleUri,
                 styleOptions,
@@ -1393,6 +1446,7 @@ public class OfflineMapTestPlugin extends Plugin {
                     if (generation != downloadGeneration) return;
                     long done = progress.getCompletedResourceCount();
                     long req = Math.max(1, progress.getRequiredResourceCount());
+                    styleReporter.report(done, progress.getRequiredResourceCount(), progress.getLoadedResourceSize(), progress.getErroredResourceCount(), done >= req);
                     int pct = (int) Math.min(100, (done * 100) / req);
                     mainHandler.post(() -> updateStatus(String.format(
                         Locale.KOREA,
@@ -1407,7 +1461,7 @@ public class OfflineMapTestPlugin extends Plugin {
                         String errMsg = err != null ? err.getMessage() : "Unknown StylePack error";
                         String msg = "스타일 팩 다운로드 실패: " + errMsg;
                         mainHandler.post(() -> { updateStatus(msg); reapplyEmbeddedNetworkBlock(); });
-                        if (call != null) call.reject(msg);
+                        rejectDownload(call, msg);
                         return;
                     }
                     mainHandler.post(() -> startTileRegionDownload(
@@ -1418,10 +1472,14 @@ public class OfflineMapTestPlugin extends Plugin {
         } catch (Throwable e) {
             String msg = "스타일 팩 다운로드 설정 오류: " + e.getMessage();
             updateStatus(msg);
-            if (call != null) call.reject(msg);
+            rejectDownload(call, msg);
         }
     }
 
+    /**
+     * The 1x satellite set only belongs to regions that were already downloaded that way (it keeps those stored tiles
+     * part of the region). A fresh download must not fetch every satellite tile a second time at 1x.
+     */
     private void startTileRegionDownload(
         PluginCall call,
         long generation,
@@ -1429,6 +1487,33 @@ public class OfflineMapTestPlugin extends Plugin {
         String regionName,
         String tileRegionId,
         double[] regionBbox
+    ) {
+        try {
+            if (generation != downloadGeneration) return;
+            ensureOfflineManagers();
+            tileStore.getAllTileRegions(expected -> {
+                boolean existing = false;
+                if (expected.isValue() && expected.getValue() != null) {
+                    for (TileRegion r : expected.getValue()) {
+                        if (tileRegionId.equals(r.getId()) && r.getCompletedResourceCount() > 0) { existing = true; break; }
+                    }
+                }
+                final boolean keepLegacy1x = existing;
+                mainHandler.post(() -> startTileRegionDownloadWith(call, generation, regionId, regionName, tileRegionId, regionBbox, keepLegacy1x));
+            });
+        } catch (Throwable e) {
+            startTileRegionDownloadWith(call, generation, regionId, regionName, tileRegionId, regionBbox, true);
+        }
+    }
+
+    private void startTileRegionDownloadWith(
+        PluginCall call,
+        long generation,
+        String regionId,
+        String regionName,
+        String tileRegionId,
+        double[] regionBbox,
+        boolean keepLegacy1x
     ) {
         try {
             if (generation != downloadGeneration) return;
@@ -1462,7 +1547,7 @@ public class OfflineMapTestPlugin extends Plugin {
                     .build()
             );
             // Descriptor 1b: the previously downloaded 1x set stays part of the region (already stored -> kept, not re-fetched).
-            TilesetDescriptor satLegacyDescriptor = Math.abs(pixelRatio - 1.0f) > 0.01f
+            TilesetDescriptor satLegacyDescriptor = keepLegacy1x && Math.abs(pixelRatio - 1.0f) > 0.01f
                 ? offlineManager.createTilesetDescriptor(new TilesetDescriptorOptions.Builder()
                     .styleURI(styleUri).minZoom(SAT_MIN_ZOOM).maxZoom(SAT_MAX_ZOOM).pixelRatio(1.0f).build())
                 : null;
@@ -1480,8 +1565,8 @@ public class OfflineMapTestPlugin extends Plugin {
             );
 
             List<TilesetDescriptor> descriptors = new ArrayList<>(Arrays.asList(satDescriptor, demDescriptor));
-            if (satLegacyDescriptor != null) {
-                descriptors.add(satLegacyDescriptor);
+            if (satLegacyDescriptor != null) descriptors.add(satLegacyDescriptor);
+            if (Math.abs(pixelRatio - 1.0f) > 0.01f) {
                 // DEM at the render ratio too; if the DEM URL does not depend on the ratio this resolves to the same stored tiles.
                 descriptors.add(offlineManager.createTilesetDescriptor(new TilesetDescriptorOptions.Builder()
                     .styleURI(styleUri).tilesets(Collections.singletonList(DEM_TILESET_URI))
@@ -1492,11 +1577,13 @@ public class OfflineMapTestPlugin extends Plugin {
                 .descriptors(descriptors)
                 .acceptExpired(true)
                 .build();
-            Log.i(TAG, String.format(Locale.US, "TileRegion %s: bbox=[%.5f,%.5f,%.5f,%.5f] sat z%d-%d @%.2fx, dem z%d-%d",
-                tileRegionId, minLng, minLat, maxLng, maxLat, SAT_MIN_ZOOM, SAT_MAX_ZOOM, pixelRatio, DEM_MIN_ZOOM, DEM_MAX_ZOOM));
+            Log.i(TAG, String.format(Locale.US, "TileRegion %s: bbox=[%.5f,%.5f,%.5f,%.5f] sat z%d-%d @%.2fx, dem z%d-%d, legacy1x=%b",
+                tileRegionId, minLng, minLat, maxLng, maxLat, SAT_MIN_ZOOM, SAT_MAX_ZOOM, pixelRatio, DEM_MIN_ZOOM, DEM_MAX_ZOOM, satLegacyDescriptor != null));
 
             updateStatus("2/2 " + regionName + " 위성 + 3D DEM 타일 리전 다운로드 시작...");
 
+            final DownloadReporter tileReporter = new DownloadReporter(regionId, "tiles");
+            final long[] lastErrored = { 0 };
             activeTileCancelable = tileStore.loadTileRegion(
                 tileRegionId,
                 regionLoadOptions,
@@ -1504,6 +1591,8 @@ public class OfflineMapTestPlugin extends Plugin {
                     if (generation != downloadGeneration) return;
                     long done = progress.getCompletedResourceCount();
                     long req = Math.max(1, progress.getRequiredResourceCount());
+                    lastErrored[0] = progress.getErroredResourceCount();
+                    tileReporter.report(done, progress.getRequiredResourceCount(), progress.getLoadedResourceSize(), lastErrored[0], done >= req);
                     double mb = progress.getCompletedResourceSize() / (1024.0 * 1024.0);
                     int pct = (int) Math.min(100, (done * 100) / req);
                     mainHandler.post(() -> updateStatus(String.format(
@@ -1516,9 +1605,11 @@ public class OfflineMapTestPlugin extends Plugin {
                     if (generation != downloadGeneration) return;
                     if (expected.isError()) {
                         TileRegionError err = expected.getError();
-                        String msg = "타일 다운로드 실패: " + (err != null ? err.getType() + " - " + err.getMessage() : "알 수 없는 오류");
+                        String msg = "타일 다운로드 실패: " + (err != null ? err.getType() + " - " + err.getMessage() : "알 수 없는 오류")
+                            + (lastErrored[0] > 0 ? " (실패 타일 " + lastErrored[0] + "개, 이미 저장된 타일은 유지됨)" : " (이미 저장된 타일은 유지됨)");
+                        Log.w(TAG, "TileRegion " + tileRegionId + " failed: " + msg);
                         mainHandler.post(() -> { updateStatus(msg); reapplyEmbeddedNetworkBlock(); });
-                        if (call != null) call.reject(msg);
+                        rejectDownload(call, msg);
                     } else {
                         TileRegion region = expected.getValue();
                         long count = region != null ? region.getCompletedResourceCount() : 0;
@@ -1527,11 +1618,12 @@ public class OfflineMapTestPlugin extends Plugin {
                         if (!complete) {
                             String msg = String.format(
                                 Locale.KOREA,
-                                "타일 다운로드 미완료: %d/%d 리소스. 완료 상태로 저장하지 않습니다.",
-                                count, required
+                                "타일 다운로드 미완료: %d/%d 리소스 (실패 %d개). 완료 상태로 저장하지 않습니다.",
+                                count, required, lastErrored[0]
                             );
+                            Log.w(TAG, "TileRegion " + tileRegionId + " incomplete: " + msg);
                             mainHandler.post(() -> { updateStatus(msg); reapplyEmbeddedNetworkBlock(); });
-                            if (call != null) call.reject(msg);
+                            rejectDownload(call, msg);
                             return;
                         }
                         double mb = region != null ? (region.getCompletedResourceSize() / (1024.0 * 1024.0)) : 0.0;
@@ -1552,7 +1644,7 @@ public class OfflineMapTestPlugin extends Plugin {
             String msg = "타일 리전 다운로드 설정 오류: " + e.getMessage();
             updateStatus(msg);
             reapplyEmbeddedNetworkBlock();
-            if (call != null) call.reject(msg);
+            rejectDownload(call, msg);
         }
     }
 
@@ -1577,8 +1669,14 @@ public class OfflineMapTestPlugin extends Plugin {
                 tileRegionId + CONTEXT_REGION_SUFFIX, ctx[0], ctx[1], ctx[2], ctx[3],
                 CONTEXT_SAT_MIN_ZOOM, CONTEXT_SAT_MAX_ZOOM, CONTEXT_DEM_MIN_ZOOM, CONTEXT_DEM_MAX_ZOOM));
             updateStatus("2/2 " + regionName + " 주변 저배율 영상·지형 다운로드 중...");
+            final DownloadReporter ctxReporter = new DownloadReporter(regionId, "context");
             activeTileCancelable = tileStore.loadTileRegion(tileRegionId + CONTEXT_REGION_SUFFIX, opts,
-                progress -> { },
+                progress -> {
+                    if (generation != downloadGeneration) return;
+                    long done = progress.getCompletedResourceCount();
+                    ctxReporter.report(done, progress.getRequiredResourceCount(), progress.getLoadedResourceSize(), progress.getErroredResourceCount(),
+                        done >= Math.max(1, progress.getRequiredResourceCount()));
+                },
                 expected -> {
                     if (generation != downloadGeneration) return;
                     boolean ctxOk = false;
@@ -1632,6 +1730,7 @@ public class OfflineMapTestPlugin extends Plugin {
             ret.put("pixelRatio", pixelRatio);
             // Ski data result is separate from the tile result: tiles may be complete while ski data failed.
             ret.put("skiData", skiOutcome != null ? skiOutcome : new JSONObject());
+            if (call == activeDownloadCall) activeDownloadCall = null;
             call.resolve(ret);
         }
     }
@@ -2701,7 +2800,60 @@ public class OfflineMapTestPlugin extends Plugin {
         return btn;
     }
 
+    /**
+     * Download progress for the WebView (event "offlineDownloadProgress"), at most ~2 per second per phase.
+     * phase: style | tiles | context. done/required are TileStore's own resource counts, so percent matches what is stored.
+     */
+    private final class DownloadReporter {
+        private final String regionId;
+        private final String phase;
+        private final String jobId = activeDownloadJobId;
+        private long lastEmitMs = 0;
+        private long sampleMs = 0;
+        private long sampleDone = 0;
+        private double rate = 0; // resources per second, smoothed over ~10 s windows
+
+        DownloadReporter(String regionId, String phase) {
+            this.regionId = regionId;
+            this.phase = phase;
+        }
+
+        synchronized void report(long done, long required, long networkBytes, long errored, boolean force) {
+            long now = System.currentTimeMillis();
+            if (sampleMs == 0) {
+                sampleMs = now;
+                sampleDone = done;
+            } else if (now - sampleMs >= 10000) {
+                double inst = Math.max(0, done - sampleDone) * 1000.0 / (now - sampleMs);
+                rate = rate == 0 ? inst : rate * 0.6 + inst * 0.4;
+                sampleMs = now;
+                sampleDone = done;
+            }
+            if (!force && now - lastEmitMs < 500) return;
+            lastEmitMs = now;
+            JSObject o = new JSObject();
+            o.put("regionId", regionId);
+            o.put("jobId", jobId);
+            o.put("phase", phase);
+            o.put("done", done);
+            o.put("required", required);
+            o.put("percent", required > 0 ? Math.min(100.0, done * 100.0 / required) : -1);
+            o.put("mb", networkBytes / (1024.0 * 1024.0));
+            o.put("errored", errored);
+            o.put("etaSec", rate > 0 && required > done ? Math.round((required - done) / rate) : -1);
+            mainHandler.post(() -> notifyListeners("offlineDownloadProgress", o));
+        }
+    }
+
+    /** Cancels the running download and rejects its pending call (nothing is left waiting forever). */
     private void cancelActiveDownloads() {
+        cancelDownloadWork();
+        PluginCall pending = activeDownloadCall;
+        activeDownloadCall = null;
+        if (pending != null) pending.reject("다운로드가 취소되었습니다.", "CANCELLED");
+    }
+
+    private void cancelDownloadWork() {
         downloadGeneration++;
         if (activeStyleCancelable != null) {
             try { activeStyleCancelable.cancel(); } catch (Exception ignored) {}
