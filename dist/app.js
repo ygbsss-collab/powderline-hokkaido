@@ -351,7 +351,7 @@
     }
   };
   const localSavedRoutes = JSON.parse(localStorage.getItem('powderline.routes') || '[]');
-  const state = { viewStack: [], backNavigating: false, lang: localStorage.getItem('powderline.lang') || 'ko', selectedLiftId: null, points: [], courses: [], selectedCourseId: null, editorMode: false, tool: 'navigate', selectedVertex: null, segmentStart: null, mapStyle: 'satellite', saved: localSavedRoutes, session: null, profile: null, pendingUsers: [], pendingUsersError: null, myParties: [], currentParty: null, partySchemaReady: false };
+  const state = { offlineCatalog: { phase: 'idle', message: '' }, nativeMap: { active: false, session: false, shown: false, regionId: '', unavailable: '', route: null, routeTimer: null, eventsBound: false, timer: null, observer: null }, viewStack: [], backNavigating: false, lang: localStorage.getItem('powderline.lang') || 'ko', selectedLiftId: null, points: [], courses: [], selectedCourseId: null, editorMode: false, tool: 'navigate', selectedVertex: null, segmentStart: null, mapStyle: 'satellite', saved: localSavedRoutes, session: null, profile: null, pendingUsers: [], pendingUsersError: null, myParties: [], currentParty: null, partySchemaReady: false };
   let mobileEditingSavedRoute = null;
   let mobileRoutePointsHidden = false;
   let mobileSelectedSavedIndex = '';
@@ -555,12 +555,15 @@
     const cachedToken = getCachedMapboxToken();
     const storedKey = localStorage.getItem(SUPABASE_KEY_STORAGE) || '';
     const publishableKey = isPublishableKey(storedKey) ? storedKey : DEFAULT_SUPABASE_CONFIG.publishableKey;
+    const abort = new AbortController();
+    const abortTimer = setTimeout(() => abort.abort(), 6000);
     try {
       const response = await fetch(MAPBOX_TOKEN_FUNCTION_URL, {
         method: 'GET',
         headers: { Accept: 'application/json', apikey: publishableKey },
         cache: 'no-store',
-        credentials: 'omit'
+        credentials: 'omit',
+        signal: abort.signal
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
@@ -573,6 +576,8 @@
     } catch (error) {
       console.warn('Mapbox token auto-load failed; using the last saved token when available.', error);
       return cachedToken;
+    } finally {
+      clearTimeout(abortTimer);
     }
   }
 
@@ -727,6 +732,7 @@ function syncMyLocationBlueDotFromFix(coords, timestamp = Date.now()) {
   syncLocateButtonsActiveState();
 }
 function triggerMyLocationGps({ center = true } = {}) {
+  if (center && window.powderlineNativeLocate?.()) return; // Native offline map is showing: it handles position/follow itself
   if (!geolocateControl) return;
   ensureGeolocateControlReady();
   if (center) { pendingLocateToast = true; armMyLocationFollow(); }
@@ -1057,12 +1063,26 @@ geolocateControl.on('error', (e) => {
     }
   }
 
+  const CLOUD_ROUTES_CACHE_PREFIX = 'powderline.cloudRoutes.v1.';
+  function cacheCloudRoutes(userId, routes) {
+    try { localStorage.setItem(CLOUD_ROUTES_CACHE_PREFIX + userId, JSON.stringify(routes)); } catch (error) { console.warn('Cloud route cache write failed:', error); }
+  }
+  function readCachedCloudRoutes(userId) {
+    if (!userId) return [];
+    try {
+      const cached = JSON.parse(localStorage.getItem(CLOUD_ROUTES_CACHE_PREFIX + userId) || '[]');
+      return Array.isArray(cached) ? cached.filter(route => route?.id && Array.isArray(route.points)) : [];
+    } catch { return []; }
+  }
   function useLocalRoutes() {
     const ownerId = state.session?.user?.id || '';
     const localRoutes = JSON.parse(localStorage.getItem('powderline.routes') || '[]')
       .filter(route => !route?.recordingOwnerId || route.recordingOwnerId === ownerId);
     const pendingRoutes = ownerId ? getPendingGpsRoutes(ownerId) : [];
-    state.saved = [...pendingRoutes, ...localRoutes.filter(route => !pendingRoutes.some(pending => pending.id === route.id))];
+    const known = new Set([...pendingRoutes, ...localRoutes].map(route => route.id));
+    // Courses saved to the account are shown from the last sync when the server cannot be reached.
+    const cachedCloud = readCachedCloudRoutes(ownerId).filter(route => !known.has(route.id));
+    state.saved = [...pendingRoutes, ...localRoutes.filter(route => !pendingRoutes.some(pending => pending.id === route.id)), ...cachedCloud];
     renderSaved();
   }
 
@@ -1090,6 +1110,7 @@ geolocateControl.on('error', (e) => {
       updatedAt: row.updated_at,
       source: 'cloud'
     }));
+    cacheCloudRoutes(userId, cloudRoutes);
     state.saved = mergePendingGpsRoutes(cloudRoutes, userId);
     renderSaved();
     if (notify) toast(t('toastCloudLoaded'));
@@ -1399,7 +1420,8 @@ function syncRegionSelectors() {
   const active = Object.entries(regions)
     .filter(([, details]) => !details.custom && details.isActive !== false)
     .sort((a, b) => (a[1].sortOrder ?? 999) - (b[1].sortOrder ?? 999));
-  const options = active.map(([id, details]) => `<option value="${escapeHtml(id)}">${escapeHtml(details.label)}</option>`).join('');
+  const skiSuffix = status => status === 'pending' || status === 'processing' ? ' · 데이터 준비 중' : status === 'failed' ? ' · 데이터 준비 실패' : '';
+  const options = active.map(([id, details]) => `<option value="${escapeHtml(id)}">${escapeHtml(details.label + skiSuffix(details.skiDataStatus))}</option>`).join('');
   const fallback = active.some(([id]) => id === 'furano') ? 'furano' : active[0]?.[0] || '';
   for (const id of ['region', 'mobileRegionSelect', 'homeRegionSelect', 'rideRegionSelect', 'partyCreateRegion']) {
     const select = $(`#${id}`);
@@ -1429,10 +1451,43 @@ function parseRegionBbox(value) {
     : null;
 }
 
+const REGION_CATALOG_CACHE_KEY = 'powderline.regionCatalog.v1';
+function applyRegionRows(data) {
+  for (const row of data) {
+    regions[row.id] = {
+      label: row.label, center: [row.center_lng, row.center_lat],
+      zoom: row.zoom, bearing: row.bearing, pitch: row.pitch,
+      sortOrder: row.sort_order, isActive: row.is_active,
+      bbox: parseRegionBbox(row.bbox),
+      skiDataStatus: row.ski_data_status, skiDataVersion: row.offline_data_version, skiDataError: row.ski_data_error
+    };
+    catalogRegionIds.add(row.id);
+  }
+}
+// Last successful server catalog, so the app (also offline) knows every registered region, not just the built-in ones.
+function cacheRegionCatalog(data) {
+  try {
+    const rows = data.map(row => ({ id: row.id, label: row.label, center_lng: row.center_lng, center_lat: row.center_lat, zoom: row.zoom,
+      bearing: row.bearing, pitch: row.pitch, sort_order: row.sort_order, is_active: row.is_active, bbox: row.bbox,
+      ski_data_status: row.ski_data_status, ski_data_error: row.ski_data_error, offline_data_version: row.offline_data_version }));
+    localStorage.setItem(REGION_CATALOG_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), rows }));
+  } catch (error) { console.warn('Region catalog cache write failed:', error); }
+}
+function restoreCachedRegionCatalog() {
+  if (catalogRegionIds.size) return false; // a live catalog is already applied
+  try {
+    const cached = JSON.parse(localStorage.getItem(REGION_CATALOG_CACHE_KEY) || 'null');
+    if (!Array.isArray(cached?.rows) || !cached.rows.length) return false;
+    applyRegionRows(cached.rows.filter(row => row?.id && Number.isFinite(Number(row.center_lng)) && Number.isFinite(Number(row.center_lat))));
+    syncRegionSelectors();
+    return true;
+  } catch (error) { console.warn('Region catalog cache read failed:', error); return false; }
+}
+
 async function loadRegionCatalog(client) {
   try {
     const { data, error } = await client.from('powderline_regions')
-      .select('id,label,center_lng,center_lat,zoom,bearing,pitch,sort_order,is_active,is_default,bbox,ski_data_status,ski_data_error,ski_data_feature_count,ski_data_file_size,offline_data_version')
+      .select('id,label,center_lng,center_lat,zoom,bearing,pitch,sort_order,is_active,is_default,bbox,ski_data_status,ski_data_error,ski_data_feature_count,ski_data_file_size,offline_data_version,ski_data_requested_at,ski_data_started_at,ski_data_completed_at')
       .order('sort_order', { ascending: true });
     if (error) throw error;
     if (client !== supabaseClient) return { error: new Error('연결이 변경되었습니다.') };
@@ -1440,16 +1495,8 @@ async function loadRegionCatalog(client) {
       throw new Error('기본 지역을 모두 불러오지 못했습니다.');
     }
     for (const id of catalogRegionIds) if (regions[id]) regions[id].isActive = false;
-    for (const row of data) {
-      regions[row.id] = {
-        label: row.label, center: [row.center_lng, row.center_lat],
-        zoom: row.zoom, bearing: row.bearing, pitch: row.pitch,
-        sortOrder: row.sort_order, isActive: row.is_active,
-        bbox: parseRegionBbox(row.bbox),
-        skiDataStatus: row.ski_data_status, skiDataVersion: row.offline_data_version, skiDataError: row.ski_data_error
-      };
-      catalogRegionIds.add(row.id);
-    }
+    applyRegionRows(data);
+    cacheRegionCatalog(data);
     if (state.profile?.id === state.session?.user?.id &&
         state.profile?.role === 'admin' && state.profile?.status === 'approved') adminRegionRows = data;
     syncRegionSelectors();
@@ -1539,6 +1586,7 @@ function activateOfflineAccess(client, error) {
 }
 
 async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)||DEFAULT_SUPABASE_CONFIG.publishableKey){
+  restoreCachedRegionCatalog(); // independent of the network: known regions are available before/without the server
   const wasOfflineAccess = offlineAccessActive;
   if (!wasOfflineAccess) {
     authInitializationComplete=false;
@@ -1606,7 +1654,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       await stopGpsRecordingWatcher();
       resetGpsRecordingState();
       gpsRecording.initialized=false;
-      if (event === 'SIGNED_OUT') clearOfflineAccessGrant(previousUserId);
+      if (event === 'SIGNED_OUT') {
+        clearOfflineAccessGrant(previousUserId);
+        if (previousUserId) { try { localStorage.removeItem(CLOUD_ROUTES_CACHE_PREFIX + previousUserId); } catch { } }
+      }
       onlineAuthVerified=false;
       state.profile=null;
       updateAuthUi();
@@ -1854,7 +1905,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function setMapStyle(style) { if (!hasMapboxToken) return toast(t('toastNeedToken')); state.mapStyle = style; const topo = style === 'topo'; $('#satelliteBtn').classList.toggle('active', !topo); $('#topoBtn').classList.toggle('active', topo); $('#satelliteBtn').setAttribute('aria-pressed', String(!topo)); $('#topoBtn').setAttribute('aria-pressed', String(topo)); map.setStyle(MAPBOX_STYLES[style]); toast(topo ? t('toastStyleTopo') : t('toastStyleSatellite')) }
   async function loadSkiData(region) {
     const token = ++skiLoadToken; updateFacilityStatus('loading'); try {
-      let response = await fetch(new URL(`./data/ski/${region}.geojson`, document.baseURI)).catch(() => null);
+      const serverReady = regions[region]?.skiDataStatus === 'ready' && regions[region]?.skiDataVersion;
+      let response = serverReady
+        ? await fetch(`${SUPABASE_URL}/storage/v1/object/public/ski-data/${encodeURIComponent(region)}.geojson?v=${encodeURIComponent(regions[region].skiDataVersion)}`).catch(() => null)
+        : null;
+      if (!response?.ok) response = await fetch(new URL(`./data/ski/${region}.geojson`, document.baseURI)).catch(() => null);
       if (!response?.ok) {
         const info = regions[region], st = info?.skiDataStatus;
         if (st === 'ready') { const v = info.skiDataVersion ? `?v=${encodeURIComponent(info.skiDataVersion)}` : ''; response = await fetch(`${SUPABASE_URL}/storage/v1/object/public/ski-data/${encodeURIComponent(region)}.geojson${v}`) }
@@ -2133,7 +2188,6 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   function render() {
     const routeSource = map.getSource('route'), pointSource = map.getSource('route-points');
-    if (!routeSource || !pointSource) return;
     const lineFeatures = [];
     if (splitState && splitState.partA.length > 1 && splitState.partB.length > 1) {
       lineFeatures.push(feature(splitState.partA, true, '#38bdf8', 'rgba(56,189,248,0.5)'));
@@ -2148,7 +2202,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     } else if (state.points.length > 1) {
       lineFeatures.push(feature(state.points, true));
     }
-    routeSource.setData({ type: 'FeatureCollection', features: lineFeatures });
+    const routeCollection = { type: 'FeatureCollection', features: lineFeatures };
+    pushNativeRoute(routeCollection);
+    if (!routeSource || !pointSource) return;
+    routeSource.setData(routeCollection);
 
     const showEditorPoints = state.editorMode && !(window.matchMedia('(max-width: 768px)').matches && mobileRoutePointsHidden);
     const pointFeatures = (showEditorPoints ? state.points : []).map((p, i) => {
@@ -2963,11 +3020,25 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
   function resetProfile(message) { profile.samples = []; profile.layout = null; profile.view = null; profile.pending = false; clearTimeout(profile.timer); $('#profileMessage').textContent = message; $('#profileMessage').hidden = false; $('#profileTooltip').hidden = true;['#profileDistance', '#profileAscent', '#profileDescent', '#profileAverage', '#profileMaximum'].forEach(id => $(id).textContent = '—'); const canvas = $('#profileChart'), ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); clearProfileCursor(false); renderMobileCourseProfiles() }
   function routeSamples() { if (state.points.length < 2) return []; const samples = [{ ...state.points[0], distance: 0 }], totalBySegment = []; let total = 0; for (let i = 1; i < state.points.length; i++) { const a = state.points[i - 1], b = state.points[i], length = horizontalMeters(a, b), steps = Math.max(1, Math.round(length / PROFILE_SAMPLE_METERS)); totalBySegment.push({ a, b, length, start: total, steps }); total += length } for (const segment of totalBySegment) { for (let step = 1; step <= segment.steps; step++) { const t = step / segment.steps; samples.push({ lng: segment.a.lng + (segment.b.lng - segment.a.lng) * t, lat: segment.a.lat + (segment.b.lat - segment.a.lat) * t, distance: segment.start + segment.length * t }) } } return samples }
-  function scheduleProfile(delay = 180) { const generation = ++profile.generation; clearTimeout(profile.timer); if (state.points.length < 2) { resetProfile(t('profileEmptyMsg')); return } resetProfile(t('profileWaitingDem')); profile.pending = true; profile.timer = setTimeout(() => calculateProfile(generation), delay) }
-  function calculateProfile(generation) {
-    if (generation !== profile.generation || state.points.length < 2) return; const samples = routeSamples(), total = samples.at(-1)?.distance || 0; if (total < .01) { resetProfile(t('profileNeed2Points')); return } let missing = false; for (const sample of samples) { let elevation; try { elevation = map.queryTerrainElevation([sample.lng, sample.lat], { exaggerated: false }) } catch (error) { elevation = null } if (!Number.isFinite(elevation)) { missing = true; break } sample.elevation = elevation } if (generation !== profile.generation) return; if (missing) { profile.pending = true; $('#profileMessage').textContent = t('profileWaitingTiles'); $('#profileMessage').hidden = false; return } profile.pending = false; let ascent = 0, descent = 0, weightedSlope = 0, maxSlope = 0; for (let i = 1; i < samples.length; i++) { const horizontal = samples[i].distance - samples[i - 1].distance, elevationChange = samples[i].elevation - samples[i - 1].elevation, slope = Math.atan2(elevationChange, horizontal) * 180 / Math.PI; samples[i].slope = slope; if (elevationChange > 0) ascent += elevationChange; else descent -= elevationChange; weightedSlope += Math.abs(slope) * horizontal; maxSlope = Math.max(maxSlope, Math.abs(slope)) } samples[0].slope = 0; profile.samples = samples; $('#profileDistance').textContent = (total / 1000).toFixed(2) + ' km'; $('#profileAscent').textContent = Math.round(ascent) + ' m'; $('#profileDescent').textContent = Math.round(descent) + ' m'; $('#profileAverage').textContent = (weightedSlope / total).toFixed(1) + '°';
+  function scheduleProfile(delay = 180) { const generation = ++profile.generation; clearTimeout(profile.timer); if (state.points.length < 2) { resetProfile(t('profileEmptyMsg')); return } resetProfile(t('profileWaitingDem')); profile.pending = true; profile.timer = setTimeout(() => startProfileCalc(generation), delay) }
+  // Native map on screen: elevations come from the Native (offline) DEM; the GL map has no tiles offline.
+  async function startProfileCalc(generation) {
+    if (state.nativeMap.active && state.nativeMap.shown) {
+      const plugin = nativeMapPlugin();
+      try {
+        const coords = routeSamples().map(sm => [sm.lng, sm.lat]);
+        const { elevations } = await plugin.queryEmbeddedElevations({ coords });
+        if (generation !== profile.generation) return;
+        calculateProfile(generation, elevations);
+        return;
+      } catch (error) { console.warn('queryEmbeddedElevations failed:', error); }
+    }
+    calculateProfile(generation);
+  }
+  function calculateProfile(generation, nativeElevations) {
+    if (generation !== profile.generation || state.points.length < 2) return; const samples = routeSamples(), total = samples.at(-1)?.distance || 0; if (total < .01) { resetProfile(t('profileNeed2Points')); return } let missing = false; for (let si = 0; si < samples.length; si++) { const sample = samples[si]; let elevation; try { elevation = nativeElevations ? nativeElevations[si] : map.queryTerrainElevation([sample.lng, sample.lat], { exaggerated: false }) } catch (error) { elevation = null } if (!Number.isFinite(elevation)) { missing = true; break } sample.elevation = elevation } if (generation !== profile.generation) return; if (missing) { profile.pending = true; $('#profileMessage').textContent = t('profileWaitingTiles'); $('#profileMessage').hidden = false; return } profile.pending = false; let ascent = 0, descent = 0, weightedSlope = 0, maxSlope = 0; for (let i = 1; i < samples.length; i++) { const horizontal = samples[i].distance - samples[i - 1].distance, elevationChange = samples[i].elevation - samples[i - 1].elevation, slope = Math.atan2(elevationChange, horizontal) * 180 / Math.PI; samples[i].slope = slope; if (elevationChange > 0) ascent += elevationChange; else descent -= elevationChange; weightedSlope += Math.abs(slope) * horizontal; maxSlope = Math.max(maxSlope, Math.abs(slope)) } samples[0].slope = 0; profile.samples = samples; $('#profileDistance').textContent = (total / 1000).toFixed(2) + ' km'; $('#profileAscent').textContent = Math.round(ascent) + ' m'; $('#profileDescent').textContent = Math.round(descent) + ' m'; $('#profileAverage').textContent = (weightedSlope / total).toFixed(1) + '°';
     const mobileSlopeEl = $('#mobileSlopeVal');
-    if (mobileSlopeEl) mobileSlopeEl.textContent = (weightedSlope / total).toFixed(0); $('#profileMaximum').textContent = maxSlope.toFixed(1) + '°'; $('#descent').textContent = Math.round(descent) + ' m'; $('#profileMessage').hidden = true; profile.view = computeProfileView(); drawProfile(); renderMobileCourseProfiles()
+    if (mobileSlopeEl) mobileSlopeEl.textContent = (weightedSlope / total).toFixed(0); $('#profileMaximum').textContent = maxSlope.toFixed(1) + '°'; $('#descent').textContent = Math.round(descent) + ' m'; $('#profileMessage').hidden = true; profile.view = (state.nativeMap.active && state.nativeMap.shown) ? null : computeProfileView(); drawProfile(); renderMobileCourseProfiles(); if (state.nativeMap.active && state.nativeMap.shown) updateProfileViewport()
   }
   function slopeColor(deg) {
     const s = Math.min(45, Math.max(0, Math.abs(deg || 0)));
@@ -3153,11 +3224,26 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   // Called when a camera move finishes (not during the gesture).
   function updateProfileViewport() {
     if (profile.samples.length < 2) return;
-    const next = computeProfileView();
+    if (state.nativeMap.active && state.nativeMap.shown) { void updateProfileViewportNative(); return; }
+    applyProfileView(computeProfileView());
+  }
+  function applyProfileView(next) {
     if (sameProfileView(profile.view, next)) return;
     profile.view = next;
     if (profile.selected && !isDistanceInProfileView(profile.selected.distance)) clearProfileCursor(false);
     drawProfile(); renderMobileCourseProfiles();
+  }
+  // Same range logic, but "is this route sample on screen?" is answered by the Native map's projection.
+  async function updateProfileViewportNative() {
+    const plugin = nativeMapPlugin();
+    const samples = profile.samples;
+    if (!plugin?.projectEmbeddedVisible || samples.length < 2) return;
+    try {
+      const { mask } = await plugin.projectEmbeddedVisible({ coords: samples.map(sm => [sm.lng, sm.lat]) });
+      if (profile.samples !== samples || !mask || mask.length !== samples.length) return;
+      const index = new Map(samples.map((sm, i) => [sm, i]));
+      applyProfileView(profileViewFromRuns(visibleDistanceRuns(samples, sm => mask[index.get(sm)] === '1'), samples.at(-1).distance));
+    } catch (error) { console.warn('projectEmbeddedVisible failed:', error); }
   }
   map.on('moveend', updateProfileViewport);
   function profileHeaderText(sample) { return `${(sample.distance / 1000).toFixed(2)}km · ${Math.round(sample.elevation)}m · ${sample.slope >= 0 ? '+' : ''}${sample.slope.toFixed(1)}°` }
@@ -3181,9 +3267,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       profile.marker = new mapboxgl.Marker({ element: el }).setLngLat([sample.lng, sample.lat]).addTo(map);
     }
     profile.marker.setLngLat([sample.lng, sample.lat]);
+    pushNativeCursor(sample);
   }
   function clearProfileCursor(redraw = true) {
     profile.selected = null;
+    pushNativeCursor(null);
     if (profile.marker) { profile.marker.remove(); profile.marker = null }
     if (redraw) { drawProfile(); renderMobileCourseProfiles() }
   }
@@ -4100,6 +4188,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     function showMobileView(view) {
       if (!mobileMedia.matches) return;
+      if (view === 'course-editor' && state.nativeMap.session && mobileHomeMapMode === 'offline') {
+        toast('오프라인 지도에서는 코스 보기·위치 확인만 지원합니다. 코스 생성·수정은 온라인 지도에서 이용해 주세요.');
+        return;
+      }
       const nextView = ['home', 'map', 'ride', 'routes', 'course-editor', 'party', 'party-create', 'party-leader', 'party-invite', 'party-joined', 'party-received', 'account'].includes(view) ? view : 'map';
       const activeTab = nextView === 'course-editor' ? 'routes' : ['party-create', 'party-leader', 'party-invite', 'party-joined', 'party-received'].includes(nextView) ? 'party' : nextView === 'ride' ? 'map' : nextView;
       const prevView = document.body.dataset.mobileView;
@@ -4185,6 +4277,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         map.resize();
         if ((nextView === 'map' || nextView === 'ride') && !profilePanel?.classList.contains('collapsed')) drawProfile();
         if (['routes', 'course-editor', 'map', 'ride'].includes(nextView)) renderMobileCourseProfiles();
+        scheduleNativeMapSync();
       });
     }
     setMobileAppView = showMobileView;
@@ -4247,6 +4340,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const mobileTiltLabel = $('#mobileTiltLabel');
     if (mobileTiltBtn) {
       mobileTiltBtn.addEventListener('click', () => {
+        if (nativeCameraCommand('tilt')) return; // Native map: its camera event updates the 2D/3D labels
         const isPitching = map.getPitch() > 20;
         map.easeTo({ pitch: isPitching ? 0 : 58, duration: 700 });
         if (mobileTiltLabel) {
@@ -4262,6 +4356,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const mobileStyleIcon = $('#mobileStyleIcon');
     if (mobileStyleBtn) {
       mobileStyleBtn.addEventListener('click', () => {
+        if (state.nativeMap.active && state.nativeMap.shown) { toast('다운로드한 오프라인 지도는 위성 스타일만 지원합니다.'); return; }
         const nextStyle = state.mapStyle === 'topo' ? 'satellite' : 'topo';
         setMapStyle(nextStyle);
         if (mobileStyleIcon) {
@@ -4278,6 +4373,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const mobileCompassNeedle = $('#mobileCompassNeedle');
     if (mobileCompassBtn) {
       mobileCompassBtn.addEventListener('click', () => {
+        if (nativeCameraCommand('north')) return;
         map.easeTo({ bearing: 0, pitch: 0, duration: 600 });
       });
       map.on('rotate', () => {
@@ -4288,8 +4384,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       });
     }
 
-    $('#mobileZoomInBtn')?.addEventListener('click', () => map.zoomIn({ duration: 300 }));
-    $('#mobileZoomOutBtn')?.addEventListener('click', () => map.zoomOut({ duration: 300 }));
+    $('#mobileZoomInBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomIn')) map.zoomIn({ duration: 300 }); });
+    $('#mobileZoomOutBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomOut')) map.zoomOut({ duration: 300 }); });
     $('#mobileLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
     $('#mobileInfoBtn')?.addEventListener('click', () => $('#mobileMapProfileToggle')?.click());
     $('#mobileMapRideOnBtn')?.addEventListener('click', () => mobileHomeRideOn('ride'));
@@ -4860,7 +4956,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const skiDataLabel = ({ not_requested: '데이터 요청 없음', pending: '데이터 준비 대기', processing: '데이터 준비 중', ready: '데이터 준비 완료', empty: '조회 완료 · 데이터 없음', failed: '데이터 준비 실패' })[row.ski_data_status] || row.ski_data_status;
       return `<article class="admin-course-item"><strong>${escapeHtml(row.label)} · ${escapeHtml(row.id)}</strong>` +
         `<small>${stateLabel} · ${Number(row.center_lng).toFixed(3)}, ${Number(row.center_lat).toFixed(3)} · zoom ${Number(row.zoom)}</small>` +
-        `<small>${escapeHtml(skiDataLabel || '데이터 상태 미확인')}${row.ski_data_feature_count != null ? ` · ${Number(row.ski_data_feature_count)}개` : ''}</small>` +
+        `<small>${escapeHtml(skiDataLabel || '데이터 상태 미확인')}${row.ski_data_feature_count != null ? ` · ${Number(row.ski_data_feature_count)}개` : ''}${escapeHtml(adminSkiDataTiming(row))}</small>` +
         (row.ski_data_status === 'failed' && row.ski_data_error ? `<small>${escapeHtml(row.ski_data_error)}</small>` : '') +
         `<div class="admin-course-actions"><button type="button" data-admin-region-action="edit" data-region-id="${escapeHtml(row.id)}">수정</button>` +
         (builtIn ? '<small>기본 지역 · 비활성화 불가</small>' :
@@ -4869,6 +4965,29 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }).join('') || '<p>등록된 지역이 없습니다.</p>';
     status.classList.remove('error');
     status.textContent = `${adminRegionRows.length}개 지역`;
+    scheduleAdminRegionStatusPoll();
+  }
+  // "Waiting" is shown with its real age; GitHub's scheduled runs can be delayed by hours.
+  function adminSkiDataTiming(row) {
+    const since = row.ski_data_status === 'processing' ? row.ski_data_started_at : row.ski_data_status === 'pending' ? row.ski_data_requested_at : null;
+    if (!since) return '';
+    const minutes = Math.max(0, Math.round((Date.now() - Date.parse(since)) / 60000));
+    const age = minutes < 60 ? `${minutes}분` : `${Math.floor(minutes / 60)}시간 ${minutes % 60}분`;
+    const late = row.ski_data_status === 'pending' && minutes >= 90 ? ' · 예약 수집 실행 지연 중' : '';
+    return ` · 요청 후 ${age} 경과${late}`;
+  }
+  // While anything is pending/processing and the region admin is open, re-read the DB so the list follows the batch.
+  let adminRegionPollTimer = null;
+  function scheduleAdminRegionStatusPoll() {
+    clearTimeout(adminRegionPollTimer);
+    const waiting = adminRegionRows.some(row => ['pending', 'processing'].includes(row.ski_data_status));
+    if (!waiting) return;
+    adminRegionPollTimer = setTimeout(() => {
+      const view = $('#mobileAdminRegionsView');
+      const open = view && !view.hidden && !document.hidden;
+      if (open && supabaseClient && navigator.onLine !== false) void loadAdminRegions();
+      else scheduleAdminRegionStatusPoll();
+    }, 60000);
   }
 
   async function loadAdminRegions() {
@@ -4927,7 +5046,101 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       map.addLayer({ id: 'admin-region-bbox-line', type: 'line', source: 'admin-region-bbox',
         paint: { 'line-color': '#38bdf8', 'line-width': 3 } });
     }
+    const handles = { type: 'FeatureCollection', features: bbox ? adminBboxHandles(bbox).map(h => ({
+      type: 'Feature', geometry: { type: 'Point', coordinates: h.lngLat }, properties: {} })) : [] };
+    if (!map.getSource('admin-region-bbox-handles')) {
+      map.addSource('admin-region-bbox-handles', { type: 'geojson', data: handles });
+    } else {
+      map.getSource('admin-region-bbox-handles').setData(handles);
+    }
+    if (!map.getLayer('admin-region-bbox-handles')) {
+      map.addLayer({ id: 'admin-region-bbox-handles', type: 'circle', source: 'admin-region-bbox-handles',
+        paint: { 'circle-radius': 7, 'circle-color': '#ffffff', 'circle-stroke-color': '#0284c7', 'circle-stroke-width': 3 } });
+    }
   }
+
+  // ---- Rectangle editing: 4 corner handles, 4 edge-middle handles, drag inside to move. ----
+  // hx/hy: -1 = west/south edge, +1 = east/north edge, 0 = this axis is untouched.
+  function adminBboxHandles(bbox) {
+    const cx = (bbox[0] + bbox[2]) / 2, cy = (bbox[1] + bbox[3]) / 2;
+    return [
+      { hx: -1, hy: -1, lngLat: [bbox[0], bbox[1]] }, { hx: 1, hy: -1, lngLat: [bbox[2], bbox[1]] },
+      { hx: 1, hy: 1, lngLat: [bbox[2], bbox[3]] }, { hx: -1, hy: 1, lngLat: [bbox[0], bbox[3]] },
+      { hx: 0, hy: -1, lngLat: [cx, bbox[1]] }, { hx: 1, hy: 0, lngLat: [bbox[2], cy] },
+      { hx: 0, hy: 1, lngLat: [cx, bbox[3]] }, { hx: -1, hy: 0, lngLat: [bbox[0], cy] }
+    ];
+  }
+  // Pure: new bbox for a handle drag / a whole-box move. Keeps west<east, south<north (minimum size) and valid latitudes.
+  function adminBboxAfterDrag(start, drag, lngLat) {
+    const MIN = 1e-5;
+    const lat = value => Math.max(-85, Math.min(85, value));
+    if (drag.mode === 'move') {
+      const dLng = lngLat[0] - drag.startLngLat[0];
+      let dLat = lngLat[1] - drag.startLngLat[1];
+      dLat = Math.max(-85 - start[1], Math.min(85 - start[3], dLat));
+      return [start[0] + dLng, start[1] + dLat, start[2] + dLng, start[3] + dLat];
+    }
+    const next = start.slice();
+    if (drag.hx < 0) next[0] = Math.min(lngLat[0], start[2] - MIN); else if (drag.hx > 0) next[2] = Math.max(lngLat[0], start[0] + MIN);
+    if (drag.hy < 0) next[1] = Math.min(lat(lngLat[1]), start[3] - MIN); else if (drag.hy > 0) next[3] = Math.max(lat(lngLat[1]), start[1] + MIN);
+    return next;
+  }
+  function adminBboxHit(picker, point, lngLat, touch) {
+    if (!picker?.bbox || picker.pickingBbox || picker.firstCorner) return null;
+    const reach = touch ? 24 : 14;
+    let best = null, bestDistance = reach;
+    for (const handle of adminBboxHandles(picker.bbox)) {
+      const px = map.project(handle.lngLat);
+      const distance = Math.hypot(px.x - point.x, px.y - point.y);
+      if (distance <= bestDistance) { best = { mode: 'handle', hx: handle.hx, hy: handle.hy }; bestDistance = distance; }
+    }
+    if (best) return best;
+    const b = picker.bbox;
+    return lngLat.lng >= b[0] && lngLat.lng <= b[2] && lngLat.lat >= b[1] && lngLat.lat <= b[3] ? { mode: 'move' } : null;
+  }
+  function adminBboxText(bbox) { return `W ${bbox[0].toFixed(6)} · S ${bbox[1].toFixed(6)} · E ${bbox[2].toFixed(6)} · N ${bbox[3].toFixed(6)}`; }
+  function startAdminBboxDrag(event, touch) {
+    const picker = adminRegionPicker;
+    if (!picker || picker.drag) return;
+    if (touch && event.originalEvent?.touches && event.originalEvent.touches.length > 1) return; // pinch stays a map gesture
+    const hit = adminBboxHit(picker, event.point, event.lngLat, touch);
+    if (!hit) return;
+    event.preventDefault();
+    map.dragPan.disable(); // the map must not pan while the rectangle is edited
+    picker.drag = { ...hit, startLngLat: [event.lngLat.lng, event.lngLat.lat], startBbox: picker.bbox.slice() };
+  }
+  function moveAdminBboxDrag(event) {
+    const picker = adminRegionPicker;
+    if (!picker?.drag) {
+      if (picker && !event.originalEvent?.touches) { // hover cursor hint (desktop)
+        const hit = adminBboxHit(picker, event.point, event.lngLat, false);
+        map.getCanvas().style.cursor = hit ? (hit.mode === 'move' ? 'move' : 'pointer') : '';
+      }
+      return;
+    }
+    picker.bbox = adminBboxAfterDrag(picker.drag.startBbox, picker.drag, [event.lngLat.lng, event.lngLat.lat]);
+    drawAdminRegionBbox();
+    $('#adminRegionPickerStatus').textContent = adminBboxText(picker.bbox);
+  }
+  function endAdminBboxDrag() {
+    const picker = adminRegionPicker;
+    if (!picker?.drag) return;
+    picker.drag = null;
+    map.dragPan.enable();
+    for (const [index, name] of ['west', 'south', 'east', 'north'].entries()) {
+      $('#stitchAdminRegionForm').elements.namedItem(name).value = picker.bbox[index].toFixed(6);
+    }
+    $('#adminRegionPickerStatus').textContent = adminBboxText(picker.bbox) + ' — 폼에 반영했습니다. 적용 후 저장하세요.';
+  }
+  map.on('mousedown', event => startAdminBboxDrag(event, false));
+  map.on('touchstart', event => startAdminBboxDrag(event, true));
+  map.on('mousemove', moveAdminBboxDrag);
+  map.on('touchmove', moveAdminBboxDrag);
+  map.on('mouseup', endAdminBboxDrag);
+  map.on('touchend', endAdminBboxDrag);
+  map.on('touchcancel', endAdminBboxDrag);
+  window.addEventListener('mouseup', endAdminBboxDrag); // released outside the map canvas
+  window.addEventListener('touchend', endAdminBboxDrag);
 
   function enterAdminRegionPicker() {
     if (!hasAdminRegionAccess() || adminRegionPicker) return;
@@ -4965,7 +5178,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       for (const [name, value] of Object.entries(picker.snapshot)) form.elements.namedItem(name).value = value;
       map.jumpTo(picker.camera);
     }
+    if (picker.drag) map.dragPan.enable();
     adminRegionPicker = null;
+    map.getCanvas().style.cursor = '';
     $('#adminRegionMapPicker').hidden = true;
     document.body.classList.remove('admin-region-picking');
     $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', 'false');
@@ -5032,7 +5247,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       $('#stitchAdminRegionForm').elements.namedItem(name).value = bbox[index].toFixed(6);
     }
     drawAdminRegionBbox();
-    $('#adminRegionPickerStatus').textContent = '선택한 범위를 사각형으로 표시했습니다. 적용하거나 다시 지정할 수 있습니다.';
+    $('#adminRegionPickerStatus').textContent = '범위를 표시했습니다. 모서리·변 중앙 핸들로 크기를, 사각형 안쪽을 끌어 위치를 조정할 수 있습니다.';
   });
   map.on('style.load', () => { if (adminRegionPicker) drawAdminRegionBbox(); });
 
@@ -5817,7 +6032,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const selectedOfflineStatus = offlineRegionStatuses.get(selectedRegionId);
     const onlineReady = mobileHomeMapMode === 'online';
     const offlineReady = mobileHomeMapMode === 'offline' && Boolean(selectedPayload) &&
-      selectedOfflineStatus?.complete === true && !offlineRegionOpenInProgress;
+      offlineUsable(selectedOfflineStatus) && !offlineRegionOpenInProgress;
     const rideOnDisabled = !(onlineReady || offlineReady);
     document.querySelectorAll('[data-home-map-mode]').forEach(button => {
       button.setAttribute('aria-checked', String(button.dataset.homeMapMode === mobileHomeMapMode));
@@ -5837,9 +6052,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
             ? '오프라인 3D 지도를 여는 중입니다…'
             : selectedOfflineStatus?.complete === true
               ? '다운로드 완료 지역입니다. RIDE ON으로 진입할 수 있습니다.'
+              : offlineUsable(selectedOfflineStatus)
+                ? '오프라인으로 열 수 있지만 일부 지도가 비어 보일 수 있습니다. 인터넷 연결 후 보완 다운로드하세요.'
               : selectedOfflineStatus?.loading
                 ? '선택 지역의 저장 상태를 확인하는 중입니다…'
-                : '선택 지역을 먼저 다운로드해 주세요.'
+                : navigator.onLine === false
+                  ? '다운로드되지 않은 지역은 오프라인에서 사용할 수 없습니다. 다운로드된 지역을 선택해 주세요.'
+                  : '선택 지역을 먼저 다운로드해 주세요.'
           : '지도 모드를 선택하세요.';
     }
     if (mobileHomeMapMode === 'offline') renderOfflineRegionList();
@@ -5849,6 +6068,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     mobileHomeMapMode = mode === 'online' || mode === 'offline' ? mode : '';
     updateMobileHomeMapModeUi();
     if (mobileHomeMapMode === 'offline') void refreshOfflineRegionStatuses();
+    scheduleNativeMapSync();
   }
 
   async function refreshMobileHomeCatalog() {
@@ -5873,6 +6093,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     return result;
   }
 
+  // complete = everything needed offline is stored for this device; usable = the region's own tiles + style are stored
+  // (opens offline, but parts may be empty until a supplementary download).
+  function offlineUsable(status) { return status?.complete === true || status?.usable === true; }
+  function offlineMissingText(missing) {
+    const names = { pixel_ratio: '고해상도 위성 영상', context: '주변 저배율 지형', style: '지도 스타일', zoom: '확대 범위', profile_missing: '이전 버전 다운로드' };
+    const parts = Array.isArray(missing) ? [...new Set(missing.map(code => names[code]).filter(Boolean))] : [];
+    return parts.length ? ` (${parts.join('·')})` : '';
+  }
   function getOfflineMapTestPlugin() {
     const capacitor = window.Capacitor;
     if (capacitor?.getPlatform?.() !== 'android') return null;
@@ -5946,9 +6174,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function renderOfflineRegionList() {
     const list = $('#homeOfflineRegionList');
     if (!list) return;
-    const entries = getOfflineCatalogRegions();
+    let entries = getOfflineCatalogRegions();
+    const noNetwork = navigator.onLine === false;
+    if (noNetwork) entries = entries.filter(([id]) => { const st = offlineRegionStatuses.get(id); return offlineUsable(st) || st?.loading; });
     if (!entries.length) {
-      list.innerHTML = '<p class="home-offline-region-empty">지역 목록을 불러오는 중입니다…</p>';
+      const catalog = state.offlineCatalog;
+      const stillLoading = catalog.phase === 'loading' || catalog.phase === 'idle' && mobileHomeCatalogRefreshPromise;
+      const message = stillLoading ? '다운로드된 지역을 확인하는 중입니다…'
+        : catalog.phase === 'timeout' ? '저장된 지역 목록 조회 시간이 초과되었습니다. 지도 모드를 다시 선택해 주세요.'
+        : catalog.phase === 'error' ? `저장된 지역 목록을 불러오지 못했습니다.${catalog.message ? ' (' + catalog.message + ')' : ''}`
+        : noNetwork ? '다운로드된 오프라인 지역이 없습니다. 인터넷에 연결한 뒤 지역을 다운로드해 주세요.'
+        : '표시할 지역이 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.';
+      list.innerHTML = `<p class="home-offline-region-empty">${escapeHtml(message)}</p>`;
       return;
     }
     const androidAvailable = Boolean(getOfflineMapTestPlugin());
@@ -5957,7 +6194,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const status = offlineRegionStatuses.get(id);
       const downloading = offlineRegionDownloads.has(id);
       let stateClass = 'available';
-      let stateLabel = androidAvailable ? '다운로드 가능' : 'Android 앱에서 다운로드 가능';
+      const skiStatus = details.skiDataStatus;
+      const skiNote = skiStatus === 'pending' || skiStatus === 'processing' ? ' · 리프트·슬로프 데이터 준비 중' : skiStatus === 'failed' ? ' · 리프트·슬로프 데이터 준비 실패' : '';
+      let stateLabel = androidAvailable ? '다운로드 가능' + skiNote : 'Android 앱에서 다운로드 가능';
       let buttonLabel = '다운로드';
       let disabled = !androidAvailable;
       if (!payload) {
@@ -5979,9 +6218,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         buttonLabel = '다시 다운로드';
       } else if (status?.complete) {
         stateClass = 'complete';
-        stateLabel = '다운로드 완료';
+        stateLabel = '다운로드 완료' + skiNote;
         buttonLabel = '완료';
         disabled = true;
+      } else if (status?.needsUpdate) {
+        stateClass = 'incomplete';
+        stateLabel = (offlineRegionBboxChanged(status, details) ? '지역 범위가 변경되었습니다 · ' : '') + '보완 다운로드 필요' + offlineMissingText(status.missing);
+        buttonLabel = '보완 다운로드';
+        disabled = !androidAvailable || navigator.onLine === false;
       } else if (status?.downloaded) {
         stateClass = 'incomplete';
         stateLabel = '다운로드 미완료';
@@ -5998,8 +6242,44 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }).join('');
   }
 
+  // Regions saved on this device (Native storage) become catalog entries even when Supabase cannot be reached.
+  // Result is always one of: ready | empty | error | timeout (never left in "loading").
+  async function ensureLocalOfflineCatalog() {
+    const catalog = state.offlineCatalog;
+    const plugin = getOfflineMapTestPlugin();
+    if (!plugin?.listOfflineRegions) { catalog.phase = 'ready'; return; }
+    catalog.phase = 'loading';
+    catalog.message = '';
+    renderOfflineRegionList();
+    try {
+      const result = await withTimeout(plugin.listOfflineRegions(), 5000, 'LOCAL_LIST_TIMEOUT');
+      const saved = Array.isArray(result?.regions) ? result.regions : [];
+      let added = false;
+      for (const item of saved) {
+        const id = String(item?.regionId || '').trim();
+        const center = Array.isArray(item?.center) ? item.center.map(Number) : null;
+        const bbox = parseRegionBbox(item?.bbox);
+        if (!id || !center || center.length !== 2 || !center.every(Number.isFinite) || !bbox) continue;
+        if (!regions[id]) {
+          regions[id] = { label: item.regionName || id, center, zoom: 12, bearing: 0, pitch: 45, sortOrder: 900, isActive: true, bbox, skiDataStatus: '', skiDataVersion: '' };
+          added = true;
+        } else if (!regions[id].bbox) {
+          regions[id].bbox = bbox;
+        }
+        catalogRegionIds.add(id);
+      }
+      catalog.phase = saved.length ? 'ready' : 'empty';
+      if (added) syncRegionSelectors();
+    } catch (error) {
+      const timedOut = String(error?.message || '').includes('LOCAL_LIST_TIMEOUT');
+      catalog.phase = timedOut ? 'timeout' : 'error';
+      catalog.message = timedOut ? '' : (error?.message || '');
+    }
+  }
+
   async function refreshOfflineRegionStatuses() {
     const plugin = getOfflineMapTestPlugin();
+    await ensureLocalOfflineCatalog();
     const entries = getOfflineCatalogRegions();
     if (!plugin?.getOfflineStatus || !entries.length) {
       updateMobileHomeMapModeUi();
@@ -6008,17 +6288,32 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const requestId = ++offlineRegionStatusRequest;
     for (const [id] of entries) offlineRegionStatuses.set(id, { loading: true });
     updateMobileHomeMapModeUi();
-    await Promise.all(entries.map(async ([id]) => {
-      try {
-        const status = await plugin.getOfflineStatus({ regionId: id });
-        if (requestId === offlineRegionStatusRequest) offlineRegionStatuses.set(id, status || {});
-      } catch (error) {
-        if (requestId === offlineRegionStatusRequest) offlineRegionStatuses.set(id, { error: error?.message || '상태 조회 실패' });
+    try {
+      await Promise.all(entries.map(async ([id]) => {
+        try {
+          const status = await withTimeout(plugin.getOfflineStatus({ regionId: id }), 8000, '상태 조회 시간이 초과되었습니다.');
+          if (requestId === offlineRegionStatusRequest) offlineRegionStatuses.set(id, status || {});
+        } catch (error) {
+          if (requestId === offlineRegionStatusRequest) offlineRegionStatuses.set(id, { error: error?.message || '상태 조회 실패' });
+        }
+      }));
+    } finally {
+      if (requestId === offlineRegionStatusRequest) {
+        updateMobileHomeMapModeUi();
+        void autoRefreshOfflineSkiData(entries);
+        selectDownloadedRegionWhenOffline(entries);
       }
-    }));
-    if (requestId === offlineRegionStatusRequest) {
-      updateMobileHomeMapModeUi();
-      void autoRefreshOfflineSkiData(entries);
+    }
+  }
+  // No network: the home region select should start on a region that can actually be opened.
+  function selectDownloadedRegionWhenOffline(entries) {
+    if (navigator.onLine !== false || mobileHomeMapMode !== 'offline') return;
+    const select = $('#homeRegionSelect');
+    if (!select || offlineUsable(offlineRegionStatuses.get(select.value))) return;
+    const ready = entries.find(([id]) => offlineUsable(offlineRegionStatuses.get(id)));
+    if (ready && [...select.options].some(option => option.value === ready[0])) {
+      select.value = ready[0];
+      select.dispatchEvent(new Event('change'));
     }
   }
 
@@ -6038,6 +6333,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const verifiedStatus = await plugin.getOfflineStatus({ regionId: id });
       offlineRegionStatuses.set(id, verifiedStatus || {});
       if (verifiedStatus?.complete === true) toast(`${details.label} 오프라인 지도 다운로드를 완료했습니다.`);
+      else if (offlineUsable(verifiedStatus)) toast(`${details.label} 지도는 저장됐지만 보완이 필요합니다${offlineMissingText(verifiedStatus.missing)}.`);
       else toast(`${details.label} 다운로드가 아직 완료되지 않았습니다.`);
     } catch (error) {
       offlineRegionStatuses.set(id, { error: error?.message || '다운로드 실패' });
@@ -6048,13 +6344,204 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   }
 
+  // ==========================================================================
+  // Embedded Native offline map (Android only). The Native MapView sits UNDER the transparent WebView, so the header,
+  // bottom menu and graph stay HTML. This page tells native (a) where the map area is and (b) which screen cells are
+  // plain map (no UI on top) so native can forward exactly those touches to the MapView. Online mode is untouched.
+  // ==========================================================================
+  const NATIVE_MAP_VIEWS = ['map', 'ride', 'routes']; // view only; the course editor stays online-only
+  function nativeMapPlugin() {
+    const plugin = getOfflineMapTestPlugin();
+    return plugin?.showEmbeddedMap && plugin?.setEmbeddedMapLayout && plugin?.hideEmbeddedMap ? plugin : null;
+  }
+  function isNativeMapBackdrop(el) {
+    return !el || el === document.documentElement || el === document.body || Boolean(el.closest?.('#map')) || Boolean(el.matches?.('.app-shell, .map-panel'));
+  }
+  function computeNativeMapLayout(visible) {
+    const rect = $('#map')?.getBoundingClientRect();
+    const layout = { visible, rect: rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : undefined };
+    if (!visible) return layout;
+    const cell = 16, cols = Math.ceil(window.innerWidth / cell), rows = Math.ceil(window.innerHeight / cell);
+    const bits = new Array(cols * rows);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) bits[r * cols + c] = isNativeMapBackdrop(document.elementFromPoint((c + 0.5) * cell, (r + 0.5) * cell)) ? '1' : '0';
+    }
+    layout.grid = { cols, rows, cell, bits: bits.join('') };
+    return layout;
+  }
+  function setNativeMapVisualState(visible) {
+    document.documentElement.classList.toggle('native-map-active', visible);
+  }
+  async function deactivateNativeMap(endSession = true) {
+    const nm = state.nativeMap;
+    const wasActive = nm.active;
+    nm.active = false;
+    nm.shown = false;
+    nm.regionId = '';
+    if (endSession) { nm.session = false; nm.unavailable = ''; }
+    updateNativeNotice();
+    setNativeMapVisualState(false);
+    if (wasActive) { try { await nativeMapPlugin()?.hideEmbeddedMap(); } catch (error) { console.warn('hideEmbeddedMap failed:', error); } }
+  }
+  async function syncNativeMapLayout() {
+    const nm = state.nativeMap;
+    if (!nm.active) return;
+    const plugin = nativeMapPlugin();
+    if (!plugin) return;
+    if (mobileHomeMapMode !== 'offline') { await deactivateNativeMap(); return; } // back to online: release the native map
+    const view = document.body.dataset.mobileView || '';
+    const visible = NATIVE_MAP_VIEWS.includes(view);
+    nm.shown = visible;
+    setNativeMapVisualState(visible);
+    try {
+      const result = await plugin.setEmbeddedMapLayout(computeNativeMapLayout(visible));
+      if (result && result.shown === false) { nm.active = false; nm.shown = false; setNativeMapVisualState(false); }
+    } catch (error) { console.warn('setEmbeddedMapLayout failed:', error); }
+  }
+  // "My location" button while the Native map is on screen: native shows the position, recenters and (re)arms follow.
+  // Returns false (online logic runs) whenever the Native map is not the visible map.
+  window.powderlineNativeLocate = () => {
+    const nm = state.nativeMap;
+    const plugin = nm.active && nm.shown ? nativeMapPlugin() : null;
+    if (!plugin?.centerEmbeddedGps) return false;
+    plugin.centerEmbeddedGps().catch(error => console.warn('centerEmbeddedGps failed:', error));
+    return true;
+  };
+  function scheduleNativeMapSync() {
+    const nm = state.nativeMap;
+    updateNativeNotice();
+    if (!nm.active) return;
+    clearTimeout(nm.timer);
+    nm.timer = setTimeout(() => { void syncNativeMapLayout(); }, 120);
+  }
+  function initNativeMapObservers() {
+    if (state.nativeMap.observer) return;
+    $('#region')?.addEventListener('change', () => { void onNativeRegionChange(); });
+    if (!map.__nativeFitWrapped) { // saved-course selection etc. call map.fitBounds: mirror it on the Native camera
+      const originalFit = map.fitBounds.bind(map);
+      map.fitBounds = (bounds, options, eventData) => { nativeFitBounds(bounds, options); return originalFit(bounds, options, eventData); };
+      map.__nativeFitWrapped = true;
+    }
+    window.addEventListener('resize', scheduleNativeMapSync);
+    window.addEventListener('orientationchange', scheduleNativeMapSync);
+    state.nativeMap.observer = new MutationObserver(records => {
+      if (records.some(record => !record.target.closest?.('#map'))) scheduleNativeMapSync();
+    });
+    state.nativeMap.observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden', 'class', 'style', 'data-mobile-view'] });
+  }
+
+  // ---- web -> native bridges (no-ops unless the Native map is active) ----
+  function pushNativeRoute(collection, immediate = false) {
+    const nm = state.nativeMap;
+    if (collection) nm.route = collection;
+    if (!nm.active) return;
+    const send = () => {
+      const plugin = nativeMapPlugin();
+      if (plugin?.setEmbeddedRoute && nm.route) plugin.setEmbeddedRoute({ geojson: JSON.stringify(nm.route) }).catch(() => { });
+    };
+    if (immediate) { send(); return; }
+    clearTimeout(nm.routeTimer);
+    nm.routeTimer = setTimeout(send, 60);
+  }
+  function pushNativeCursor(sample) {
+    if (!state.nativeMap.active) return;
+    const plugin = nativeMapPlugin();
+    if (!plugin?.setEmbeddedProfileMarker) return;
+    plugin.setEmbeddedProfileMarker(sample ? { lng: sample.lng, lat: sample.lat } : { clear: true }).catch(() => { });
+  }
+  // HUD buttons (zoom / north / 3D) drive the Native camera while the Native map is on screen.
+  function nativeCameraCommand(cmd) {
+    const nm = state.nativeMap;
+    const plugin = nm.active && nm.shown ? nativeMapPlugin() : null;
+    if (!plugin?.embeddedCamera) return false;
+    plugin.embeddedCamera({ cmd }).catch(error => console.warn('embeddedCamera failed:', error));
+    return true;
+  }
+  function applyNativeCameraUi(camera) {
+    const rotation = 'rotate(' + (-camera.bearing) + 'deg)';
+    for (const id of ['#mobileCompassNeedle', '#rideCompassNeedle']) { const el = $(id); if (el) el.style.transform = rotation; }
+    const pitching = camera.pitch > 20;
+    for (const id of ['#mobileTiltLabel', '#rideTiltLabel']) { const el = $(id); if (el) el.textContent = pitching ? '3D' : '2D'; }
+    $('#mobileTiltBtn')?.classList.toggle('active', pitching);
+  }
+  function nativeFitBounds(bounds, options) {
+    const nm = state.nativeMap;
+    const plugin = nm.active ? nativeMapPlugin() : null;
+    if (!plugin?.embeddedCamera) return;
+    try {
+      const [[w, so], [e, n]] = mapboxgl.LngLatBounds.convert(bounds).toArray();
+      plugin.embeddedCamera({ cmd: 'fit', bounds: [w, so, e, n], padding: typeof options?.padding === 'number' ? options.padding : 60, maxZoom: options?.maxZoom ?? 13 }).catch(() => { });
+    } catch (error) { console.warn('native fit failed:', error); }
+  }
+  function updateNativeNotice() {
+    const nm = state.nativeMap;
+    const show = Boolean(nm.session && mobileHomeMapMode === 'offline' && nm.unavailable && NATIVE_MAP_VIEWS.includes(document.body.dataset.mobileView || ''));
+    let el = $('#nativeMapNotice');
+    if (!show) { if (el) el.hidden = true; return; }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'nativeMapNotice';
+      el.style.cssText = 'position:fixed;left:24px;right:24px;top:42%;z-index:20;padding:14px 16px;border-radius:12px;background:rgba(11,21,35,.92);color:#e2e8f0;font-size:13px;line-height:1.5;text-align:center;pointer-events:none;border:1px solid rgba(56,189,248,.4)';
+      document.body.appendChild(el);
+    }
+    el.textContent = `${regions[nm.unavailable]?.label || nm.unavailable} 지역은 다운로드된 오프라인 지도가 없습니다. 홈에서 오프라인 지도를 다운로드하거나 온라인 지도를 이용해 주세요.`;
+    el.hidden = false;
+  }
+  async function showNativeRegion(regionId, payload) {
+    const plugin = nativeMapPlugin();
+    await plugin.showEmbeddedMap({ ...payload, ...computeNativeMapLayout(false) });
+    const nm = state.nativeMap;
+    nm.active = true;
+    nm.session = true;
+    nm.regionId = regionId;
+    nm.unavailable = '';
+    initNativeMapObservers();
+    if (!nm.eventsBound) {
+      nm.eventsBound = true;
+      plugin.addListener('embeddedCamera', camera => applyNativeCameraUi(camera));
+      plugin.addListener('embeddedIdle', () => {
+        if (!nm.shown) return;
+        updateProfileViewport();
+        if (profile.pending) scheduleProfile(80); // DEM tiles became available
+      });
+    }
+    pushNativeRoute(null, true);
+    pushNativeCursor(profile.selected);
+  }
+  // Region changed in the map screen: switch the Native map to that downloaded region, or say it is not available.
+  async function onNativeRegionChange() {
+    const nm = state.nativeMap;
+    const plugin = nativeMapPlugin();
+    if (!plugin || !nm.session || mobileHomeMapMode !== 'offline') return;
+    const regionId = $('#region')?.value || '';
+    if (regionId === nm.regionId && nm.active) return;
+    const { payload } = createOfflineRegionPayload(regionId, regions[regionId] || {});
+    let complete = false;
+    if (payload) {
+      try {
+        const status = await plugin.getOfflineStatus({ regionId });
+        offlineRegionStatuses.set(regionId, status || {});
+        complete = offlineUsable(status);
+      } catch (error) { console.warn('offline status failed:', error); }
+    }
+    if ($('#region')?.value !== regionId) return; // changed again while checking
+    if (complete) {
+      try { await showNativeRegion(regionId, payload); scheduleNativeMapSync(); } catch (error) { toast(error?.message || '오프라인 지도를 열지 못했습니다.'); }
+    } else {
+      await deactivateNativeMap(false);
+      nm.unavailable = regionId;
+      toast('이 지역은 다운로드된 오프라인 지도가 없습니다.');
+      updateNativeNotice();
+    }
+  }
+
   async function openOfflineHomeRegion() {
     if (offlineRegionOpenInProgress) return;
     const regionId = $('#homeRegionSelect')?.value || '';
     const details = regions[regionId];
     const plugin = getOfflineMapTestPlugin();
     const { payload, unavailableReason } = createOfflineRegionPayload(regionId, details || {});
-    if (!payload || !plugin?.getOfflineStatus || !plugin?.openRegionScreen) {
+    if (!payload || !plugin?.getOfflineStatus || !plugin?.showEmbeddedMap) {
       toast(unavailableReason || 'Android 앱에서만 오프라인 지도를 열 수 있습니다.');
       return;
     }
@@ -6062,13 +6549,20 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     offlineRegionStatuses.set(regionId, { loading: true });
     updateMobileHomeMapModeUi();
     try {
-      const status = await plugin.getOfflineStatus({ regionId });
+      const status = await withTimeout(plugin.getOfflineStatus({ regionId }), 8000, '상태 조회 시간이 초과되었습니다.');
       offlineRegionStatuses.set(regionId, status || {});
-      if (status?.complete !== true) {
+      if (!offlineUsable(status)) {
         toast('선택 지역의 오프라인 다운로드를 먼저 완료해 주세요.');
         return;
       }
-      await plugin.openRegionScreen(payload);
+      const embedded = nativeMapPlugin();
+      if (embedded) {
+        // Same downloaded region/tiles/ski data; the map is shown inside the main screen instead of the test screen.
+        await withTimeout(showNativeRegion(regionId, payload), 25000, '오프라인 지도를 여는 시간이 초과되었습니다.');
+        mobileHomeRideOn('ride');
+      } else {
+        toast('이 앱 버전에서는 오프라인 지도를 열 수 없습니다. 앱을 업데이트해 주세요.');
+      }
     } catch (error) {
       toast(error?.message || '오프라인 지도를 열지 못했습니다.');
     } finally {
@@ -6208,10 +6702,15 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     });
     $('#homeRideOnBtn')?.addEventListener('click', () => {
       if (mobileHomeMapMode === 'offline') void openOfflineHomeRegion();
-      else mobileHomeRideOn('ride');
+      else {
+        void deactivateNativeMap();
+        if (navigator.onLine === false) toast('인터넷에 연결되어 있지 않습니다. 이전에 본 지도 일부만 표시됩니다. 다운로드한 지도는 오프라인 3D로 이용해 주세요.');
+        mobileHomeRideOn('ride');
+      }
     });
-    window.addEventListener('online', () => {
-      if (document.body.dataset.mobileView === 'home') void refreshMobileHomeCatalog();
+    window.addEventListener('online', () => { void refreshMobileHomeCatalog(); });
+    window.addEventListener('offline', () => {
+      if (mobileHomeMapMode === 'offline') void refreshOfflineRegionStatuses();
     });
     const rideRegion = $('#rideRegionSelect');
     const regularRegion = $('#region');
@@ -8103,9 +8602,9 @@ async function startPartyMemberRideOn() {
     });
     $('#mobileEditorImportGpxBtn')?.addEventListener('click', () => $('#gpxInput')?.click());
     $('#mobileEditorExportGpxBtn')?.addEventListener('click', () => $('#exportBtn')?.click());
-    $('#mobileRoutesCompassBtn')?.addEventListener('click', () => map.easeTo({ bearing: 0, pitch: 0, duration: 600 }));
-    $('#mobileRoutesZoomInBtn')?.addEventListener('click', () => map.zoomIn({ duration: 300 }));
-    $('#mobileRoutesZoomOutBtn')?.addEventListener('click', () => map.zoomOut({ duration: 300 }));
+    $('#mobileRoutesCompassBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('north')) map.easeTo({ bearing: 0, pitch: 0, duration: 600 }); });
+    $('#mobileRoutesZoomInBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomIn')) map.zoomIn({ duration: 300 }); });
+    $('#mobileRoutesZoomOutBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomOut')) map.zoomOut({ duration: 300 }); });
     $('#mobileRoutesStyleBtn')?.addEventListener('click', () => $('#mobileStyleBtn')?.click());
     $('#mobileRoutesLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
     $('#mobileEditorCompassBtn')?.addEventListener('click', () => map.easeTo({ bearing: 0, pitch: 0, duration: 600 }));
@@ -8400,4 +8899,6 @@ async function startPartyMemberRideOn() {
   initAuthConnectivityRevalidation();
 
   initializeSupabase().finally(() => { void restoreGpsRecording(); });
+  // Android: regions downloaded on this device are known right at start-up, without waiting for the server.
+  if (getOfflineMapTestPlugin()?.listOfflineRegions) void ensureLocalOfflineCatalog();
 })();
