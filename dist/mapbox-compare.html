@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Powderline — Mapbox terrain comparison</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/v3.33.0/mapbox-gl.css" />
+    <link rel="stylesheet" href="./mapbox-compare.css" />
+  </head>
+  <body>
+    <header class="compare-header">
+      <div><a href="./index.html" class="back-link">← POWDERLINE</a><h1>Furano 3D terrain comparison</h1><p>Both maps share the same center, zoom, bearing, pitch, and terrain exaggeration.</p></div>
+      <div class="mapbox-controls"><label for="mapboxStyle">Mapbox diagnostic style</label><select id="mapboxStyle" aria-label="Mapbox diagnostic style"><option value="satellite">Satellite</option><option value="streets">Streets diagnostic</option></select><small id="tokenLoadStatus">Loading the Mapbox token automatically…</small></div>
+    </header>
+    <main class="compare-grid">
+      <section class="map-card"><div class="map-label"><strong>Current</strong><span>MapLibre · GSI Satellite · AWS Terrarium</span></div><div id="maplibreMap" class="map"></div></section>
+      <section class="map-card"><div class="map-label"><strong>Candidate</strong><span id="candidateLabel">Mapbox GL JS · Standard Satellite · Terrain-DEM</span></div><div id="mapboxMap" class="map map-placeholder"><div id="mapboxMessage">Loading the Mapbox token…</div></div><aside class="diagnostics" aria-live="polite"><strong>Mapbox diagnostics</strong><dl><div><dt>Style</dt><dd id="diagStyle">Not loaded</dd></div><div><dt>Terrain-DEM</dt><dd id="diagTerrain">Not loaded</dd></div><div><dt>Last error</dt><dd id="diagError">None</dd></div><div><dt>Resource</dt><dd id="diagResource">—</dd></div></dl></aside></section>
+    </main>
+    <footer><span>Drag, zoom, rotate, or tilt either map—the other map follows.</span><button id="resetCamera" type="button">Reset Furano camera</button></footer>
+    <script src="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.33.0/mapbox-gl.js"></script>
+    <script src="./config.js"></script>
+    <script src="./mapbox-compare.js"></script>
+  </body>
+</html>

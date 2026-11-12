@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Powderline — Backcountry route lab</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="./maplibre-backup.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">✦</span><div><strong>POWDERLINE</strong><small>BACKCOUNTRY ROUTE LAB</small></div></div>
+        <section class="hero-copy"><p class="eyebrow">HOKKAIDO / WINTER 2026</p><h1>Find your<br/><em>line.</em></h1><p>Freeform planning for riders who prefer the quiet side of the mountain.</p></section>
+        <section class="controls">
+          <label class="field-label" for="region">Area</label>
+          <select id="region"><option value="asahidake">Asahidake · Daisetsuzan</option><option value="rusutsu">Rusutsu · Hokkaido</option><option value="furano" selected>Furano · Hokkaido</option><option value="niseko">Niseko · Hokkaido</option><option value="kamui">Kamui Ski Links · Asahikawa</option><option value="kiroro">Kiroro · Hokkaido</option></select>
+          <span class="field-label layer-label">Map layer</span>
+          <div class="style-switch" role="group" aria-label="Map layer"><button id="satelliteBtn" class="active" type="button" aria-pressed="true">Satellite</button><button id="topoBtn" type="button" aria-pressed="false">Topo / contours</button></div>
+          <fieldset class="layer-settings"><legend>Display</legend><label><input id="liftsToggle" type="checkbox" checked /><span class="layer-swatch lift-swatch"></span>Lifts</label><label><input id="runsToggle" type="checkbox" checked /><span class="layer-swatch run-swatch"></span>Runs</label><label><input id="gpxToggle" type="checkbox" checked /><span class="layer-swatch gpx-swatch"></span>My GPX route</label><small id="facilityStatus">Loading ski facilities…</small></fieldset>
+          <div class="button-row"><button id="drawBtn" class="primary">＋ Draw line</button><button id="clearBtn" class="ghost">Clear</button></div>
+          <div class="button-row"><label class="file-button ghost">Import GPX<input id="gpxInput" type="file" accept=".gpx,application/gpx+xml" /></label><button id="exportBtn" class="ghost">Export</button></div>
+          <div class="button-row"><button id="saveBtn" class="wide">Save route</button></div>
+        </section>
+        <section class="stats"><div><span>Distance</span><strong id="distance">0.0 km</strong></div><div><span>Points</span><strong id="points">0</strong></div><div><span>Descent*</span><strong id="descent">—</strong></div></section>
+        <p class="hint">* 3D terrain uses real elevation data. Your routes stay in this browser until exported.</p>
+        <section class="saved"><div class="section-title"><span>Saved lines</span><span id="savedCount">0</span></div><div id="savedList" class="saved-list"><p class="empty">No saved lines yet.</p></div></section>
+        <details class="settings"><summary>Map data</summary><p>Elevation: AWS Open Data Terrain Tiles. Basemaps: Geospatial Information Authority of Japan. Ski facilities: OpenSkiData / OpenSkiMap.org.</p><small>Ski data: © OpenStreetMap contributors (ODbL), Skimap.org, Who's On First, © Mapterhorn. Provider attribution remains visible on the map.</small></details>
+      </aside>
+      <section class="map-panel"><div id="map"></div><div class="map-topbar"><div class="pill"><span class="live-dot"></span><span id="mapStatus">Loading 3D terrain…</span></div><div class="top-actions"><a href="./mapbox-compare.html">Compare Mapbox</a><button id="tiltBtn">Tilt <span>◒</span></button><button id="resetBtn">Reset view</button></div></div><div class="map-legend"><span><i class="legend-line"></i> Your line</span><span><i class="legend-dot"></i> Start</span></div><div id="toast" class="toast" role="status"></div></section>
+    </main>
+    <script src="https://unpkg.com/maplibre-gl@5.7.0/dist/maplibre-gl.js"></script>
+    <script src="./maplibre-backup.js"></script>
+  </body>
+</html>

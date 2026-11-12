@@ -11,14 +11,17 @@ name: OpenSkiData ingest
 on:
   schedule:
     - cron: '17 * * * *'
-  # Optional immediate trigger: POST /repos/{owner}/{repo}/dispatches {"event_type":"region-saved"}
-  # (e.g. from a Supabase webhook after an admin saves a region). The hourly schedule remains the fallback.
+  # Immediate trigger: the Supabase Edge Function `dispatch-region-ingest` (called by the admin UI after a region was
+  # saved) posts {"event_type":"region-saved"} to /repos/{owner}/{repo}/dispatches. A dispatched/scheduled run always
+  # works through ALL waiting regions (pending, or failed after the cool-down), not just the one that triggered it:
+  # GitHub keeps only one waiting run per concurrency group and may drop older waiting ones, but the surviving run
+  # reads the whole queue when it starts, so no region is lost. The hourly schedule remains the fallback.
   repository_dispatch:
     types: [region-saved]
   workflow_dispatch:
     inputs:
       region:
-        description: 'Optional regionId to process now (built-in regions are refused)'
+        description: 'Optional regionId to process now (built-in regions only when their BBox was changed)'
         required: false
         type: string
 
@@ -37,6 +40,7 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Only a manual run may narrow to one region; dispatch/schedule runs process the whole queue.
       REGION: ${{ inputs.region }}
     steps:
       - uses: actions/checkout@v4
