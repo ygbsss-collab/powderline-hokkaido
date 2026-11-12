@@ -324,8 +324,10 @@ async function supabase(authMode = 'both') {
 // ---------- queue ----------
 
 // Which rows the scheduled run should pick up. The claim RPC re-checks status/staleness server side.
+// Built-in regions are included only when their status was set to pending/failed/processing, which happens solely
+// when an admin changes their BBox (DB trigger). Untouched built-ins stay `not_requested` and keep their bundled
+// GeoJSON; the existing Storage file is only replaced after a successful new extraction.
 function isEligible(row, now = Date.now()) {
-  if (builtinRegions[row.id]) return false; // built-in regions keep their bundled GeoJSON
   const age = value => (value ? now - Date.parse(value) : Infinity);
   if (row.ski_data_status === 'pending') return true;
   if (row.ski_data_status === 'failed') return age(row.ski_data_completed_at) >= FAILED_RETRY_MS;
@@ -340,11 +342,16 @@ function setOutputs(values) {
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${text}${String.fromCharCode(10)}`);
 }
 
+// An explicit --region run processes non-built-in regions in any state, built-in ones only when requested.
+function isExplicitlyRunnable(row) {
+  return !builtinRegions[row.id] || ['pending', 'failed', 'processing'].includes(row.ski_data_status);
+}
+
 // Cheap pre-check for CI: only a REST read; never downloads or scans OpenSkiData.
 async function runCheckQueue(args) {
   const api = await supabase();
   const explicit = option(args, '--region');
-  const rows = (await api.queue(explicit)).filter(row => explicit ? !builtinRegions[row.id] : isEligible(row));
+  const rows = (await api.queue(explicit)).filter(row => explicit ? isExplicitlyRunnable(row) : isEligible(row));
   setOutputs({pending: rows.length, regions: rows.map(row => row.id).join(',')});
 }
 
@@ -373,11 +380,11 @@ async function runLocal(args) {
 async function runUpload(args) {
   const api = await supabase();
   const explicit = option(args, '--region');
-  if (explicit && (!REGION_ID.test(explicit) || builtinRegions[explicit])) throw new Error('Invalid or built-in --region.');
+  if (explicit && !REGION_ID.test(explicit)) throw new Error('Invalid --region.');
 
   const claims = [];
   for (const row of await api.queue(explicit)) {
-    if (explicit ? builtinRegions[row.id] : !isEligible(row)) continue;
+    if (explicit ? !isExplicitlyRunnable(row) : !isEligible(row)) continue;
     const claim = await api.claim(row.id);
     if (claim) claims.push(claim);
     else console.log(`${row.id}: not claimable (status ${row.ski_data_status}), skipped`);
