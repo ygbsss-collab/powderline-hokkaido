@@ -1065,7 +1065,14 @@ geolocateControl.on('error', (e) => {
 
   const CLOUD_ROUTES_CACHE_PREFIX = 'powderline.cloudRoutes.v1.';
   function cacheCloudRoutes(userId, routes) {
-    try { localStorage.setItem(CLOUD_ROUTES_CACHE_PREFIX + userId, JSON.stringify(routes)); } catch (error) { console.warn('Cloud route cache write failed:', error); }
+    try { localStorage.setItem(CLOUD_ROUTES_CACHE_PREFIX + userId, JSON.stringify(routes)); return true; } catch (error) { console.warn('Cloud route cache write failed:', error); return false; }
+  }
+  // A just-saved cloud course goes into the account cache right away (add or replace by id), so it is
+  // available offline without waiting for the next full list sync. Other cached courses stay as they are.
+  function upsertCachedCloudRoute(userId, route) {
+    if (!userId || !route?.id || !Array.isArray(route.points)) return false;
+    const rest = readCachedCloudRoutes(userId).filter(item => item.id !== route.id);
+    return cacheCloudRoutes(userId, [route, ...rest]);
   }
   function readCachedCloudRoutes(userId) {
     if (!userId) return [];
@@ -1092,7 +1099,7 @@ geolocateControl.on('error', (e) => {
     const userId = state.session.user.id;
     const { data, error } = await client
       .from('powderline_routes')
-      .select('id,name,region,points,distance_km,created_at,updated_at')
+      .select('id,user_id,name,region,points,distance_km,created_at,updated_at')
       .order('updated_at', { ascending: false });
     if (client !== supabaseClient || state.session?.user?.id !== userId) return;
     if (error) {
@@ -1108,12 +1115,62 @@ geolocateControl.on('error', (e) => {
       km: Number.isFinite(Number(row.distance_km)) ? Number(row.distance_km) : 0,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      ownerId: row.user_id,
       source: 'cloud'
     }));
+    // A successful sync replaces the cache, so courses deleted elsewhere disappear here too (errors return above).
     cacheCloudRoutes(userId, cloudRoutes);
     state.saved = mergePendingGpsRoutes(cloudRoutes, userId);
     renderSaved();
     if (notify) toast(t('toastCloudLoaded'));
+  }
+
+  // Deletable = the signed-in user's own cloud course, or a course stored only on this device (GPX import / local save).
+  // Pending GPS recordings, other users' (party-shared) and built-in courses are never deletable.
+  function canDeleteSavedRoute(route) {
+    if (!route || route.syncStatus === 'pending' || route.recordingOwnerId) return false;
+    if (route.source === 'cloud') return Boolean(route.id && state.session?.user?.id && route.ownerId === state.session.user.id);
+    return route.source === 'local';
+  }
+  // Removes exactly this local course from 'powderline.routes'; cloud courses and other local courses stay untouched.
+  function removeLocalSavedRoute(route) {
+    try {
+      const stored = JSON.parse(localStorage.getItem('powderline.routes') || '[]');
+      const key = JSON.stringify(route);
+      const at = stored.findIndex(item => JSON.stringify(item) === key);
+      if (at >= 0) { stored.splice(at, 1); localStorage.setItem('powderline.routes', JSON.stringify(stored)); }
+    } catch (error) { console.warn('Local route removal failed:', error); }
+  }
+  // Returns true only when the course is really gone; on any failure the list, caches and local files stay as they were.
+  async function deleteSavedRoute(route) {
+    if (!canDeleteSavedRoute(route)) { toast('직접 만든 코스만 삭제할 수 있습니다.'); return false; }
+    if (route.source === 'cloud') {
+      const userId = state.session?.user?.id;
+      if (!supabaseClient || !userId || navigator.onLine === false) {
+        toast('오프라인 상태에서는 계정에 저장된 코스를 삭제할 수 없습니다. 온라인에서 다시 시도해 주세요.');
+        return false;
+      }
+      try {
+        const { data, error } = await supabaseClient.from('powderline_routes').delete()
+          .eq('id', route.id).eq('user_id', userId).select('id');
+        if (error) throw error;
+        if (!data?.length) {
+          toast('코스를 삭제하지 못했습니다. 이미 삭제되었거나 삭제 권한이 없습니다.');
+          void loadCloudRoutes();
+          return false;
+        }
+      } catch (error) {
+        console.error('Course delete failed:', error);
+        toast(`코스 삭제 실패: ${error?.message || '네트워크 오류'}`);
+        return false;
+      }
+      state.saved = state.saved.filter(item => !(item.source === 'cloud' && item.id === route.id));
+      cacheCloudRoutes(userId, readCachedCloudRoutes(userId).filter(item => item.id !== route.id));
+      return true;
+    }
+    removeLocalSavedRoute(route);
+    state.saved = state.saved.filter(item => item !== route);
+    return true;
   }
 
   function renderPartyMain() {
@@ -3615,8 +3672,22 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       el.innerHTML = '<p class="empty" data-i18n="emptySaved">' + t('emptySaved') + '</p>';
       return;
     }
-    el.innerHTML = state.saved.map((r, i) => '<button class="saved-item" data-i="' + i + '"><span>' + escapeHtml(r.name) + '</span><small>' + r.km.toFixed(1) + ' km' + (r.syncStatus === 'pending' ? ' · 동기화 대기' : '') + '</small></button>').join('');
+    // PC sidebar list: own cloud courses / device-only courses get a delete button next to the item.
+    el.innerHTML = state.saved.map((r, i) => '<div class="saved-row"><button class="saved-item" data-i="' + i + '"><span>' + escapeHtml(r.name) + '</span><small>' + r.km.toFixed(1) + ' km' + (r.syncStatus === 'pending' ? ' · 동기화 대기' : '') + '</small></button>'
+      + (canDeleteSavedRoute(r) ? '<button class="saved-delete" type="button" data-i="' + i + '" aria-label="' + escapeHtml(r.name) + ' 코스 삭제">삭제</button>' : '') + '</div>').join('');
     renderMobileSavedRoutes();
+    el.querySelectorAll('.saved-delete').forEach(b => b.addEventListener('click', async event => {
+      event.stopPropagation();
+      const item = state.saved[+b.dataset.i];
+      if (!canDeleteSavedRoute(item)) { toast('직접 만든 코스만 삭제할 수 있습니다.'); return; }
+      if (!window.confirm(state.lang === 'ko' ? `"${item.name}" 코스를 삭제하시겠습니까?` : `Delete course "${item.name}"?`)) return;
+      if (!(await deleteSavedRoute(item))) return;
+      const cur = getActiveCourse();
+      if (cur && item.source === 'cloud' && cur.databaseId === item.id) { cur.databaseId = null; cur.saved = false; }
+      mobileSelectedSavedIndex = '';
+      renderSaved();
+      toast(state.lang === 'ko' ? '코스가 삭제되었습니다.' : 'Course deleted.');
+    }));
     el.querySelectorAll('.saved-item').forEach(b => b.addEventListener('click', () => {
       const item = state.saved[+b.dataset.i];
       pushHistory();
@@ -3678,16 +3749,23 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         return false;
       }
       cur.databaseId = data.id;
-      const savedRoute = { id: data.id, name: data.name, region: data.region, km: Number(data.distance_km) || km, points: data.points, createdAt: data.created_at, updatedAt: data.updated_at, source: 'cloud' };
+      const savedPoints = (Array.isArray(data.points) ? data.points : payload.points)
+        .filter(point => Number.isFinite(Number(point?.lng)) && Number.isFinite(Number(point?.lat)))
+        .map(point => ({ ...point, lng: Number(point.lng), lat: Number(point.lat) }));
+      const savedRoute = { id: data.id, name: data.name, region: data.region, km: Number(data.distance_km) || km, points: savedPoints, createdAt: data.created_at, updatedAt: data.updated_at, ownerId: state.session.user.id, source: 'cloud' };
       state.saved = [savedRoute, ...state.saved.filter(route => route.id !== data.id)];
-      toast(t('toastSavedCloud'));
+      // Server save succeeded; also keep the full course on the device so it shows offline.
+      const cached = upsertCachedCloudRoute(state.session.user.id, savedRoute);
+      toast(cached ? t('toastSavedCloud') : 'Supabase에는 저장되었지만 이 기기에 오프라인용 사본을 저장하지 못했습니다. 온라인에서 코스 목록을 다시 불러오면 저장됩니다.');
     } else {
       const savedRoute = { name, region: courseRegion, km, points: state.points.map(point => ({ ...point })), source: 'local' };
       const previousIndex = state.saved.indexOf(mobileEditingSavedRoute);
       if (previousIndex >= 0) state.saved.splice(previousIndex, 1, savedRoute);
       else state.saved.unshift(savedRoute);
-      localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(route => !route.recordingOwnerId)));
-      toast(t('toastSavedLocal'));
+      let localStored = true;
+      try { localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(route => route.source !== 'cloud' && !route.recordingOwnerId))); }
+      catch (error) { localStored = false; console.warn('Local route save failed:', error); }
+      toast(localStored ? t('toastSavedLocal') : '코스를 이 기기에 저장하지 못했습니다. 저장 공간을 확인해 주세요. (앱을 종료하면 사라질 수 있습니다)');
     }
     mobileEditingSavedRoute = null;
     cur.saved = true;
@@ -3704,29 +3782,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       toast('서버 동기화가 완료되기 전에는 기록 코스를 삭제할 수 없습니다.');
       return;
     }
-    const confirmMsg = state.lang === 'ko' ? '이 코스를 삭제하시겠습니까?' : 'Are you sure you want to delete this course?';
+    // The saved course behind this editor tab (if any); unsaved drafts are only closed.
+    const savedItem = cur.databaseId
+      ? state.saved.find(r => r.source === 'cloud' && r.id === cur.databaseId)
+        // not in the list (yet): the server delete is still restricted to the signed-in user's own row
+        || { source: 'cloud', id: cur.databaseId, name: cur.name, ownerId: state.session?.user?.id }
+      : mobileEditingSavedRoute && state.saved.includes(mobileEditingSavedRoute) ? mobileEditingSavedRoute : null;
+    if (savedItem && !canDeleteSavedRoute(savedItem)) { toast('직접 만든 코스만 삭제할 수 있습니다.'); return; }
+    const confirmName = savedItem?.name || cur.name;
+    const confirmMsg = state.lang === 'ko' ? `"${confirmName}" 코스를 삭제하시겠습니까?` : `Delete course "${confirmName}"?`;
     if (!window.confirm(confirmMsg)) return;
 
-    if (cur.databaseId && supabaseClient && state.session?.user) {
-      try {
-        const { error } = await supabaseClient.from('powderline_routes').delete().eq('id', cur.databaseId);
-        if (error) {
-          toast(error.message);
-          return;
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    if (cur.databaseId) {
-      state.saved = state.saved.filter(r => r.id !== cur.databaseId);
-    } else if (mobileEditingSavedRoute) {
-      state.saved = state.saved.filter(r => r !== mobileEditingSavedRoute);
-    } else {
-      state.saved = state.saved.filter(r => r.name !== cur.name);
-    }
-    localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(r => r.source !== 'cloud' && !r.recordingOwnerId)));
+    if (savedItem && !(await deleteSavedRoute(savedItem))) return;
     renderSaved();
     renderMobileSavedRoutes();
 
@@ -6851,7 +6918,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const editBtn = $('#mobileRoutesEditBtn');
     const deleteBtn = $('#mobileRoutesDeleteBtn');
     if (editBtn) editBtn.disabled = !hasCourse;
-    if (deleteBtn) deleteBtn.disabled = !hasCourse;
+    if (deleteBtn) {
+      // Only courses the user created themselves get a delete button.
+      const selected = hasCourse ? state.saved[Number($('#mobileRoutesCourseSelect').value)] : null;
+      deleteBtn.hidden = hasCourse && !canDeleteSavedRoute(selected);
+      deleteBtn.disabled = !hasCourse;
+    }
   }
 
   function renderMobileSavedRoutes() {
@@ -8563,23 +8635,11 @@ async function startPartyMemberRideOn() {
         toast('서버 동기화가 완료되기 전에는 기록 코스를 삭제할 수 없습니다.');
         return;
       }
+      if (!canDeleteSavedRoute(item)) { toast('직접 만든 코스만 삭제할 수 있습니다.'); return; }
       const confirmMsg = state.lang === 'ko' ? `"${item.name}" 코스를 삭제하시겠습니까?` : `Delete course "${item.name}"?`;
       if (!window.confirm(confirmMsg)) return;
 
-      if (item.source === 'cloud' && item.id && supabaseClient && state.session?.user) {
-        try {
-          const { error } = await supabaseClient.from('powderline_routes').delete().eq('id', item.id);
-          if (error) {
-            toast(error.message);
-            return;
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      }
-
-      state.saved.splice(idx, 1);
-      localStorage.setItem('powderline.routes', JSON.stringify(state.saved.filter(r => r.source !== 'cloud' && !r.recordingOwnerId)));
+      if (!(await deleteSavedRoute(item))) return;
 
       state.points = [];
       state.selectedVertex = null;

@@ -1,0 +1,26 @@
+﻿--------- beginning of main
+11-10 12:56:18.192 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:30.776 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:30.780 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"display":"granted"}
+11-10 12:56:30.780 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:33.153 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"latitude":37.1741497,"longitude":127.0886103,"accuracy":8.377,"altitude":59.08918465330332,"altitudeAccuracy":0.5343813300132751,"simulated":false,"speed":0.08825963,"bearing":null,"time":1794282993096}
+11-10 12:56:40.298 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:40.304 I/Capacitor/Console(32266): File:  - Line 333 - Msg: undefined
+11-10 12:56:47.606 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:47.611 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"display":"granted"}
+11-10 12:56:47.611 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:50.289 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"latitude":37.1741484,"longitude":127.0886093,"accuracy":4.702,"altitude":58.940460306912016,"altitudeAccuracy":0.5327223539352417,"simulated":false,"speed":0.045280468,"bearing":null,"time":1794283010161}
+11-10 12:56:55.891 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:55.961 I/Capacitor/Console(32266): File:  - Line 333 - Msg: undefined
+11-10 12:56:59.680 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:56:59.696 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"display":"granted"}
+11-10 12:56:59.697 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:57:01.614 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"latitude":37.1741486,"longitude":127.0886104,"accuracy":3.925,"altitude":59.156899621681404,"altitudeAccuracy":0.5334027409553528,"simulated":false,"speed":0.01610591,"bearing":null,"time":1794283021535}
+11-10 12:57:06.909 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:57:06.915 I/Capacitor/Console(32266): File:  - Line 333 - Msg: undefined
+11-10 12:57:10.237 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:57:10.247 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"display":"granted"}
+11-10 12:57:10.247 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:57:12.950 I/Capacitor/Console(32266): File:  - Line 333 - Msg: {"latitude":37.1741478,"longitude":127.0886107,"accuracy":3.562,"altitude":59.179471396291376,"altitudeAccuracy":0.5338937044143677,"simulated":false,"speed":0.009817404,"bearing":null,"time":1794283032874}
+11-10 12:57:21.895 I/Capacitor/Console(32266): File:  - Line 349 - Msg: [object Object]
+11-10 12:57:21.908 I/Capacitor/Console(32266): File:  - Line 333 - Msg: undefined
