@@ -5392,15 +5392,37 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         status.textContent = '지역 저장 완료 · 스키 데이터 준비 요청 없음';
         return;
       }
-      // Ski data is collected by the scheduled OpenSkiData batch (GitHub Actions): the DB trigger has already
-      // set ski_data_status to 'pending'. The list below shows pending / ready / empty / failed.
-      status.textContent = bboxChanged
-        ? '지역 저장 완료 · 스키 데이터 수집 대기 중 (최대 약 1시간 내 자동 수집)'
-        : '지역 저장 완료 · 이전 수집이 실패한 지역입니다 (일정 시간 후 자동 재시도)';
+      // The DB trigger has already set ski_data_status to 'pending'. Ask the server to start the OpenSkiData run for
+      // this region now (Edge Function holds the GitHub token). If that fails the region simply stays pending and the
+      // hourly scheduled run collects it.
+      if (!bboxChanged) {
+        status.textContent = '지역 저장 완료 · 이전 수집이 실패한 지역입니다 (일정 시간 후 자동 재시도)';
+        return;
+      }
+      status.textContent = '지역 저장 완료 · 스키 데이터 수집을 요청하는 중…';
+      const requested = await requestRegionSkiDataIngest(savedRegionId);
+      status.textContent = requested === 'dispatched' ? '지역 저장 완료 · 스키 데이터 수집을 시작했습니다 (완료까지 수 분)'
+        : requested === 'running' ? '지역 저장 완료 · 이 지역은 이미 수집 중입니다'
+        : '지역 저장 완료 · 자동 수집 요청에 실패해 대기 상태로 두었습니다 (최대 약 1시간 내 예약 수집)';
+      void loadAdminRegions();
     } catch (error) {
       showAdminRegionError(error, errorEl);
     } finally {
       button.disabled = false;
+    }
+  }
+
+  // Never throws and never changes the saved region: any failure just leaves it `pending` for the scheduled run.
+  async function requestRegionSkiDataIngest(regionId) {
+    try {
+      if (!supabaseClient?.functions?.invoke || navigator.onLine === false) return 'failed';
+      const { data, error } = await supabaseClient.functions.invoke('dispatch-region-ingest', { body: { regionId } });
+      if (error) return 'failed';
+      if (data?.dispatched === true) return 'dispatched';
+      return data?.reason === 'already-processing' ? 'running' : 'failed';
+    } catch (error) {
+      console.warn('Region ingest request failed:', error);
+      return 'failed';
     }
   }
 
