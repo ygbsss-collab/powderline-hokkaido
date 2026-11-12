@@ -197,7 +197,11 @@
 .profile-chart-wrap {
   position: relative;
   height: 118px;
-  min-width: 0
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 10px;
+  background: #0a0e13;
+  overflow: hidden
 }
 
 .profile-chart-wrap canvas {
@@ -213,23 +217,37 @@
   display: grid;
   place-items: center;
   margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  text-align: center
+  padding: 8px;
+  color: #94a3b8;
+  font-size: 11px;
+  text-align: center;
+  pointer-events: none
 }
 
-.profile-tooltip {
+.profile-message[hidden] {
+  display: none
+}
+
+.profile-tooltip,
+.profile-readout {
   position: absolute;
-  z-index: 2;
+  top: 6px;
+  left: 8px;
+  z-index: 3;
   pointer-events: none;
-  transform: translate(-50%, -110%);
-  padding: 6px 8px;
-  border-radius: 4px;
-  background: var(--deep);
-  color: #fff;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, .88);
+  border: 1px solid rgba(255, 255, 255, .12);
+  color: #e2e8f0;
   white-space: nowrap;
-  font: 10px 'DM Mono', monospace;
-  box-shadow: 0 5px 15px rgba(0, 0, 0, .2)
+  font: 10px 'JetBrains Mono', 'DM Mono', monospace;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .4)
+}
+
+.profile-tooltip[hidden],
+.profile-readout[hidden] {
+  display: none
 }
 
 .profile-note {
@@ -4508,7 +4526,6 @@ select {
   .ride-bottom-deck { position:absolute; left:12px; right:12px; bottom:calc(64px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:8px; pointer-events:auto; }
   .ride-bottom-deck button { padding:10px 14px; font-size:12px; }
   #rideShareBtn { align-self:flex-end; border:0; border-radius:999px; background:linear-gradient(90deg,#38bdf8,#06b6d4); color:#082f49; font-weight:700; }
-  #rideAnalyticsBtn { background:rgba(226,232,240,.92); color:#0f172a; text-align:left; }
 }
 
 /* Stitch mobile map HUDs; the map itself remains the existing Mapbox canvas. */
@@ -4663,7 +4680,7 @@ select {
   #rideShareBtn .material-symbols-outlined { font-size: 17px; }
   #rideShareBtn.recording { background: linear-gradient(90deg, #fb7185, #ef4444); color: #fff; box-shadow: 0 6px 18px rgba(239, 68, 68, .35); }
   #rideShareBtn.paused { background: linear-gradient(90deg, #fbbf24, #f59e0b); color: #422006; }
-  #rideShareBtn[hidden], #rideAnalyticsBtn[hidden], .gps-recording-panel[hidden] { display: none !important; }
+  #rideShareBtn[hidden], .gps-recording-panel[hidden] { display: none !important; }
   .gps-recording-panel { align-self: flex-end; width: min(100%, 340px); padding: 6px; border: 1px solid rgba(56, 189, 248, .35); border-radius: 13px; background: rgba(2, 6, 23, .9); color: #f8fafc; box-shadow: 0 6px 20px rgba(0, 0, 0, .32); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
   .gps-recording-mini-status { display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 4px; overflow: hidden; color: #cbd5e1; font-size: 9px; white-space: nowrap; }
   .gps-recording-mini-status strong { display: flex; align-items: center; color: #f8fafc; font-size: 10px; }
@@ -4687,10 +4704,6 @@ select {
   .gps-recording-finish-dialog #gpsRecordingFinishSummary { margin-bottom: 12px; }
   .gps-recording-finish-actions { display: grid; grid-template-columns: 1fr 1.25fr; gap: 8px; }
   .gps-recording-finish-actions button { width: 100%; min-height: 44px; }
-  .mobile-map-analytics,
-  #rideAnalyticsBtn { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 43px; padding: 0 16px; border: 0; border-radius: 12px; background: rgba(226, 232, 240, .92); color: #0f172a; font-size: 12px; font-weight: 700; text-align: left; box-shadow: 0 4px 12px rgba(0, 0, 0, .25); }
-  .mobile-map-analytics .material-symbols-outlined,
-  #rideAnalyticsBtn .material-symbols-outlined { color: #475569; font-size: 20px; }
   .ride-topbar { z-index: 30; }
   .ride-course-card { position: absolute; top: calc(52px + env(safe-area-inset-top)); left: 12px; right: 12px; height: 58px; padding: 8px 12px; gap: 10px; z-index: 30; pointer-events: auto; }
   .ride-course-card > div { display: flex; flex-direction: column; min-width: 0; }
@@ -4700,7 +4713,7 @@ select {
   body[data-mobile-view="map"] .mobile-hud-bottom-nav,
   body[data-mobile-view="ride"] .mobile-hud-bottom-nav { height: calc(80px + env(safe-area-inset-bottom)); padding-bottom: calc(22px + env(safe-area-inset-bottom)); background: rgba(2, 6, 23, .96); }
   body[data-mobile-view="map"] .mobile-hud-bottom-nav::after,
-  body[data-mobile-view="ride"] .mobile-hud-bottom-nav::after { content: 'POWDERLINE HOKKAIDO BACKCOUNTRY | YK Lab - GYOHYEOK YUN'; position: absolute; bottom: calc(3px + env(safe-area-inset-bottom)); left: 12px; right: 12px; padding-top: 4px; border-top: 1px solid rgba(30, 41, 59, .6); color: #64748b; font-size: 8px; text-align: center; pointer-events: none; }
+  body[data-mobile-view="ride"] .mobile-hud-bottom-nav::after { content: 'POWDERLINE | YK Lab - GYOHYEOK YUN'; position: absolute; bottom: calc(3px + env(safe-area-inset-bottom)); left: 12px; right: 12px; padding-top: 4px; border-top: 1px solid rgba(30, 41, 59, .6); color: #64748b; font-size: 8px; text-align: center; pointer-events: none; }
   body[data-mobile-view="map"] .route-profile,
   body[data-mobile-view="ride"] .route-profile { z-index: 45; bottom: calc(86px + env(safe-area-inset-bottom)); }
   body[data-mobile-view="map"] .route-profile.collapsed,
@@ -4876,13 +4889,13 @@ select {
   .course-editor-map-controls { top: 16px; transform: none; }
   .course-editor-profile-drawer { position: absolute; right: 0; bottom: 0; left: 0; z-index: 2; border-top: 1px solid rgba(56,189,248,.3); background: rgba(16,20,25,.97); box-shadow: 0 -6px 18px rgba(0,0,0,.25); pointer-events: auto; }
   .course-routes-profile-drawer { border-radius: 0; }
-  #mobileEditorProfileToggle, #mobileRoutesProfileToggle { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 39px; padding: 0 16px; border: 0; background: transparent; color: #fff; text-align: left; cursor: pointer; }
-  #mobileEditorProfileToggle > .material-symbols-outlined:first-child, #mobileRoutesProfileToggle > .material-symbols-outlined:first-child { color: #38bdf8; font-size: 18px; }
-  #mobileEditorProfileToggle strong, #mobileRoutesProfileToggle strong { flex: 1; font-size: 13px; }
-  #mobileEditorProfileToggle .course-editor-profile-chevron, #mobileRoutesProfileToggle .course-editor-profile-chevron { color: #94a3b8; font-size: 20px; transition: transform .15s ease; }
-  #mobileEditorProfileToggle[aria-expanded="true"] .course-editor-profile-chevron, #mobileRoutesProfileToggle[aria-expanded="true"] .course-editor-profile-chevron { transform: rotate(180deg); }
-  #mobileEditorProfileBody, #mobileRoutesProfileBody { padding: 0 16px 12px; }
-  #mobileEditorProfileBody[hidden], #mobileRoutesProfileBody[hidden] { display: none !important; }
+  #mobileEditorProfileToggle, #mobileRoutesProfileToggle, #mobileMapProfileToggle { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 39px; padding: 0 16px; border: 0; background: transparent; color: #fff; text-align: left; cursor: pointer; }
+  #mobileEditorProfileToggle > .material-symbols-outlined:first-child, #mobileRoutesProfileToggle > .material-symbols-outlined:first-child, #mobileMapProfileToggle > .material-symbols-outlined:first-child { color: #38bdf8; font-size: 18px; }
+  #mobileEditorProfileToggle strong, #mobileRoutesProfileToggle strong, #mobileMapProfileToggle strong { flex: 1; font-size: 13px; }
+  #mobileEditorProfileToggle .course-editor-profile-chevron, #mobileRoutesProfileToggle .course-editor-profile-chevron, #mobileMapProfileToggle .course-editor-profile-chevron { color: #94a3b8; font-size: 20px; transition: transform .15s ease; }
+  #mobileEditorProfileToggle[aria-expanded="true"] .course-editor-profile-chevron, #mobileRoutesProfileToggle[aria-expanded="true"] .course-editor-profile-chevron, #mobileMapProfileToggle[aria-expanded="true"] .course-editor-profile-chevron { transform: rotate(180deg); }
+  #mobileEditorProfileBody, #mobileRoutesProfileBody, #mobileMapProfileBody { padding: 0 16px 12px; }
+  #mobileEditorProfileBody[hidden], #mobileRoutesProfileBody[hidden], #mobileMapProfileBody[hidden] { display: none !important; }
   #mobileEditorProfileBody .course-profile-chart { height: 55px; }
   .course-editor-bottom { flex: none; max-height: min(32vh, 230px); padding: 6px 16px calc(8px + env(safe-area-inset-bottom)); overflow-y: auto; border-top: 1px solid rgba(255,255,255,.1); background: #101419; pointer-events: auto; }
   .course-editor-detail-card { margin: 0 6px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; background: #181c21; overflow: hidden; }
@@ -5828,3 +5841,26 @@ body.admin-region-picking #mobileHud, body.admin-region-picking .mobile-hud-bott
   text-align: center;
   pointer-events: none;
 }
+
+@media (max-width: 768px) {
+  /* Mobile: the map-view graph uses the same drawer as the course screen; the desktop panel is not used. */
+  #profilePanel { display: none !important; }
+  .mobile-map-profile-drawer { display: none; position: absolute; right: 0; bottom: calc(80px + env(safe-area-inset-bottom)); left: 0; z-index: 46; border-radius: 0; }
+  body[data-mobile-view="map"] .mobile-map-profile-drawer,
+  body[data-mobile-view="ride"] .mobile-map-profile-drawer { display: block; }
+  body[data-mobile-view="map"] .mobile-map-bottom-deck,
+  body[data-mobile-view="ride"] .ride-bottom-deck { bottom: calc(128px + env(safe-area-inset-bottom)); }
+  .map-panel.mobile-profile-expanded .mobile-map-bottom-deck,
+  .map-panel.mobile-profile-expanded .ride-bottom-deck { display: none; }
+}
+
+/* Menu headers: the separate back buttons are hidden (system/browser back and in-screen flows still use them). */
+#partyCreateBackBtn, #partyLeaderBackBtn, #partyInviteBackBtn, #partyJoinedBackBtn, #partyReceivedBackBtn,
+#stitchAccountBackBtn, #stitchAdminManageHeaderBackBtn, #stitchAdminManageBackBtn, #stitchAdminUsersBackBtn,
+#stitchAdminRegionsBackBtn, #stitchAdminCoursesBackBtn, #stitchDeleteAccountBackBtn,
+.party-leader-topbar-spacer, .party-joined-topbar-spacer, .party-create-radar { display: none !important; }
+
+/* Selected-point info shown in the profile drawer header (between the title and the chevron). */
+.profile-header-readout { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #facc15; font: 700 11px 'JetBrains Mono', monospace; }
+.profile-header-readout[hidden] { display: none; }
+#mobileRoutesProfileToggle strong, #mobileEditorProfileToggle strong, #mobileMapProfileToggle strong { white-space: nowrap; }

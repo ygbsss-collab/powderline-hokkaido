@@ -114,7 +114,7 @@
           </div>
           <div class="mobile-hud-telemetry" hidden><span id="mobileDistVal">0.0</span><span id="mobileSlopeVal">0</span></div>
           <button id="mobileCreateCourseBtn" type="button" hidden>코스 만들기</button>
-          <div class="mobile-map-bottom-deck"><button id="mobileMapRideOnBtn" type="button" class="mobile-hud-fab"><span class="material-symbols-outlined">play_arrow</span><span>라이드온 하기</span></button><button id="mobileMapAnalyticsBtn" type="button" class="mobile-map-analytics">경사도 보기<span class="material-symbols-outlined">keyboard_arrow_up</span></button></div>
+          <div class="mobile-map-bottom-deck"><button id="mobileMapRideOnBtn" type="button" class="mobile-hud-fab"><span class="material-symbols-outlined">play_arrow</span><span>라이드온 하기</span></button></div>
         </div>
         <div id="mobileRideHud" class="mobile-ride-hud" hidden>
           <div class="ride-topbar"><label class="ride-region"><span>지역</span><select id="rideRegionSelect" aria-label="라이드온 지역"></select><span class="material-symbols-outlined">expand_more</span></label><div class="ride-top-actions"><button id="rideTiltBtn" type="button"><span class="mobile-live-dot"></span><span id="rideTiltLabel">3D</span></button><button id="rideStyleBtn" type="button"><span class="material-symbols-outlined">satellite_alt</span><span id="rideStyleLabel">위성</span></button></div></div>
@@ -127,12 +127,11 @@
               <div class="gps-recording-actions"><button id="gpsRecordPauseBtn" type="button">기록 일시정지</button><button id="gpsRecordFinishBtn" type="button">기록 종료</button></div>
             </section>
             <button id="rideShareBtn" type="button"><span class="material-symbols-outlined">route</span><span id="rideRecordBtnLabel">내 경로 기록</span></button>
-            <button id="rideAnalyticsBtn" type="button">경사도 보기<span class="material-symbols-outlined">keyboard_arrow_up</span></button>
           </div>
         </div>
         <section id="mobileRoutesScreen" class="mobile-standalone-screen course-manage-screen" hidden aria-label="코스 관리">
           <header class="course-manage-header">
-            <div class="course-brand-row"><span>POWDERLINE</span><small>HOKKAIDO ALPINE</small></div>
+            <div class="course-brand-row"><span>POWDERLINE</span></div>
             <div class="course-banner"><h1>My Course</h1><button id="mobileRoutesNewBtn" type="button"><span class="material-symbols-outlined">draw</span>코스 그리기</button></div>
             <label class="course-select-row"><span class="material-symbols-outlined">location_on</span><strong>지역 설정</strong><select id="mobileRoutesRegion" aria-label="코스 지역 설정"></select><span class="material-symbols-outlined">expand_more</span></label>
             <label class="course-select-row"><span class="material-symbols-outlined">landscape</span><strong>코스선택:</strong><select id="mobileRoutesCourseSelect" aria-label="저장된 코스 선택"><option value="">코스 미선택</option></select><span class="material-symbols-outlined">expand_more</span></label>
@@ -141,7 +140,7 @@
             <button id="mobileRoutesCompassBtn" class="course-map-compass" type="button" aria-label="북쪽 정렬">N<span>◆</span></button>
             <div class="course-map-controls"><div><button id="mobileRoutesZoomInBtn" type="button" aria-label="확대">＋</button><button id="mobileRoutesZoomOutBtn" type="button" aria-label="축소">−</button></div><button id="mobileRoutesStyleBtn" type="button" aria-label="지도 레이어 변경"><span class="material-symbols-outlined">layers</span></button><button id="mobileRoutesLocateBtn" type="button" aria-label="내 위치"><span class="material-symbols-outlined">my_location</span></button></div>
             <section class="course-editor-profile-drawer course-routes-profile-drawer" aria-label="경사도 그래프">
-              <button id="mobileRoutesProfileToggle" type="button" aria-expanded="true" aria-controls="mobileRoutesProfileBody"><span class="material-symbols-outlined">landscape</span><strong>경사도 그래프</strong><span class="material-symbols-outlined course-editor-profile-chevron">expand_more</span></button>
+              <button id="mobileRoutesProfileToggle" type="button" aria-expanded="true" aria-controls="mobileRoutesProfileBody"><span class="material-symbols-outlined">landscape</span><strong>경사도 그래프</strong><span class="profile-header-readout" hidden></span><span class="material-symbols-outlined course-editor-profile-chevron">expand_more</span></button>
               <div id="mobileRoutesProfileBody"><div class="course-profile-chart"><canvas id="mobileRoutesProfileChart" aria-label="코스 경사도 그래프"></canvas><p id="mobileRoutesProfileMessage">경로를 그리거나 코스를 선택하면 그래프가 표시됩니다.</p></div><div class="course-profile-stats"><div><small>거리</small><strong id="mobileRoutesDistance">—</strong></div><div><small>평균 경사</small><strong id="mobileRoutesAverage">—</strong></div><div><small>최대 경사</small><strong id="mobileRoutesMaximum">—</strong></div></div></div>
             </section>
           </div>
@@ -154,7 +153,7 @@
           <div class="course-editor-map-window">
             <div class="course-editor-map-controls"><button id="mobileEditorCompassBtn" type="button" aria-label="북쪽 정렬"><span class="material-symbols-outlined">explore</span></button><button id="mobileEditorStyleBtn" type="button" aria-label="지도 레이어 변경"><span class="material-symbols-outlined">layers</span></button><button id="mobileEditorLocateBtn" type="button" aria-label="내 위치"><span class="material-symbols-outlined">my_location</span></button><div><button id="mobileEditorZoomInBtn" type="button" aria-label="확대">＋</button><button id="mobileEditorZoomOutBtn" type="button" aria-label="축소">−</button></div></div>
             <section class="course-editor-profile-drawer" aria-label="경사도 프로파일">
-              <button id="mobileEditorProfileToggle" type="button" aria-expanded="true" aria-controls="mobileEditorProfileBody"><span class="material-symbols-outlined">show_chart</span><strong>경사도 프로파일</strong><span class="material-symbols-outlined course-editor-profile-chevron">expand_more</span></button>
+              <button id="mobileEditorProfileToggle" type="button" aria-expanded="true" aria-controls="mobileEditorProfileBody"><span class="material-symbols-outlined">show_chart</span><strong>경사도 프로파일</strong><span class="profile-header-readout" hidden></span><span class="material-symbols-outlined course-editor-profile-chevron">expand_more</span></button>
               <div id="mobileEditorProfileBody"><div class="course-profile-chart"><canvas id="mobileEditorProfileChart" aria-label="편집 중인 코스 경사도 그래프"></canvas><p id="mobileEditorProfileMessage">지도에서 경로를 그리면 그래프가 표시됩니다.</p></div><div class="course-profile-stats"><div><small>거리</small><strong id="mobileEditorDistance">—</strong></div><div><small>표고차</small><strong id="mobileEditorElevation">—</strong></div><div><small>최대/평균 경사</small><strong id="mobileEditorSlope">—</strong></div></div></div>
             </section>
           </div>
@@ -187,6 +186,10 @@
         <div class="map-topbar"><div class="pill"><span class="live-dot"></span><span id="mapStatus">Mapbox 지형 불러오는 중…</span></div><div class="top-actions"><a href="./maplibre-backup.html" data-i18n="linkMaplibre">MapLibre 백업</a><button id="tiltBtn"><span data-i18n="btnTilt">기울이기</span> <span>◒</span></button><button id="resetBtn" data-i18n="btnResetView">보기 초기화</button></div></div>
         <div class="map-legend"><span><i class="legend-line"></i> <span data-i18n="legendMyRoute">내 경로</span></span><span><i class="legend-dot"></i> <span data-i18n="legendStartPoint">시작점</span></span></div>
         <div id="toast" class="toast" role="status"></div>
+        <section id="mobileMapProfileDrawer" class="course-editor-profile-drawer mobile-map-profile-drawer" aria-label="경사도 그래프">
+          <button id="mobileMapProfileToggle" type="button" aria-expanded="false" aria-controls="mobileMapProfileBody"><span class="material-symbols-outlined">landscape</span><strong>경사도 그래프</strong><span class="profile-header-readout" hidden></span><span class="material-symbols-outlined course-editor-profile-chevron">expand_more</span></button>
+          <div id="mobileMapProfileBody" hidden><div class="course-profile-chart"><canvas id="mobileMapProfileChart" aria-label="코스 경사도 그래프"></canvas><p id="mobileMapProfileMessage">경로를 그리거나 코스를 선택하면 그래프가 표시됩니다.</p></div><div class="course-profile-stats"><div><small>거리</small><strong id="mobileMapDistance">—</strong></div><div><small>평균 경사</small><strong id="mobileMapAverage">—</strong></div><div><small>최대 경사</small><strong id="mobileMapMaximum">—</strong></div></div></div>
+        </section>
         <section id="profilePanel" class="route-profile">
           <button id="profileToggle" class="profile-toggle" type="button" aria-expanded="true" aria-controls="profileBody"><span data-i18n="profilePanelTitle">경로 고도·경사도 분석</span><span id="profileChevron" aria-hidden="true">⌄</span></button>
           <div id="profileBody" class="profile-body">
@@ -218,7 +221,7 @@
       <div class='home-bg-graphic' aria-hidden='true'><svg fill="none" preserveAspectRatio="xMidYMid slice" viewBox="0 0 400 800" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="homeDarkSky" x1="0%" x2="0%" y1="0%" y2="100%"><stop offset="0%" stop-color="#080d14"></stop><stop offset="50%" stop-color="#0f1722"></stop><stop offset="100%" stop-color="#0a0e13"></stop></linearGradient><linearGradient id="homeDarkPeak" x1="0%" x2="100%" y1="0%" y2="100%"><stop offset="0%" stop-color="#1e2d3d" stop-opacity="0.7"></stop><stop offset="50%" stop-color="#111e2e" stop-opacity="0.6"></stop><stop offset="100%" stop-color="#09131d" stop-opacity="0.9"></stop></linearGradient></defs><rect fill="url(#homeDarkSky)" height="800" width="400"></rect><polygon fill="url(#homeDarkPeak)" points="-50,260 120,90 280,240 460,110 480,450 -50,450"></polygon><polygon fill="#07101a" opacity="0.6" points="120,90 190,160 280,240 330,300 210,380 70,300"></polygon><rect fill="#0a0e13" height="420" opacity="0.95" width="400" y="380"></rect></svg></div>
       <header class='home-header'><div class="home-brand-pill"><span>POWDERLINE</span></div></header>
       <main class="home-main">
-        <div class="home-title-row"><span class="home-title">COURSE SELECT</span><span id="homeGpsBadge" class="home-gps-badge">GPS READY</span></div>
+        <div class="home-title-row"><span class="home-title">COURSE SELECT</span></div>
         <section class="home-filter-grid">
           <div class="home-field"><label for="homeRegionSelect" class="home-field-label">지역 선택</label><div class="home-select-wrap"><select id="homeRegionSelect" class="home-select"></select><span class="material-symbols-outlined home-select-icon">expand_more</span></div></div>
           <div class="home-field"><label for="homeCourseSelect" class="home-field-label">코스 선택</label><div class="home-select-wrap"><select id="homeCourseSelect" class="home-select"></select><span class="material-symbols-outlined home-select-icon">expand_more</span></div></div>
@@ -245,7 +248,7 @@
           <div id="homeOfflineRegionList" class="home-offline-region-list" aria-live="polite"></div>
         </section>
         <section class="home-cta"><button id="homeRideOnBtn" type="button" class="home-ride-on-btn" disabled aria-describedby="homeMapModeHint"><span>RIDE ON</span></button></section>
-        <p class="home-credit">POWDERLINE HOKKAIDO BACKCOUNTRY | YK Lab - GYOHYEOK YUN</p>
+        <p class="home-credit">POWDERLINE | YK Lab - GYOHYEOK YUN</p>
       </main>
     </div>
 
@@ -325,7 +328,7 @@
         <section class="party-invite-search" aria-label="회원 검색"><p>USER 검색</p><div><span class="material-symbols-outlined" aria-hidden="true">search</span><input id="partyInviteSearchInput" type="search" placeholder="닉네임 검색" autocomplete="off" aria-label="닉네임 검색" /><button id="partyInviteSearchBtn" type="button">조회</button></div></section>
         <div class="party-invite-count"><span id="partyInviteResultCount">결과 0건</span></div>
         <div id="partyInviteResults" class="party-invite-results" aria-live="polite"><div class="party-invite-empty"><span class="material-symbols-outlined" aria-hidden="true">person_search</span><p>표시할 회원이 없습니다.</p></div></div>
-        <p class="party-invite-footer">POWDERLINE HOKKAIDO BACKCOUNTRY | YK Lab - GYOHYEOK YUN</p>
+        <p class="party-invite-footer">POWDERLINE | YK Lab - GYOHYEOK YUN</p>
       </main>
     </section>
 
@@ -335,7 +338,7 @@
         <section class="party-joined-card party-joined-overview" aria-labelledby="partyJoinedName"><div class="party-joined-overview-top"><div><span>GROUP PROTOCOL</span><h2 id="partyJoinedName">파티 정보가 없습니다</h2><p id="partyJoinedCount">파티 인원 정보 없음</p></div><button id="partyJoinedLeaveBtn" type="button"><span class="material-symbols-outlined" aria-hidden="true">logout</span>파티 탈퇴</button></div></section>
         <section class="party-joined-card" aria-labelledby="partyJoinedCoursesTitle"><div class="party-joined-section-title"><span class="material-symbols-outlined" aria-hidden="true">alt_route</span><h2 id="partyJoinedCoursesTitle">파티 코스</h2><span id="partyJoinedCourseCount">—</span></div><div class="party-joined-active-route"><span>ACTIVE ROUTE</span><strong id="partyJoinedActiveCourseName">활성 코스가 없습니다</strong><small id="partyJoinedActiveCourseDistance"></small></div><div id="partyJoinedCourses" class="party-joined-courses"><p>공유 코스가 없습니다.</p></div><button id="partyJoinedRideOnBtn" class="party-joined-ride-btn" type="button"><span class="material-symbols-outlined" aria-hidden="true">play_arrow</span><span>파티 RIDE ON</span></button><p class="party-joined-note"><span class="material-symbols-outlined" aria-hidden="true">lock</span>공유 코스 변경은 파티장만 가능합니다</p></section>
         <section class="party-joined-card" aria-labelledby="partyJoinedMembersTitle"><div class="party-joined-location"><span class="material-symbols-outlined" aria-hidden="true">my_location</span><div><strong>내 위치 공유</strong><small id="partyJoinedLocationSubtext">위치 공유 대기 중</small></div><button id="partyJoinedLocationToggle" type="button" role="switch" aria-label="내 위치 공유" aria-checked="true"><span></span></button></div><div class="party-joined-section-title"><span class="material-symbols-outlined" aria-hidden="true">groups</span><h2 id="partyJoinedMembersTitle">파티원 목록</h2><span id="partyJoinedMemberCount">—</span></div><p id="partyJoinedGpsStatus" class="party-joined-gps-status">GPS 상태 정보가 없습니다.</p><div id="partyJoinedMembers" class="party-joined-members"><p>표시할 파티원이 없습니다.</p></div></section>
-        <p class="party-joined-footer">POWDERLINE HOKKAIDO BACKCOUNTRY | YK Lab - GYOHYEOK YUN</p>
+        <p class="party-joined-footer">POWDERLINE | YK Lab - GYOHYEOK YUN</p>
       </main>
     </section>
 
@@ -345,7 +348,7 @@
         <section class="party-received-summary" aria-labelledby="partyReceivedPendingTitle"><div><span class="material-symbols-outlined" aria-hidden="true">mark_email_unread</span><h2 id="partyReceivedPendingTitle">대기 중인 초대</h2></div><span id="partyReceivedPendingCount">0건</span></section>
         <div id="partyReceivedPendingList" class="party-received-list"><div class="party-received-empty"><span class="material-symbols-outlined" aria-hidden="true">mail</span><p>대기 중인 초대가 없습니다.</p></div></div>
         <section class="party-received-history" aria-labelledby="partyReceivedHistoryTitle"><div class="party-received-history-heading"><span class="material-symbols-outlined" aria-hidden="true">history</span><h2 id="partyReceivedHistoryTitle">지난 기록</h2></div><div id="partyReceivedHistoryList" class="party-received-list"><div class="party-received-empty"><p>지난 초대 기록이 없습니다.</p></div></div></section>
-        <p class="party-received-footer">POWDERLINE HOKKAIDO BACKCOUNTRY | YK Lab - GYOHYEOK YUN</p>
+        <p class="party-received-footer">POWDERLINE | YK Lab - GYOHYEOK YUN</p>
       </main>
     </section>
 

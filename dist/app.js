@@ -351,7 +351,7 @@
     }
   };
   const localSavedRoutes = JSON.parse(localStorage.getItem('powderline.routes') || '[]');
-  const state = { lang: localStorage.getItem('powderline.lang') || 'ko', selectedLiftId: null, points: [], courses: [], selectedCourseId: null, editorMode: false, tool: 'navigate', selectedVertex: null, segmentStart: null, mapStyle: 'satellite', saved: localSavedRoutes, session: null, profile: null, pendingUsers: [], pendingUsersError: null, myParties: [], currentParty: null, partySchemaReady: false };
+  const state = { viewStack: [], backNavigating: false, lang: localStorage.getItem('powderline.lang') || 'ko', selectedLiftId: null, points: [], courses: [], selectedCourseId: null, editorMode: false, tool: 'navigate', selectedVertex: null, segmentStart: null, mapStyle: 'satellite', saved: localSavedRoutes, session: null, profile: null, pendingUsers: [], pendingUsersError: null, myParties: [], currentParty: null, partySchemaReady: false };
   let mobileEditingSavedRoute = null;
   let mobileRoutePointsHidden = false;
   let mobileSelectedSavedIndex = '';
@@ -401,9 +401,17 @@
   const INITIAL_AUTH_TIMEOUT_MS = 8000;
   const GPS_RECORDING_STORAGE_PREFIX = 'powderline.gpsRecording.v1.';
   const GPS_PENDING_ROUTES_PREFIX = 'powderline.gpsPendingRoutes.v1.';
-  const GPS_MAX_ACCURACY_METERS = 80;
+  const GPS_MAX_ACCURACY_METERS = 35;            // normal acceptance
+  const GPS_FALLBACK_ACCURACY_METERS = 60;       // 35-60 m: only to bridge long gaps, and only if the move is plausible
+  const GPS_FALLBACK_MIN_GAP_MS = 15000;
+  const GPS_RESUME_GUARD_MS = 15000;             // after the screen comes back
+  const GPS_RESUME_MAX_ACCURACY_METERS = 20;
   const GPS_MIN_POINT_DISTANCE_METERS = 2;
-  const GPS_MAX_SPEED_METERS_PER_SECOND = 55;
+  const GPS_MAX_SPEED_METERS_PER_SECOND = 40;    // 144 km/h; above this (after accuracy allowance) is a jump
+  const GPS_MAX_BACKLOG_AGE_MS = 10 * 60 * 1000; // fixes measured while the screen was off may arrive late
+  const GPS_FIRST_FIX_MAX_AGE_MS = 30000;
+  const GPS_CANDIDATE_TTL_MS = 60000;
+  const GPS_DIAG_MAX_LINES = 200;
   const GPS_ROUTE_RENDER_INTERVAL_MS = 1000;
   const GPS_PERSIST_INTERVAL_MS = 5000;
   const gpsRecording = {
@@ -582,6 +590,78 @@ const geolocateControl = new mapboxgl.GeolocateControl({
 });
 map.addControl(geolocateControl, 'bottom-right');
 let pendingLocateToast = true;
+// My-location follow: keeps zoom/pitch/bearing, moves only the center (marker ~10% below screen center)
+// once the marker leaves the safe area. Stops on manual pan/rotate/tilt; re-armed by the locate button.
+const myLocationFollow = { active: false, syntheticFix: false, recenterNext: false, lastOwnFixAt: 0, resumeAfterShow: false, dragging: false };
+function followMyLocation(lng, lat, force = false) {
+  if (!Number.isFinite(lng) || !Number.isFinite(lat) || myLocationFollow.dragging) return;
+  const canvas = map.getCanvas();
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!force && w > 0 && h > 0) {
+    const pt = map.project([lng, lat]);
+    if (pt.x >= w * 0.25 && pt.x <= w * 0.75 && pt.y >= h * 0.45 && pt.y <= h * 0.75) return;
+  }
+  map.easeTo({ center: [lng, lat], offset: [0, h * 0.1], duration: 700, essential: true });
+}
+// Mapbox fires 'dragstart' for a two-finger pinch as well (the touch-pan handler runs with 2+ fingers). Only a real
+// one-finger/mouse drag that does not change zoom ends follow; pinch zoom, zoom buttons, rotate and tilt keep it.
+const myLocationTouch = { maxTouches: 0, zoomAtDragStart: 0 };
+{
+  const container = map.getCanvasContainer();
+  const trackTouches = e => { myLocationTouch.maxTouches = Math.max(myLocationTouch.maxTouches, e.touches ? e.touches.length : 0); };
+  container.addEventListener('touchstart', trackTouches, { passive: true });
+  container.addEventListener('touchmove', trackTouches, { passive: true });
+  const resetTouches = e => { if (!e.touches || e.touches.length === 0) myLocationTouch.maxTouches = 0; };
+  container.addEventListener('touchend', resetTouches, { passive: true });
+  container.addEventListener('touchcancel', resetTouches, { passive: true });
+}
+map.on('dragstart', e => {
+  if (!e.originalEvent) return;
+  myLocationFollow.dragging = true;
+  myLocationTouch.zoomAtDragStart = map.getZoom();
+});
+map.on('dragend', () => {
+  if (!myLocationFollow.dragging) return;
+  myLocationFollow.dragging = false;
+  const pinch = myLocationTouch.maxTouches > 1 || Math.abs(map.getZoom() - myLocationTouch.zoomAtDragStart) > 0.01;
+  if (!pinch) myLocationFollow.active = false;
+});
+// GeolocateControl's default camera fit changes zoom; replace with the follow behavior (same control, no extra watch).
+geolocateControl._updateCamera = (pos) => {
+  const force = !myLocationFollow.active || myLocationFollow.recenterNext;
+  myLocationFollow.active = true;
+  myLocationFollow.recenterNext = false;
+  followMyLocation(pos.coords.longitude, pos.coords.latitude, force);
+};
+// Arm follow (locate button, recording start, screen-on restore): the next fix recenters, later fixes follow outside the safe area.
+function armMyLocationFollow() {
+  myLocationFollow.active = true;
+  myLocationFollow.dragging = false;
+  myLocationFollow.recenterNext = true;
+}
+// After the screen comes back the WebView may have silently stopped the control's watch: restart it (same control, no extra watcher).
+function restoreMyLocationAfterScreenOn() {
+  if (!myLocationFollow.resumeAfterShow) return;
+  myLocationFollow.resumeAfterShow = false;
+  armMyLocationFollow();
+  const stale = !myLocationFollow.lastOwnFixAt || Date.now() - myLocationFollow.lastOwnFixAt > 5000;
+  if (geolocateControl._geolocationWatchID != null && stale) {
+    try {
+      geolocateControl._clearWatch();
+      geolocateControl._watchState = 'BACKGROUND';
+      geolocateControl.trigger();
+    } catch (error) { console.warn('My-location watch restart failed:', error); }
+  }
+  const last = geolocateControl._lastKnownPosition?.coords;
+  if (last && Number.isFinite(last.longitude) && Number.isFinite(last.latitude)) {
+    myLocationFollow.recenterNext = false;
+    followMyLocation(last.longitude, last.latitude, true);
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') myLocationFollow.resumeAfterShow = myLocationFollow.active;
+  else restoreMyLocationAfterScreenOn();
+});
 function ensureGeolocateControlReady() {
   if (!geolocateControl || geolocateControl._setup) return;
   if (typeof geolocateControl._onMapLoad === 'function') {
@@ -613,33 +693,43 @@ function syncMyLocationBlueDotFromFix(coords, timestamp = Date.now()) {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
   ensureGeolocateControlReady();
   const ws = geolocateControl._watchState;
+  const ownWatch = geolocateControl._geolocationWatchID != null;
+  // The control's own watch is delivering fixes: nothing to feed.
+  if (ownWatch && myLocationFollow.lastOwnFixAt && Date.now() - myLocationFollow.lastOwnFixAt < 4000) return;
   if (!ws || ws === 'OFF' || ws === 'ACTIVE_ERROR' || ws === 'BACKGROUND_ERROR') {
     geolocateControl._watchState = 'BACKGROUND';
     if (geolocateControl._geolocateButton) {
       geolocateControl._geolocateButton.classList.remove('mapboxgl-ctrl-geolocate-waiting', 'mapboxgl-ctrl-geolocate-active', 'mapboxgl-ctrl-geolocate-active-error', 'mapboxgl-ctrl-geolocate-background-error');
       geolocateControl._geolocateButton.classList.add('mapboxgl-ctrl-geolocate-background');
     }
-    if (typeof geolocateControl._onSuccess === 'function') {
-      try {
-        geolocateControl._onSuccess({
-          coords: {
-            latitude: lat,
-            longitude: lng,
-            accuracy: Number.isFinite(Number(coords.accuracy)) ? Number(coords.accuracy) : 15,
-            heading: Number.isFinite(Number(coords.heading)) ? Number(coords.heading) : null,
-            speed: Number.isFinite(Number(coords.speed)) ? Number(coords.speed) : null
-          },
-          timestamp: Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now()
-        });
-      } catch {}
+    // Phone compass listener for the blue heading arrow (the control only adds it when it owns a watch).
+    if (typeof geolocateControl._addDeviceOrientationListener === 'function') {
+      try { geolocateControl._addDeviceOrientationListener(); } catch {}
     }
-    syncLocateButtonsActiveState();
   }
+  // Party GPS owns the watch: feed every fix to the control so the marker keeps moving.
+  if (typeof geolocateControl._onSuccess === 'function') {
+    myLocationFollow.syntheticFix = true;
+    try {
+      geolocateControl._onSuccess({
+        coords: {
+          latitude: lat,
+          longitude: lng,
+          accuracy: Number.isFinite(Number(coords.accuracy)) ? Number(coords.accuracy) : 15,
+          heading: Number.isFinite(Number(coords.heading)) ? Number(coords.heading) : null,
+          speed: Number.isFinite(Number(coords.speed)) ? Number(coords.speed) : null
+        },
+        timestamp: Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now()
+      });
+    } catch {}
+    myLocationFollow.syntheticFix = false;
+  }
+  syncLocateButtonsActiveState();
 }
 function triggerMyLocationGps({ center = true } = {}) {
   if (!geolocateControl) return;
   ensureGeolocateControlReady();
-  if (center) pendingLocateToast = true;
+  if (center) { pendingLocateToast = true; armMyLocationFollow(); }
   const ws = geolocateControl._watchState;
   if (ws === 'ACTIVE_ERROR' || ws === 'BACKGROUND_ERROR' || (ws === 'BACKGROUND' && geolocateControl._geolocationWatchID == null)) {
     geolocateControl._watchState = 'OFF';
@@ -671,15 +761,13 @@ function triggerMyLocationGps({ center = true } = {}) {
   if (center) {
     const lastPos = geolocateControl._lastKnownPosition;
     if (lastPos?.coords && Number.isFinite(lastPos.coords.longitude) && Number.isFinite(lastPos.coords.latitude)) {
-      if (typeof geolocateControl._updateCamera === 'function') {
-        geolocateControl._updateCamera(lastPos);
-      } else {
-        map.easeTo({ center: [lastPos.coords.longitude, lastPos.coords.latitude], duration: 600 });
-      }
+      myLocationFollow.active = false;
+      geolocateControl._updateCamera(lastPos);
       pendingLocateToast = false;
       toast(t('toastGpsActive'));
     } else if (typeof partyGpsRuntime === 'object' && partyGpsRuntime?.lastFix && Number.isFinite(partyGpsRuntime.lastFix.lng) && Number.isFinite(partyGpsRuntime.lastFix.lat)) {
-      map.easeTo({ center: [partyGpsRuntime.lastFix.lng, partyGpsRuntime.lastFix.lat], duration: 600 });
+      myLocationFollow.active = true;
+      followMyLocation(partyGpsRuntime.lastFix.lng, partyGpsRuntime.lastFix.lat, true);
       pendingLocateToast = false;
       toast(t('toastGpsActive'));
     }
@@ -694,7 +782,15 @@ geolocateControl.on('geolocate', (e) => {
     toast(t('toastGpsActive'));
   }
   syncLocateButtonsActiveState();
-  if (typeof handlePartyGeolocateEvent === 'function') handlePartyGeolocateEvent(e);
+  if (!myLocationFollow.syntheticFix) myLocationFollow.lastOwnFixAt = Date.now();
+  const c = e?.coords;
+  if (myLocationFollow.active && geolocateControl._watchState !== 'ACTIVE_LOCK' && c) {
+    const force = myLocationFollow.recenterNext;
+    myLocationFollow.recenterNext = false;
+    followMyLocation(c.longitude, c.latitude, force);
+  }
+  // Fixes fed from the party watcher are already processed there; don't re-enter it.
+  if (!myLocationFollow.syntheticFix && typeof handlePartyGeolocateEvent === 'function') handlePartyGeolocateEvent(e);
 });
 geolocateControl.on('error', (e) => {
   pendingLocateToast = false;
@@ -709,18 +805,18 @@ geolocateControl.on('error', (e) => {
   else toast(t('toastGpsUnavailable'));
 });
   const PROFILE_SAMPLE_METERS = 15;
-  const profile = { samples: [], timer: null, pending: false, generation: 0, marker: null, layout: null };
+  const profile = { samples: [], timer: null, pending: false, generation: 0, marker: null, layout: null, selected: null, view: null };
   const editHistory = { past: [], future: [], limit: 50 };
   let splitState = null;
   let courseSequence = 0, segmentMarker = null;
   let skiLoadToken = 0, lastFacilityState = { status: 'loading', counts: null };
-  function updateFacilityStatus(status, counts) {
+  function updateFacilityStatus(status, counts, message) {
     lastFacilityState = { status, counts };
     const el = $('#facilityStatus');
     if (!el) return;
     if (status === 'loading') el.textContent = t('facilityStatusLoading');
     else if (status === 'available' && counts) el.textContent = t('facilityCounts', counts.lifts || 0, counts.runs || 0, counts.stations || 0);
-    else el.textContent = t('facilityStatusUnavailable');
+    else el.textContent = message || t('facilityStatusUnavailable');
   }
   function setLanguage(lang) {
     state.lang = lang === 'en' ? 'en' : 'ko';
@@ -1063,15 +1159,30 @@ const PARTY_GPS_DEFAULT_INTERVAL_SECONDS = 30;
 const PARTY_GPS_STATIONARY_HOLD_MS = 60000;
 const PARTY_GPS_STATIONARY_INTERVAL_MS = 300000;
 const PARTY_GPS_MOVE_MIN_METERS = 15;
+const PARTY_GPS_FIX_MAX_AGE_MS = 120000;
+const PARTY_GPS_RPC_TIMEOUT_MS = 12000;
+const PARTY_GPS_FRESH_FIX_TIMEOUT_MS = 12000;
+const PARTY_GPS_SEND_BACKOFF_BASE_MS = 5000;
+const PARTY_GPS_SEND_BACKOFF_MAX_MS = 120000;
+const PARTY_GPS_RECOVER_MIN_GAP_MS = 2000;
+let partyGpsLifecycleListenersRegistered = false;
 const partyMemberMarkers = new Map();
 const partyGpsRuntime = {
+  freshFixRequesting: false,
+  sendFailCount: 0,
+  nextSendAllowedAt: 0,
+  lastRecoverAt: 0,
   partyId: '',
   watchId: null,
-  syncTimer: null,
+  watchRetryTimer: null,
+  watchRetryCount: 0,
+  sendTimer: null,
+  pollTimer: null,
   lastFix: null,
   anchorFix: null,
   powerSaveMode: false,
   lastSentAt: 0,
+  lastSentFixTimestamp: 0,
   sending: false,
   polling: false
 };
@@ -1321,7 +1432,7 @@ function parseRegionBbox(value) {
 async function loadRegionCatalog(client) {
   try {
     const { data, error } = await client.from('powderline_regions')
-      .select('id,label,center_lng,center_lat,zoom,bearing,pitch,sort_order,is_active,is_default,bbox')
+      .select('id,label,center_lng,center_lat,zoom,bearing,pitch,sort_order,is_active,is_default,bbox,ski_data_status,ski_data_error,ski_data_feature_count,ski_data_file_size,offline_data_version')
       .order('sort_order', { ascending: true });
     if (error) throw error;
     if (client !== supabaseClient) return { error: new Error('연결이 변경되었습니다.') };
@@ -1334,7 +1445,8 @@ async function loadRegionCatalog(client) {
         label: row.label, center: [row.center_lng, row.center_lat],
         zoom: row.zoom, bearing: row.bearing, pitch: row.pitch,
         sortOrder: row.sort_order, isActive: row.is_active,
-        bbox: parseRegionBbox(row.bbox)
+        bbox: parseRegionBbox(row.bbox),
+        skiDataStatus: row.ski_data_status, skiDataVersion: row.offline_data_version, skiDataError: row.ski_data_error
       };
       catalogRegionIds.add(row.id);
     }
@@ -1660,36 +1772,16 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       }
     });
 
-    // 1. Lift Dark Outline / Casing (리프트를 확실하게 강조하는 어두운 외곽선)
-    map.addLayer({
-      id: 'ski-lifts-casing',
-      type: 'line',
-      source: 'ski-facilities',
-      filter: ['==', ['get', 'powderlineType'], 'lift'],
-      paint: {
-        'line-color': ['case', ['==', ['get', 'id'], state.selectedLiftId || ''], '#1e3a8a', '#1c1917'],
-        'line-width': ['case',
-          ['==', ['get', 'id'], state.selectedLiftId || ''],
-          ['interpolate', ['linear'], ['zoom'], 9, 10, 13, 14, 16, 18],
-          ['interpolate', ['linear'], ['zoom'], 9, 7.0, 13, 9.5, 16, 12.5]
-        ],
-        'line-opacity': 0.92
-      }
-    });
-
-    // 2. Lift Main Line (리프트를 가장 두껍고 뚜렷하게 강조하는 주황색 실선)
+    // 1. Lift line: thin blue dashed (always thinner than runs and GPX route at every zoom)
     map.addLayer({
       id: 'ski-lifts-line',
       type: 'line',
       source: 'ski-facilities',
       filter: ['==', ['get', 'powderlineType'], 'lift'],
       paint: {
-        'line-color': ['case', ['==', ['get', 'id'], state.selectedLiftId || ''], '#2563eb', '#f97316'],
-        'line-width': ['case',
-          ['==', ['get', 'id'], state.selectedLiftId || ''],
-          ['interpolate', ['linear'], ['zoom'], 9, 7.5, 13, 11, 16, 14.5],
-          ['interpolate', ['linear'], ['zoom'], 9, 5.0, 13, 7.0, 16, 9.5]
-        ],
+        'line-color': ['case', ['==', ['get', 'id'], state.selectedLiftId || ''], '#1d4ed8', '#2563eb'],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 0.6, 12, 0.9, 15, 1.5],
+        'line-dasharray': [4, 3],
         'line-opacity': 1.0
       }
     });
@@ -1728,21 +1820,6 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       }
     });
 
-    // 5. Lift Towers (고배율 확대 zoom >= 14.5 시에만 은은한 최소 지주 표시)
-    map.addLayer({
-      id: 'ski-lift-towers',
-      type: 'circle',
-      source: 'ski-lift-towers',
-      minzoom: 14.5,
-      paint: {
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 14.5, 2, 16, 3],
-        'circle-color': ['case', ['==', ['get', 'liftId'], state.selectedLiftId || ''], '#3b82f6', '#78716c'],
-        'circle-stroke-color': '#1c1917',
-        'circle-stroke-width': 1,
-        'circle-opacity': 0.85
-      }
-    });
-
     // 6. Lift Terminals (탑승장 / 하차장에만 작고 단정한 아이콘 표시)
     map.addLayer({
       id: 'ski-lift-terminals',
@@ -1769,7 +1846,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     map.addLayer({ id: 'gps-recording-glow', type: 'line', source: 'gps-recording-route', paint: { 'line-color': '#38bdf8', 'line-width': 9, 'line-opacity': 0.25, 'line-blur': 2 } });
     map.addLayer({ id: 'gps-recording-line', type: 'line', source: 'gps-recording-route', paint: { 'line-color': '#38bdf8', 'line-width': 4, 'line-opacity': 1 } });
   }
-  function restoreLayerVisibility() { setLayerVisibility(['ski-lifts-casing', 'ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-towers', 'ski-lift-terminals'], $('#liftsToggle').checked); setLayerVisibility(['ski-runs'], $('#runsToggle').checked); setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints'], $('#gpxToggle').checked) }
+  function restoreLayerVisibility() { setLayerVisibility(['ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-terminals'], $('#liftsToggle').checked); setLayerVisibility(['ski-runs'], $('#runsToggle').checked); setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints'], $('#gpxToggle').checked) }
   map.on('style.load', () => { if (!hasMapboxToken) { $('#mapStatus').textContent = t('mapStatusNeedToken'); return } $('#mapStatus').textContent = t('mapStatusLoading'); setTerrain(); addSkiLayers(); addRouteLayers(); loadSkiData($('#region').value); render(); restoreLayerVisibility() });
   map.on('sourcedata', e => { if (e.sourceId === 'mapbox-dem' && e.isSourceLoaded) { $('#mapStatus').textContent = t('mapStatusReady'); if (profile.pending) scheduleProfile(80) } });
   map.on('idle', () => { if (profile.pending) scheduleProfile(0) });
@@ -1777,7 +1854,17 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function setMapStyle(style) { if (!hasMapboxToken) return toast(t('toastNeedToken')); state.mapStyle = style; const topo = style === 'topo'; $('#satelliteBtn').classList.toggle('active', !topo); $('#topoBtn').classList.toggle('active', topo); $('#satelliteBtn').setAttribute('aria-pressed', String(!topo)); $('#topoBtn').setAttribute('aria-pressed', String(topo)); map.setStyle(MAPBOX_STYLES[style]); toast(topo ? t('toastStyleTopo') : t('toastStyleSatellite')) }
   async function loadSkiData(region) {
     const token = ++skiLoadToken; updateFacilityStatus('loading'); try {
-      const response = await fetch(new URL(`./data/ski/${region}.geojson`, document.baseURI)); if (!response.ok) throw new Error(String(response.status)); const data = await response.json(); if (token !== skiLoadToken) return; const source = map.getSource('ski-facilities'); if (!source) return; source.setData(data); const c = data.metadata?.counts || {};
+      let response = await fetch(new URL(`./data/ski/${region}.geojson`, document.baseURI)).catch(() => null);
+      if (!response?.ok) {
+        const info = regions[region], st = info?.skiDataStatus;
+        if (st === 'ready') { const v = info.skiDataVersion ? `?v=${encodeURIComponent(info.skiDataVersion)}` : ''; response = await fetch(`${SUPABASE_URL}/storage/v1/object/public/ski-data/${encodeURIComponent(region)}.geojson${v}`) }
+        else {
+          const msg = { empty: '리프트·슬로프 데이터 없음', pending: '데이터 준비 중', processing: '데이터 준비 중', failed: '데이터 수집 실패' }[st];
+          map.getSource('ski-facilities')?.setData(emptyCollection); map.getSource('ski-lift-towers')?.setData(emptyCollection); map.getSource('ski-lift-terminals')?.setData(emptyCollection);
+          updateFacilityStatus('unavailable', null, msg); return
+        }
+      }
+      if (!response.ok) throw new Error(String(response.status)); const data = await response.json(); if (token !== skiLoadToken) return; const source = map.getSource('ski-facilities'); if (!source) return; source.setData(data); const c = data.metadata?.counts || {};
       updateFacilityStatus(data.metadata?.status === 'available' ? 'available' : 'unavailable', c);
       const liftFeatures = (data.features || []).filter(f => f.properties?.powderlineType === 'lift');
       const decorations = buildLiftDecorations(liftFeatures);
@@ -1797,29 +1884,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function localizedLiftType(value) { const typesKo = { gondola: '곤돌라', chair_lift: '체어리프트', chairlift: '체어리프트', drag_lift: '견인식 리프트', 't-bar': 'T바 리프트', 'j-bar': 'J바 리프트', platter: '플래터 리프트', rope_tow: '로프 토', cable_car: '케이블카', mixed_lift: '혼합형 리프트', magic_carpet: '무빙워크' }; const typesEn = { gondola: 'Gondola', chair_lift: 'Chairlift', chairlift: 'Chairlift', drag_lift: 'Drag Lift', 't-bar': 'T-Bar', 'j-bar': 'J-Bar', platter: 'Platter', rope_tow: 'Rope Tow', cable_car: 'Cable Car', mixed_lift: 'Mixed Lift', magic_carpet: 'Magic Carpet' }; const val = String(value || '').toLowerCase(); const dict = state.lang === 'en' ? typesEn : typesKo; return dict[val] || value || t('liftTypeUnknown') }
   function updateLiftSelection(liftId) {
     state.selectedLiftId = liftId;
-    if (map.getLayer('ski-lifts-casing')) {
-      map.setPaintProperty('ski-lifts-casing', 'line-color', ['case', ['==', ['get', 'id'], state.selectedLiftId || ''], '#1e3a8a', '#1c1917']);
-      map.setPaintProperty('ski-lifts-casing', 'line-width', [
-        'case',
-        ['==', ['get', 'id'], state.selectedLiftId || ''],
-        ['interpolate', ['linear'], ['zoom'], 9, 10, 13, 14, 16, 18],
-        ['interpolate', ['linear'], ['zoom'], 9, 7.0, 13, 9.5, 16, 12.5]
-      ]);
-    }
     if (map.getLayer('ski-lifts-line')) {
-      map.setPaintProperty('ski-lifts-line', 'line-color', ['case', ['==', ['get', 'id'], state.selectedLiftId || ''], '#2563eb', '#f97316']);
-      map.setPaintProperty('ski-lifts-line', 'line-width', [
-        'case',
-        ['==', ['get', 'id'], state.selectedLiftId || ''],
-        ['interpolate', ['linear'], ['zoom'], 9, 7.5, 13, 11, 16, 14.5],
-        ['interpolate', ['linear'], ['zoom'], 9, 5.0, 13, 7.0, 16, 9.5]
-      ]);
+      map.setPaintProperty('ski-lifts-line', 'line-color', ['case', ['==', ['get', 'id'], state.selectedLiftId || ''], '#1d4ed8', '#2563eb']);
     }
     if (map.getLayer('ski-lifts-label')) {
       map.setFilter('ski-lifts-label', ['all', ['==', ['get', 'powderlineType'], 'lift'], ['==', ['get', 'id'], state.selectedLiftId || '']]);
-    }
-    if (map.getLayer('ski-lift-towers')) {
-      map.setPaintProperty('ski-lift-towers', 'circle-color', ['case', ['==', ['get', 'liftId'], state.selectedLiftId || ''], '#3b82f6', '#78716c']);
     }
   }
 
@@ -1846,13 +1915,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (!p) return;
     showLiftPopup(p, event.lngLat);
   });
-  map.on('click', 'ski-lift-towers', event => {
-    const p = event.features?.[0]?.properties;
-    if (!p) return;
-    showLiftPopup(p, event.lngLat);
-  });
 
-  ['ski-lifts', 'ski-lift-terminals', 'ski-lift-towers'].forEach(layerId => {
+  ['ski-lifts', 'ski-lift-terminals'].forEach(layerId => {
     map.on('mouseenter', layerId, () => map.getCanvas().style.cursor = 'pointer');
     map.on('mouseleave', layerId, () => map.getCanvas().style.cursor = '');
   });
@@ -2284,8 +2348,6 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (mainButton) mainButton.hidden = active;
     mainButton?.classList.toggle('recording', recording);
     mainButton?.classList.toggle('paused', gpsRecording.status === 'paused');
-    const analyticsButton = $('#rideAnalyticsBtn');
-    if (analyticsButton) analyticsButton.hidden = active;
     const label = $('#rideRecordBtnLabel');
     const labelText = recording ? '경로 기록 중' : gpsRecording.status === 'paused' ? '기록 일시정지' : '내 경로 기록';
     if (label && label.textContent !== labelText) label.textContent = labelText;
@@ -2354,44 +2416,108 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }
 
+  // ---- GPS recording fix filter. Pure decision logic (no DOM/map); state = one pending jump candidate. ----
+  // evaluate() returns { points: [fixes to append, in time order], verdict: 'accept'|'reject'|'hold', reason, distance, speed }.
+  function createGpsFixFilter() {
+    let candidate = null;
+    const dist = (p, q) => horizontalMeters(p, q);
+    // 'ok' | 'jump' | 'near' for a fix measured against the last accepted point (accuracy-aware, no interpolation).
+    function judge(prev, fix) {
+      const dt = (fix.timeMs - prev.timeMs) / 1000;
+      const d = dist(prev, fix);
+      const effective = Math.max(0, d - (Number(prev.accuracy) + fix.accuracy) * 0.5);
+      const speed = dt > 0 ? effective / dt : Infinity;
+      const nearLimit = Math.min(8, Math.max(GPS_MIN_POINT_DISTANCE_METERS, fix.accuracy * 0.4));
+      if (speed > GPS_MAX_SPEED_METERS_PER_SECOND) return { kind: 'jump', d, speed };
+      if (d < nearLimit) return { kind: 'near', d, speed: dt > 0 ? d / dt : 0 };
+      return { kind: 'ok', d, speed: dt > 0 ? d / dt : 0 };
+    }
+    return {
+      reset() { candidate = null; },
+      evaluate(fix, ctx) {
+        const { previous, receivedAt, resumeAt, startedAtMs } = ctx;
+        const out = (verdict, reason, extra = {}) => ({ points: [], verdict, reason, distance: 0, speed: 0, ...extra });
+        if (fix.timeMs > receivedAt + 5000) return out('reject', 'future_time');
+        const age = receivedAt - fix.timeMs;
+        if (previous) {
+          if (fix.timeMs <= previous.timeMs) return out('reject', 'out_of_order');
+          if (age > GPS_MAX_BACKLOG_AGE_MS) return out('reject', 'too_old');
+        } else if (age > GPS_FIRST_FIX_MAX_AGE_MS) return out('reject', 'stale_first_fix');
+        // Screen just came back: fixes measured in the guard window must be accurate (backlog measured earlier is not affected).
+        if (resumeAt && fix.timeMs >= resumeAt - 2000 && fix.timeMs <= resumeAt + GPS_RESUME_GUARD_MS && fix.accuracy > GPS_RESUME_MAX_ACCURACY_METERS) return out('reject', 'resume_low_accuracy');
+        if (!Number.isFinite(fix.accuracy) || fix.accuracy > GPS_FALLBACK_ACCURACY_METERS) return out('reject', 'low_accuracy');
+        const fallback = fix.accuracy > GPS_MAX_ACCURACY_METERS;
+        if (fallback) {
+          const gapMs = previous ? fix.timeMs - previous.timeMs : receivedAt - startedAtMs;
+          if (gapMs < (previous ? GPS_FALLBACK_MIN_GAP_MS : 30000)) return out('reject', 'low_accuracy');
+        }
+        if (!previous) return { points: [fix], verdict: 'accept', reason: fallback ? 'first_fallback' : 'first', distance: 0, speed: 0 };
+        if (candidate && fix.timeMs - candidate.timeMs > GPS_CANDIDATE_TTL_MS) candidate = null;
+        const verdict = judge(previous, fix);
+        if (verdict.kind === 'ok' || verdict.kind === 'near') {
+          if (candidate) candidate = null; // the track continued normally: the earlier jump was an outlier
+          if (verdict.kind === 'near') return out('reject', 'too_close', { distance: verdict.d, speed: verdict.speed });
+          return { points: [fix], verdict: 'accept', reason: fallback ? 'ok_fallback' : 'ok', distance: verdict.d, speed: verdict.speed };
+        }
+        // Jump: never append directly. Needs a second fix that agrees with it.
+        if (fallback) return out('reject', 'jump_low_accuracy', { distance: verdict.d, speed: verdict.speed });
+        if (candidate) {
+          const agree = judge(candidate, fix);
+          if (agree.kind !== 'jump') {
+            const confirmed = candidate; candidate = null;
+            const rest = judge(confirmed, fix);
+            const points = rest.kind === 'ok' ? [confirmed, fix] : [confirmed];
+            return { points, verdict: 'accept', reason: 'jump_confirmed', distance: verdict.d, speed: verdict.speed };
+          }
+        }
+        candidate = fix;
+        return out('hold', 'jump_candidate', { distance: verdict.d, speed: verdict.speed });
+      }
+    };
+  }
+  const gpsFixFilter = createGpsFixFilter();
+  let gpsRecordingResumeAt = 0;
+  const gpsDiagLines = [];
+  // Diagnostics: one short line per fix (measured time, receive delay, accuracy, distance, verdict/reason).
+  function logGpsDiag(fix, receivedAt, result) {
+    const line = `[GPS] ${result.verdict}:${result.reason} t=${new Date(fix.timeMs).toISOString().slice(11, 23)} recv=${((receivedAt - fix.timeMs) / 1000).toFixed(1)}s acc=${Number.isFinite(fix.accuracy) ? Math.round(fix.accuracy) : '?'}m d=${Math.round(result.distance || 0)}m v=${Number.isFinite(result.speed) ? result.speed.toFixed(1) : 'inf'}m/s`;
+    gpsDiagLines.push(line);
+    if (gpsDiagLines.length > GPS_DIAG_MAX_LINES) gpsDiagLines.shift();
+    console.debug(line);
+  }
+  window.powderlineGpsDiag = () => gpsDiagLines.slice();
+
   function acceptGpsRecordingLocation(location) {
     if (gpsRecording.status !== 'recording' || !location || location.simulated === true) return;
     const lat = Number(location.latitude ?? location.coords?.latitude);
     const lng = Number(location.longitude ?? location.coords?.longitude);
     const accuracy = Number(location.accuracy ?? location.coords?.accuracy);
     const rawTime = Number(location.time ?? location.timestamp ?? Date.now());
-    const time = Number.isFinite(rawTime) ? rawTime : Date.now();
+    const receivedAt = Date.now();
+    const time = Number.isFinite(rawTime) ? rawTime : receivedAt; // measurement time is kept as-is (never replaced by receive time when present)
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
-    if (!Number.isFinite(accuracy) || accuracy > GPS_MAX_ACCURACY_METERS) {
-      gpsRecording.lastError = Number.isFinite(accuracy) ? `GPS 정확도 낮음 (${Math.round(accuracy)}m)` : 'GPS 정확도 확인 중';
-      updateGpsRecordingUi();
-      return;
-    }
-    if (Math.abs(Date.now() - time) > 120000) return;
-    const point = {
-      lng, lat,
-      elevation: Number.isFinite(Number(location.altitude ?? location.coords?.altitude)) ? Number(location.altitude ?? location.coords?.altitude) : null,
-      altitude: Number.isFinite(Number(location.altitude ?? location.coords?.altitude)) ? Number(location.altitude ?? location.coords?.altitude) : null,
-      time: new Date(time).toISOString(),
-      accuracy
-    };
+    const altitude = Number.isFinite(Number(location.altitude ?? location.coords?.altitude)) ? Number(location.altitude ?? location.coords?.altitude) : null;
+    const fix = { lng, lat, elevation: altitude, altitude, time: new Date(time).toISOString(), timeMs: time, accuracy };
     const previous = gpsRecording.points.at(-1);
-    let segmentDistanceMeters = 0;
-    if (previous) {
-      const distance = horizontalMeters(previous, point);
-      segmentDistanceMeters = distance;
-      const previousTime = new Date(previous.time).getTime();
-      const elapsedSeconds = Math.max(0.001, (time - previousTime) / 1000);
-      if (distance < GPS_MIN_POINT_DISTANCE_METERS || time <= previousTime) return;
-      const accuracyAllowance = Math.max(100, (Number(previous.accuracy) + accuracy) * 2);
-      if (distance / elapsedSeconds > GPS_MAX_SPEED_METERS_PER_SECOND && distance > accuracyAllowance) {
+    const previousTimed = previous ? { ...previous, timeMs: new Date(previous.time).getTime() } : null;
+    const result = gpsFixFilter.evaluate(fix, { previous: previousTimed, receivedAt, resumeAt: gpsRecordingResumeAt, startedAtMs: new Date(gpsRecording.startedAt || receivedAt).getTime() });
+    logGpsDiag(fix, receivedAt, result);
+    if (!result.points.length) {
+      if (result.reason === 'low_accuracy' || result.reason === 'resume_low_accuracy') {
+        gpsRecording.lastError = Number.isFinite(accuracy) ? `GPS 정확도 낮음 (${Math.round(accuracy)}m)` : 'GPS 정확도 확인 중';
+        updateGpsRecordingUi();
+      } else if (result.reason === 'jump_candidate' || result.reason === 'jump_low_accuracy') {
         gpsRecording.lastError = '비정상적인 GPS 이동값을 제외했습니다.';
         updateGpsRecordingUi();
-        return;
       }
+      return;
     }
-    gpsRecording.points.push(point);
-    gpsRecordingDistanceKmValue += segmentDistanceMeters / 1000;
+    for (const accepted of result.points) {
+      const last = gpsRecording.points.at(-1);
+      const { timeMs, ...point } = accepted;
+      if (last) gpsRecordingDistanceKmValue += horizontalMeters(last, point) / 1000;
+      gpsRecording.points.push(point);
+    }
     gpsRecording.lastError = '';
     scheduleGpsRecordingPersist();
     scheduleGpsRecordingRouteRender();
@@ -2449,8 +2575,20 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     updateGpsRecordingUi();
   }
 
+  // Shows my location (blue dot/heading arrow) and drives auto-follow from recording fixes. Does not touch the recording filter.
+  function feedMyLocationFromRecording(location) {
+    if (!location || location.simulated === true) return;
+    const lat = Number(location.latitude ?? location.coords?.latitude);
+    const lng = Number(location.longitude ?? location.coords?.longitude);
+    const accuracy = Number(location.accuracy ?? location.coords?.accuracy);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !(accuracy <= GPS_FALLBACK_ACCURACY_METERS)) return;
+    const time = Number(location.time ?? location.timestamp);
+    try { syncMyLocationBlueDotFromFix({ latitude: lat, longitude: lng, accuracy, heading: null, speed: null }, Number.isFinite(time) ? time : Date.now()); } catch {}
+  }
+
   async function startGpsRecordingWatcher() {
     await stopGpsRecordingWatcher();
+    gpsFixFilter.reset();
     const generation = gpsRecording.watcherGeneration;
     if (window.Capacitor?.getPlatform?.() === 'android') {
       await ensureAndroidNotificationPermission();
@@ -2464,7 +2602,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         distanceFilter: GPS_MIN_POINT_DISTANCE_METERS
       }, (location, error) => {
         if (error) void handleGpsRecordingError(error);
-        else acceptGpsRecordingLocation(location);
+        else { feedMyLocationFromRecording(location); acceptGpsRecordingLocation(location); }
       });
       const watcherStartPending = gpsRecordingAction === 'starting' || gpsRecordingAction === 'resuming';
       if (generation !== gpsRecording.watcherGeneration || (gpsRecording.status !== 'recording' && !watcherStartPending)) {
@@ -2476,7 +2614,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
     if (!navigator.geolocation) throw new Error('이 브라우저에서는 GPS를 사용할 수 없습니다.');
     gpsRecording.webWatcherId = navigator.geolocation.watchPosition(
-      position => acceptGpsRecordingLocation(position),
+      position => { feedMyLocationFromRecording(position); acceptGpsRecordingLocation(position); },
       error => { void handleGpsRecordingError(error); },
       { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
     );
@@ -2502,6 +2640,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       await startGpsRecordingWatcher();
       if (gpsRecordingAction !== 'starting') return;
       gpsRecording.status = 'recording';
+      armMyLocationFollow();
       gpsRecording.lastResumedAt = Date.now();
       persistGpsRecording();
       toast(window.Capacitor?.getPlatform?.() === 'android' ? '백그라운드 GPS 경로 기록을 시작했습니다.' : '웹 포그라운드 GPS 기록을 시작했습니다.');
@@ -2563,6 +2702,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       await startGpsRecordingWatcher();
       if (gpsRecordingAction !== 'resuming' || gpsRecording.status !== 'paused') return;
       gpsRecording.status = 'recording';
+      armMyLocationFollow();
       gpsRecording.lastResumedAt = Date.now();
       gpsRecording.lastError = '';
       persistGpsRecording();
@@ -2813,6 +2953,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       gpsRecordingLifecycleListenersRegistered = true;
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden' && ['recording', 'paused'].includes(gpsRecording.status)) persistGpsRecording();
+        if (document.visibilityState === 'visible' && gpsRecording.status === 'recording') gpsRecordingResumeAt = Date.now();
       });
       window.addEventListener('pagehide', () => {
         if (['recording', 'paused'].includes(gpsRecording.status)) persistGpsRecording();
@@ -2820,16 +2961,255 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
     updateGpsRecordingUi();
   }
-  function resetProfile(message) { profile.samples = []; profile.layout = null; profile.pending = false; clearTimeout(profile.timer); $('#profileMessage').textContent = message; $('#profileMessage').hidden = false; $('#profileTooltip').hidden = true;['#profileDistance', '#profileAscent', '#profileDescent', '#profileAverage', '#profileMaximum'].forEach(id => $(id).textContent = '—'); const canvas = $('#profileChart'), ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); if (profile.marker) { profile.marker.remove(); profile.marker = null } renderMobileCourseProfiles() }
+  function resetProfile(message) { profile.samples = []; profile.layout = null; profile.view = null; profile.pending = false; clearTimeout(profile.timer); $('#profileMessage').textContent = message; $('#profileMessage').hidden = false; $('#profileTooltip').hidden = true;['#profileDistance', '#profileAscent', '#profileDescent', '#profileAverage', '#profileMaximum'].forEach(id => $(id).textContent = '—'); const canvas = $('#profileChart'), ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); clearProfileCursor(false); renderMobileCourseProfiles() }
   function routeSamples() { if (state.points.length < 2) return []; const samples = [{ ...state.points[0], distance: 0 }], totalBySegment = []; let total = 0; for (let i = 1; i < state.points.length; i++) { const a = state.points[i - 1], b = state.points[i], length = horizontalMeters(a, b), steps = Math.max(1, Math.round(length / PROFILE_SAMPLE_METERS)); totalBySegment.push({ a, b, length, start: total, steps }); total += length } for (const segment of totalBySegment) { for (let step = 1; step <= segment.steps; step++) { const t = step / segment.steps; samples.push({ lng: segment.a.lng + (segment.b.lng - segment.a.lng) * t, lat: segment.a.lat + (segment.b.lat - segment.a.lat) * t, distance: segment.start + segment.length * t }) } } return samples }
   function scheduleProfile(delay = 180) { const generation = ++profile.generation; clearTimeout(profile.timer); if (state.points.length < 2) { resetProfile(t('profileEmptyMsg')); return } resetProfile(t('profileWaitingDem')); profile.pending = true; profile.timer = setTimeout(() => calculateProfile(generation), delay) }
   function calculateProfile(generation) {
     if (generation !== profile.generation || state.points.length < 2) return; const samples = routeSamples(), total = samples.at(-1)?.distance || 0; if (total < .01) { resetProfile(t('profileNeed2Points')); return } let missing = false; for (const sample of samples) { let elevation; try { elevation = map.queryTerrainElevation([sample.lng, sample.lat], { exaggerated: false }) } catch (error) { elevation = null } if (!Number.isFinite(elevation)) { missing = true; break } sample.elevation = elevation } if (generation !== profile.generation) return; if (missing) { profile.pending = true; $('#profileMessage').textContent = t('profileWaitingTiles'); $('#profileMessage').hidden = false; return } profile.pending = false; let ascent = 0, descent = 0, weightedSlope = 0, maxSlope = 0; for (let i = 1; i < samples.length; i++) { const horizontal = samples[i].distance - samples[i - 1].distance, elevationChange = samples[i].elevation - samples[i - 1].elevation, slope = Math.atan2(elevationChange, horizontal) * 180 / Math.PI; samples[i].slope = slope; if (elevationChange > 0) ascent += elevationChange; else descent -= elevationChange; weightedSlope += Math.abs(slope) * horizontal; maxSlope = Math.max(maxSlope, Math.abs(slope)) } samples[0].slope = 0; profile.samples = samples; $('#profileDistance').textContent = (total / 1000).toFixed(2) + ' km'; $('#profileAscent').textContent = Math.round(ascent) + ' m'; $('#profileDescent').textContent = Math.round(descent) + ' m'; $('#profileAverage').textContent = (weightedSlope / total).toFixed(1) + '°';
     const mobileSlopeEl = $('#mobileSlopeVal');
-    if (mobileSlopeEl) mobileSlopeEl.textContent = (weightedSlope / total).toFixed(0); $('#profileMaximum').textContent = maxSlope.toFixed(1) + '°'; $('#descent').textContent = Math.round(descent) + ' m'; $('#profileMessage').hidden = true; drawProfile(); renderMobileCourseProfiles()
+    if (mobileSlopeEl) mobileSlopeEl.textContent = (weightedSlope / total).toFixed(0); $('#profileMaximum').textContent = maxSlope.toFixed(1) + '°'; $('#descent').textContent = Math.round(descent) + ' m'; $('#profileMessage').hidden = true; profile.view = computeProfileView(); drawProfile(); renderMobileCourseProfiles()
   }
-  function drawProfile() { const samples = profile.samples, canvas = $('#profileChart'); if (!samples.length || !canvas.clientWidth || !canvas.clientHeight) return; const width = canvas.clientWidth, height = canvas.clientHeight, dpr = Math.min(window.devicePixelRatio || 1, 2); canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr); const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); const pad = { left: 42, right: 12, top: 8, bottom: 23 }, plotWidth = width - pad.left - pad.right, plotHeight = height - pad.top - pad.bottom, total = samples.at(-1).distance, range = samples.reduce((result, sample) => ({ min: Math.min(result.min, sample.elevation), max: Math.max(result.max, sample.elevation) }), { min: Infinity, max: -Infinity }), elevationPad = Math.max(5, (range.max - range.min) * .08), min = range.min - elevationPad, max = range.max + elevationPad, xFor = distance => pad.left + (distance / total) * plotWidth, yFor = elevation => pad.top + (max - elevation) / (max - min) * plotHeight; profile.layout = { pad, plotWidth, total, xFor }; ctx.clearRect(0, 0, width, height); ctx.strokeStyle = 'rgba(20,33,31,.18)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(pad.left, pad.top); ctx.lineTo(pad.left, height - pad.bottom); ctx.lineTo(width - pad.right, height - pad.bottom); ctx.stroke(); ctx.fillStyle = '#73817e'; ctx.font = '9px DM Mono, monospace'; ctx.textAlign = 'right'; ctx.fillText(Math.round(max) + ' m', pad.left - 5, pad.top + 7); ctx.fillText(Math.round(min) + ' m', pad.left - 5, height - pad.bottom); ctx.textAlign = 'left'; ctx.fillText('0 km', pad.left, height - 5); ctx.textAlign = 'right'; ctx.fillText((total / 1000).toFixed(2) + ' km', width - pad.right, height - 5); ctx.beginPath(); samples.forEach((sample, index) => { const x = xFor(sample.distance), y = yFor(sample.elevation); if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y) }); ctx.lineTo(width - pad.right, height - pad.bottom); ctx.lineTo(pad.left, height - pad.bottom); ctx.closePath(); ctx.fillStyle = 'rgba(120,144,18,.16)'; ctx.fill(); ctx.beginPath(); samples.forEach((sample, index) => { const x = xFor(sample.distance), y = yFor(sample.elevation); if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y) }); ctx.strokeStyle = '#789012'; ctx.lineWidth = 2; ctx.stroke() }
-  function inspectProfile(event) { if (!profile.samples.length || !profile.layout) return; event.preventDefault(); const canvas = $('#profileChart'), rect = canvas.getBoundingClientRect(), localX = Math.max(profile.layout.pad.left, Math.min(rect.width - profile.layout.pad.right, event.clientX - rect.left)), target = (localX - profile.layout.pad.left) / profile.layout.plotWidth * profile.layout.total; let low = 0, high = profile.samples.length - 1; while (low < high) { const mid = Math.floor((low + high) / 2); if (profile.samples[mid].distance < target) low = mid + 1; else high = mid } const next = profile.samples[low], previous = profile.samples[Math.max(0, low - 1)], sample = Math.abs(next.distance - target) < Math.abs(previous.distance - target) ? next : previous, tooltip = $('#profileTooltip'); tooltip.textContent = `${(sample.distance / 1000).toFixed(2)} km · ${Math.round(sample.elevation)} m · ${sample.slope >= 0 ? '+' : ''}${sample.slope.toFixed(1)}°`; tooltip.style.left = profile.layout.xFor(sample.distance) + 'px'; tooltip.style.top = '58px'; tooltip.hidden = false; if (!profile.marker) profile.marker = new mapboxgl.Marker({ color: '#d8ff43', scale: .75 }).addTo(map); profile.marker.setLngLat([sample.lng, sample.lat]) }
+  function slopeColor(deg) {
+    const s = Math.min(45, Math.max(0, Math.abs(deg || 0)));
+    let r, g, b;
+    if (s <= 15) {
+      const t = s / 15;
+      r = Math.round(34 + (234 - 34) * t);
+      g = Math.round(197 + (179 - 197) * t);
+      b = Math.round(94 + (8 - 94) * t);
+    } else if (s <= 30) {
+      const t = (s - 15) / 15;
+      r = Math.round(234 + (249 - 234) * t);
+      g = Math.round(179 + (115 - 179) * t);
+      b = Math.round(8 + (22 - 8) * t);
+    } else {
+      const t = (s - 30) / 15;
+      r = Math.round(249 + (239 - 249) * t);
+      g = Math.round(115 + (68 - 115) * t);
+      b = Math.round(22 + (68 - 22) * t);
+    }
+    return `rgb(${r},${g},${b})`;
+  }
+  function drawProfileChart(canvas) {
+    if (!canvas) return;
+    const samples = profile.samples;
+    const width = canvas.clientWidth, height = canvas.clientHeight;
+    if (!width || !height) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    if (samples.length < 2) return;
+    const pad = { left: 8, right: 8, top: 10, bottom: 8 };
+    const plotWidth = Math.max(1, width - pad.left - pad.right);
+    const plotHeight = Math.max(1, height - pad.top - pad.bottom);
+    // Horizontal axis = distance window currently visible on the map (whole course when no window is set).
+    const total = samples.at(-1).distance || 1;
+    const range = profileViewRange();
+    const span = Math.max(1, range.end - range.start);
+    const runs = profile.view ? profile.view.runs : [{ start: 0, end: total }];
+    const visible = samples.filter(sm => runs.some(r => sm.distance >= r.start - 1e-6 && sm.distance <= r.end + 1e-6));
+    let min = Infinity, max = -Infinity;
+    for (const sm of visible) {
+      if (sm.elevation < min) min = sm.elevation;
+      if (sm.elevation > max) max = sm.elevation;
+    }
+    if (!visible.length) return;
+    const elevationRange = Math.max(max - min, 10);
+    const xFor = d => pad.left + ((d - range.start) / span) * plotWidth;
+    const yFor = el => pad.top + (max - el) / elevationRange * plotHeight;
+    if (canvas.id === 'profileChart') {
+      profile.layout = { pad, plotWidth, plotHeight, total, start: range.start, end: range.end, min, max, xFor, yFor };
+    }
+    // Parts of the course that are not on screen: shaded band with dashed edges.
+    for (let i = 1; i < runs.length; i++) {
+      const x1 = xFor(runs[i - 1].end), x2 = xFor(runs[i].start);
+      ctx.fillStyle = 'rgba(148,163,184,.10)';
+      ctx.fillRect(x1, 0, Math.max(0, x2 - x1), height);
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(148,163,184,.5)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x1, 0); ctx.lineTo(x1, height); ctx.moveTo(x2, 0); ctx.lineTo(x2, height); ctx.stroke();
+      ctx.restore();
+    }
+    const stroke = ctx.createLinearGradient(pad.left, 0, width - pad.right, 0);
+    let lastT = 0;
+    for (const sm of visible) {
+      let t = (sm.distance - range.start) / span;
+      t = Math.max(lastT, Math.min(1, Math.max(0, t)));
+      stroke.addColorStop(t, slopeColor(sm.slope));
+      lastT = t;
+    }
+    if (lastT < 1) stroke.addColorStop(1, slopeColor(visible.at(-1).slope));
+    const fill = ctx.createLinearGradient(0, pad.top, 0, height);
+    fill.addColorStop(0, 'rgba(56,189,248,.28)');
+    fill.addColorStop(1, 'rgba(56,189,248,0)');
+    for (const r of runs) {
+      const pts = samples.filter(sm => sm.distance >= r.start - 1e-6 && sm.distance <= r.end + 1e-6);
+      if (!pts.length) continue;
+      if (pts.length === 1) {
+        ctx.beginPath(); ctx.arc(xFor(pts[0].distance), yFor(pts[0].elevation), 2.5, 0, Math.PI * 2); ctx.fillStyle = slopeColor(pts[0].slope); ctx.fill();
+        continue;
+      }
+      ctx.beginPath();
+      pts.forEach((sm, i) => { const x = xFor(sm.distance), y = yFor(sm.elevation); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+      ctx.lineTo(xFor(pts.at(-1).distance), height);
+      ctx.lineTo(xFor(pts[0].distance), height);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.beginPath();
+      pts.forEach((sm, i) => { const x = xFor(sm.distance), y = yFor(sm.elevation); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+
+    if (profile.selected) {
+      const sx = xFor(profile.selected.distance);
+      const sy = yFor(profile.selected.elevation);
+      ctx.beginPath();
+      ctx.moveTo(sx, 0);
+      ctx.lineTo(sx, height);
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#facc15';
+      ctx.fill();
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+  function drawProfile() {
+    const canvas = $('#profileChart');
+    if (!canvas) return;
+    drawProfileChart(canvas);
+    bindProfileScrub(canvas);
+    const tooltip = $('#profileTooltip');
+    if (tooltip) {
+      if (profile.selected && profile.samples.length > 1) {
+        tooltip.textContent = profileReadoutText(profile.selected);
+        tooltip.hidden = false;
+      } else {
+        tooltip.hidden = true;
+      }
+    }
+  }
+  // Engine-independent: cumulative distance -> interpolated position/elevation/slope on the route.
+  function profileSampleAt(distance) {
+    const s = profile.samples; if (s.length < 2 || !Number.isFinite(distance)) return null;
+    const d = Math.max(0, Math.min(s.at(-1).distance, distance));
+    let lo = 0, hi = s.length - 1; while (lo < hi) { const mid = (lo + hi) >> 1; if (s[mid].distance < d) lo = mid + 1; else hi = mid }
+    lo = Math.max(1, lo); const a = s[lo - 1], b = s[lo], span = b.distance - a.distance, f = span > 0 ? (d - a.distance) / span : 0;
+    return { distance: d, lng: a.lng + (b.lng - a.lng) * f, lat: a.lat + (b.lat - a.lat) * f, elevation: a.elevation + (b.elevation - a.elevation) * f, slope: b.slope };
+  }
+  // ---- Visible-range logic (engine independent): which cumulative-distance ranges of the route are on screen. ----
+  function visibleDistanceRuns(samples, isVisible) {
+    const runs = []; let run = null;
+    for (const sm of samples) {
+      if (isVisible(sm)) { if (!run) run = { start: sm.distance, end: sm.distance }; else run.end = sm.distance; }
+      else if (run) { runs.push(run); run = null; }
+    }
+    if (run) runs.push(run);
+    return runs;
+  }
+  function profileViewFromRuns(runs, total) {
+    if (!runs.length) return null;
+    let start = runs[0].start, end = runs.at(-1).end;
+    if (end - start < PROFILE_SAMPLE_METERS) { const pad = (PROFILE_SAMPLE_METERS - (end - start)) / 2; start = Math.max(0, start - pad); end = Math.min(total, end + pad); }
+    return { start, end, runs };
+  }
+  function profileViewRange() {
+    const total = profile.samples.at(-1)?.distance || 1;
+    return profile.view && profile.view.end > profile.view.start ? { start: profile.view.start, end: profile.view.end } : { start: 0, end: total };
+  }
+  function isDistanceInProfileView(d) { return !profile.view || profile.view.runs.some(r => d >= r.start - 1e-6 && d <= r.end + 1e-6); }
+  function snapDistanceToProfileView(d) {
+    if (isDistanceInProfileView(d)) return d;
+    let best = d, gap = Infinity;
+    for (const r of profile.view.runs) for (const edge of [r.start, r.end]) if (Math.abs(edge - d) < gap) { gap = Math.abs(edge - d); best = edge; }
+    return best;
+  }
+  // Only map-engine touchpoint of the window logic: is a route sample inside the current map viewport?
+  function computeProfileView() {
+    if (profile.samples.length < 2) return null;
+    const canvas = map.getCanvas(), w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return null;
+    return profileViewFromRuns(visibleDistanceRuns(profile.samples, sm => { const p = map.project([sm.lng, sm.lat]); return p.x >= 0 && p.x <= w && p.y >= 0 && p.y <= h; }), profile.samples.at(-1).distance);
+  }
+  function sameProfileView(a, b) {
+    if (!a || !b) return !a && !b;
+    return Math.abs(a.start - b.start) < 1e-6 && Math.abs(a.end - b.end) < 1e-6 && a.runs.length === b.runs.length && a.runs.every((r, i) => Math.abs(r.start - b.runs[i].start) < 1e-6 && Math.abs(r.end - b.runs[i].end) < 1e-6);
+  }
+  // Called when a camera move finishes (not during the gesture).
+  function updateProfileViewport() {
+    if (profile.samples.length < 2) return;
+    const next = computeProfileView();
+    if (sameProfileView(profile.view, next)) return;
+    profile.view = next;
+    if (profile.selected && !isDistanceInProfileView(profile.selected.distance)) clearProfileCursor(false);
+    drawProfile(); renderMobileCourseProfiles();
+  }
+  map.on('moveend', updateProfileViewport);
+  function profileHeaderText(sample) { return `${(sample.distance / 1000).toFixed(2)}km · ${Math.round(sample.elevation)}m · ${sample.slope >= 0 ? '+' : ''}${sample.slope.toFixed(1)}°` }
+  // Header info is visible only while the drawer is expanded AND a point is selected.
+  function syncProfileHeaderReadouts() {
+    for (const [toggleId, bodyId] of [['#mobileRoutesProfileToggle', '#mobileRoutesProfileBody'], ['#mobileEditorProfileToggle', '#mobileEditorProfileBody'], ['#mobileMapProfileToggle', '#mobileMapProfileBody']]) {
+      const el = $(toggleId)?.querySelector('.profile-header-readout');
+      if (!el) continue;
+      const show = Boolean(profile.selected) && profile.samples.length > 1 && !$(bodyId)?.hidden;
+      el.hidden = !show;
+      if (show) el.textContent = profileHeaderText(profile.selected);
+    }
+  }
+  function profileReadoutText(sample) { return `${(sample.distance / 1000).toFixed(2)} km · ${Math.round(sample.elevation)} m · ${sample.slope >= 0 ? '+' : ''}${sample.slope.toFixed(1)}°` }
+  // Only map-engine touchpoint: a small yellow cross (distinct from the blue GPS dot/arrow); the camera is never moved.
+  function showProfileCursor(sample) {
+    if (!profile.marker) {
+      const el = document.createElement('div');
+      el.style.cssText = 'width:18px;height:18px;pointer-events:none;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))';
+      el.innerHTML = '<svg width="18" height="18" viewBox="0 0 18 18"><path d="M9 2v14M2 9h14" stroke="#0f172a" stroke-width="5" stroke-linecap="round"/><path d="M9 2v14M2 9h14" stroke="#facc15" stroke-width="2.6" stroke-linecap="round"/></svg>';
+      profile.marker = new mapboxgl.Marker({ element: el }).setLngLat([sample.lng, sample.lat]).addTo(map);
+    }
+    profile.marker.setLngLat([sample.lng, sample.lat]);
+  }
+  function clearProfileCursor(redraw = true) {
+    profile.selected = null;
+    if (profile.marker) { profile.marker.remove(); profile.marker = null }
+    if (redraw) { drawProfile(); renderMobileCourseProfiles() }
+  }
+  function selectProfileDistance(distance) {
+    const sample = profileSampleAt(snapDistanceToProfileView(distance)); if (!sample) return null;
+    profile.selected = sample; showProfileCursor(sample); drawProfile(); renderMobileCourseProfiles(); return sample;
+  }
+  function inspectProfile(event) {
+    if (!profile.samples.length) return;
+    if (event.preventDefault) event.preventDefault();
+    const canvas = $('#profileChart');
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const pad = profile.layout?.pad || { left: 8, right: 8 };
+    const plotWidth = profile.layout?.plotWidth || Math.max(1, rect.width - pad.left - pad.right);
+    const range = profileViewRange();
+    const localX = Math.max(0, Math.min(plotWidth, event.clientX - rect.left - pad.left));
+    const target = range.start + (localX / plotWidth) * (range.end - range.start);
+    const sample = selectProfileDistance(target);
+    if (!sample) return;
+    const tooltip = $('#profileTooltip');
+    if (tooltip) {
+      tooltip.textContent = profileReadoutText(sample);
+      tooltip.hidden = false;
+    }
+  }
   function toast(msg) { const el = $('#toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 2500) }
   function setRegion() { const region = $('#region').value, r = regions[region]; if (!r) return; map.flyTo({ center: r.center, zoom: r.zoom, bearing: r.bearing, pitch: r.pitch, duration: 1400 }); loadSkiData(region); clearLine(); toast(t('toastRegionMoved', r.label)) }
   function clearLine() {
@@ -3649,7 +4029,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       e.currentTarget.disabled = false;
     }
   });
-  $('#liftsToggle').addEventListener('change', e => setLayerVisibility(['ski-lifts-casing', 'ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-towers', 'ski-lift-terminals'], e.target.checked));
+  $('#liftsToggle').addEventListener('change', e => setLayerVisibility(['ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-terminals'], e.target.checked));
   $('#runsToggle').addEventListener('change', e => setLayerVisibility(['ski-runs'], e.target.checked));
   $('#gpxToggle').addEventListener('change', e => setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints'], e.target.checked));
   $('#satelliteBtn').addEventListener('click', () => setMapStyle('satellite'));
@@ -3666,9 +4046,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     $('#profileToggle').setAttribute('aria-expanded', String(!collapsed));
     if (!collapsed) requestAnimationFrame(drawProfile);
   });
-  $('#profileChart').addEventListener('pointermove', inspectProfile);
-  $('#profileChart').addEventListener('pointerdown', inspectProfile);
-  $('#profileChart').addEventListener('pointerleave', () => $('#profileTooltip').hidden = true);
+  bindProfileScrub($('#profileChart'));
+  $('#profileChart').addEventListener('pointermove', e => { if (!e.buttons) inspectProfile(e); });
+  $('#profileChart').addEventListener('pointerleave', () => {
+    if (!profile.selected) {
+      const tt = $('#profileTooltip');
+      if (tt) tt.hidden = true;
+    }
+  });
   window.addEventListener('resize', () => requestAnimationFrame(drawProfile));
 
   const adminRoutePageSize = 50;
@@ -3717,6 +4102,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (!mobileMedia.matches) return;
       const nextView = ['home', 'map', 'ride', 'routes', 'course-editor', 'party', 'party-create', 'party-leader', 'party-invite', 'party-joined', 'party-received', 'account'].includes(view) ? view : 'map';
       const activeTab = nextView === 'course-editor' ? 'routes' : ['party-create', 'party-leader', 'party-invite', 'party-joined', 'party-received'].includes(nextView) ? 'party' : nextView === 'ride' ? 'map' : nextView;
+      const prevView = document.body.dataset.mobileView;
+      if (prevView && prevView !== nextView && !state.backNavigating) {
+        const at = state.viewStack.lastIndexOf(nextView);
+        if (at >= 0) state.viewStack.length = at; else state.viewStack.push(prevView);
+        if (state.viewStack.length > 20) state.viewStack.shift();
+      }
       document.body.dataset.mobileView = nextView;
       document.body.dataset.mobileTab = activeTab;
       mobileNavItems.forEach(item => item.classList.toggle('active', item.dataset.tab === activeTab));
@@ -3793,7 +4184,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       requestAnimationFrame(() => {
         map.resize();
         if ((nextView === 'map' || nextView === 'ride') && !profilePanel?.classList.contains('collapsed')) drawProfile();
-        if (nextView === 'routes' || nextView === 'course-editor') renderMobileCourseProfiles();
+        if (['routes', 'course-editor', 'map', 'ride'].includes(nextView)) renderMobileCourseProfiles();
       });
     }
     setMobileAppView = showMobileView;
@@ -3900,8 +4291,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     $('#mobileZoomInBtn')?.addEventListener('click', () => map.zoomIn({ duration: 300 }));
     $('#mobileZoomOutBtn')?.addEventListener('click', () => map.zoomOut({ duration: 300 }));
     $('#mobileLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
-    $('#mobileInfoBtn')?.addEventListener('click', () => $('#profileToggle')?.click());
-    $('#mobileMapAnalyticsBtn')?.addEventListener('click', () => $('#profileToggle')?.click());
+    $('#mobileInfoBtn')?.addEventListener('click', () => $('#mobileMapProfileToggle')?.click());
     $('#mobileMapRideOnBtn')?.addEventListener('click', () => mobileHomeRideOn('ride'));
 
     $('#mobileCreateCourseBtn')?.addEventListener('click', () => {
@@ -4467,8 +4857,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     list.innerHTML = adminRegionRows.map(row => {
       const builtIn = builtInRegionIds.has(row.id);
       const stateLabel = row.is_active ? '활성' : '비활성';
+      const skiDataLabel = ({ not_requested: '데이터 요청 없음', pending: '데이터 준비 대기', processing: '데이터 준비 중', ready: '데이터 준비 완료', empty: '조회 완료 · 데이터 없음', failed: '데이터 준비 실패' })[row.ski_data_status] || row.ski_data_status;
       return `<article class="admin-course-item"><strong>${escapeHtml(row.label)} · ${escapeHtml(row.id)}</strong>` +
         `<small>${stateLabel} · ${Number(row.center_lng).toFixed(3)}, ${Number(row.center_lat).toFixed(3)} · zoom ${Number(row.zoom)}</small>` +
+        `<small>${escapeHtml(skiDataLabel || '데이터 상태 미확인')}${row.ski_data_feature_count != null ? ` · ${Number(row.ski_data_feature_count)}개` : ''}</small>` +
+        (row.ski_data_status === 'failed' && row.ski_data_error ? `<small>${escapeHtml(row.ski_data_error)}</small>` : '') +
         `<div class="admin-course-actions"><button type="button" data-admin-region-action="edit" data-region-id="${escapeHtml(row.id)}">수정</button>` +
         (builtIn ? '<small>기본 지역 · 비활성화 불가</small>' :
           `<button type="button" data-admin-region-action="toggle" data-region-id="${escapeHtml(row.id)}">${row.is_active ? '비활성화' : '활성화'}</button>`) +
@@ -4662,15 +5055,40 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       errorEl.textContent = 'bbox는 west < east, south < north 순서여야 합니다.';
       return;
     }
+    if (bbox && (bbox[1] < -85 || bbox[3] > 85)) {
+      errorEl.textContent = 'bbox 위도는 -85도 이상 85도 이하여야 합니다.';
+      return;
+    }
+    if (bbox && (bbox[2] - bbox[0] > 0.5 || bbox[3] - bbox[1] > 0.5 ||
+        (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) > 0.05)) {
+      errorEl.textContent = 'bbox는 가로·세로 0.5도 이하, 면적 0.05 제곱도 이하여야 합니다.';
+      return;
+    }
+    const centerLng = Number(value('center_lng'));
+    const centerLat = Number(value('center_lat'));
+    if (!Number.isFinite(centerLng) || !Number.isFinite(centerLat)) {
+      errorEl.textContent = '지역 중심점 좌표를 올바르게 입력해 주세요.';
+      return;
+    }
+    if (bbox && (centerLng < bbox[0] || centerLng > bbox[2] || centerLat < bbox[1] || centerLat > bbox[3])) {
+      errorEl.textContent = '지역 중심점은 bbox 내부에 있어야 합니다.';
+      return;
+    }
     const payload = {
-      label: value('label'), center_lng: Number(value('center_lng')),
-      center_lat: Number(value('center_lat')), zoom: Number(value('zoom')),
+      label: value('label'), center_lng: centerLng,
+      center_lat: centerLat, zoom: Number(value('zoom')),
       bearing: Number(value('bearing')), pitch: Number(value('pitch')), bbox
     };
     if (!editId) {
       payload.id = value('id');
       payload.sort_order = Math.max(0, ...adminRegionRows.map(row => Number(row.sort_order) || 0)) + 1;
     }
+    const previousRegion = adminRegionRows.find(row => row.id === editId);
+    const previousBbox = parseRegionBbox(previousRegion?.bbox);
+    const bboxChanged = !editId || JSON.stringify(previousBbox) !== JSON.stringify(bbox);
+    const shouldPrepareSkiData = Boolean(bbox && (bboxChanged ||
+      ['pending', 'failed'].includes(previousRegion?.ski_data_status)));
+    const savedRegionId = editId || payload.id;
     const button = $('#stitchAdminRegionSaveBtn');
     button.disabled = true;
     try {
@@ -4681,6 +5099,16 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (error) throw error;
       resetAdminRegionForm();
       await loadAdminRegions();
+      const status = $('#stitchAdminRegionsStatus');
+      if (!shouldPrepareSkiData) {
+        status.textContent = '지역 저장 완료 · 스키 데이터 준비 요청 없음';
+        return;
+      }
+      // Ski data is collected by the scheduled OpenSkiData batch (GitHub Actions): the DB trigger has already
+      // set ski_data_status to 'pending'. The list below shows pending / ready / empty / failed.
+      status.textContent = bboxChanged
+        ? '지역 저장 완료 · 스키 데이터 수집 대기 중 (최대 약 1시간 내 자동 수집)'
+        : '지역 저장 완료 · 이전 수집이 실패한 지역입니다 (일정 시간 후 자동 재시도)';
     } catch (error) {
       showAdminRegionError(error, errorEl);
     } finally {
@@ -5454,6 +5882,43 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     return offlineMapTestPlugin;
   }
 
+  // The device saved tiles/ski data for another BBox than the registry now has (admin changed the region).
+  function offlineRegionBboxChanged(status, details) {
+    const saved = status?.skiData?.savedBbox;
+    const current = parseRegionBbox(details?.bbox);
+    if (!Array.isArray(saved) || saved.length !== 4 || !current) return false;
+    return saved.some((value, index) => !(Math.abs(Number(value) - current[index]) <= 1e-6));
+  }
+
+  // Ski data (lifts/runs) is small: when the server published a newer version for a downloaded region, update
+  // it silently while online. A failed refresh keeps the saved file (native side) and is retried on the next check.
+  const offlineSkiRefreshAttempts = new Set();
+  async function autoRefreshOfflineSkiData(entries) {
+    const plugin = getOfflineMapTestPlugin();
+    if (!plugin?.refreshSkiData || navigator.onLine === false) return;
+    let changed = false;
+    for (const [id, details] of entries) {
+      const status = offlineRegionStatuses.get(id);
+      if (!status?.complete || details.skiDataStatus !== 'ready' || !details.skiDataVersion) continue;
+      if (status.skiData?.version === details.skiDataVersion || offlineRegionBboxChanged(status, details)) continue;
+      const attemptKey = `${id}@${details.skiDataVersion}`;
+      if (offlineSkiRefreshAttempts.has(attemptKey)) continue;
+      const { payload } = createOfflineRegionPayload(id, details);
+      if (!payload) continue;
+      offlineSkiRefreshAttempts.add(attemptKey);
+      try {
+        const result = await plugin.refreshSkiData(payload);
+        if (result?.skiData?.status !== 'saved') offlineSkiRefreshAttempts.delete(attemptKey);
+        const next = await plugin.getOfflineStatus({ regionId: id });
+        if (next) { offlineRegionStatuses.set(id, next); changed = true; }
+      } catch (error) {
+        offlineSkiRefreshAttempts.delete(attemptKey);
+        console.warn('Offline ski data refresh failed:', id, error);
+      }
+    }
+    if (changed) updateMobileHomeMapModeUi();
+  }
+
   function getOfflineCatalogRegions() {
     return Object.entries(regions)
       .filter(([id, details]) => catalogRegionIds.has(id) && !details.custom && details.isActive !== false)
@@ -5468,7 +5933,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       bounds[0] < bounds[2] && bounds[1] < bounds[3];
     return {
       payload: centerValid && boundsValid
-        ? { regionId: id, regionName: details.label, center, bounds }
+        ? {
+          regionId: id, regionName: details.label, center, bounds,
+          // Lets the native plugin fetch ski-data/{id}.geojson only when the server marked it ready.
+          skiDataStatus: details.skiDataStatus || '', skiDataVersion: details.skiDataVersion || '', supabaseUrl: SUPABASE_URL
+        }
         : null,
       unavailableReason: !centerValid ? '중심 좌표가 없습니다.' : !boundsValid ? '경계 좌표가 없습니다.' : ''
     };
@@ -5504,6 +5973,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         stateClass = 'loading';
         stateLabel = '저장 상태 확인 중…';
         disabled = true;
+      } else if (status?.complete && offlineRegionBboxChanged(status, details)) {
+        stateClass = 'incomplete';
+        stateLabel = '지역 범위가 변경되었습니다 · 다시 다운로드 필요';
+        buttonLabel = '다시 다운로드';
       } else if (status?.complete) {
         stateClass = 'complete';
         stateLabel = '다운로드 완료';
@@ -5543,7 +6016,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         if (requestId === offlineRegionStatusRequest) offlineRegionStatuses.set(id, { error: error?.message || '상태 조회 실패' });
       }
     }));
-    if (requestId === offlineRegionStatusRequest) updateMobileHomeMapModeUi();
+    if (requestId === offlineRegionStatusRequest) {
+      updateMobileHomeMapModeUi();
+      void autoRefreshOfflineSkiData(entries);
+    }
   }
 
   async function downloadOfflineRegion(id) {
@@ -5755,8 +6231,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     $('#rideZoomOutBtn')?.addEventListener('click', () => $('#mobileZoomOutBtn')?.click());
     $('#rideCompassBtn')?.addEventListener('click', () => $('#mobileCompassBtn')?.click());
     $('#rideLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
-    $('#rideInfoBtn')?.addEventListener('click', () => $('#profileToggle')?.click());
-    $('#rideAnalyticsBtn')?.addEventListener('click', () => $('#profileToggle')?.click());
+    $('#rideInfoBtn')?.addEventListener('click', () => $('#mobileMapProfileToggle')?.click());
     $('#region')?.addEventListener('change', () => {
       const regionSel = $('#homeRegionSelect');
       if (regionSel && regionSel.value !== $('#region').value) { regionSel.value = $('#region').value; renderMobileHome(); }
@@ -5805,34 +6280,68 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     renderMobileSavedRoutes();
   }
 
+  // Touch/drag on a profile chart selects a distance; map marker + vertical line follow in real time.
+  function bindProfileScrub(canvas) {
+    if (!canvas || canvas.dataset.scrubBound) return;
+    canvas.dataset.scrubBound = '1';
+    canvas.style.touchAction = 'none';
+    const ro = canvas.parentElement?.querySelector('.profile-tooltip'); // desktop tooltip only
+    let dragging = false, toggleCandidate = false, downX = 0;
+    const padLeft = 8, padRight = 8;
+    const distanceAt = clientX => {
+      const rect = canvas.getBoundingClientRect(), plotWidth = Math.max(1, rect.width - padLeft - padRight);
+      const range = profileViewRange();
+      return range.start + Math.max(0, Math.min(plotWidth, clientX - rect.left - padLeft)) / plotWidth * (range.end - range.start);
+    };
+    const selectedClientX = () => {
+      const rect = canvas.getBoundingClientRect(), plotWidth = Math.max(1, rect.width - padLeft - padRight);
+      const range = profileViewRange();
+      return rect.left + padLeft + (profile.selected.distance - range.start) / Math.max(1, range.end - range.start) * plotWidth;
+    };
+    const update = e => {
+      if (profile.samples.length < 2) return;
+      const sample = selectProfileDistance(distanceAt(e.clientX));
+      if (sample && ro) { ro.textContent = profileReadoutText(sample); ro.hidden = false; }
+    };
+    canvas.addEventListener('pointerdown', e => {
+      dragging = true;
+      try { canvas.setPointerCapture(e.pointerId); } catch {}
+      e.preventDefault();
+      downX = e.clientX;
+      // Touching the already-selected point again (without dragging) clears it on release.
+      toggleCandidate = e.pointerType !== 'mouse' && Boolean(profile.selected) && Math.abs(e.clientX - selectedClientX()) <= 14;
+      if (!toggleCandidate) update(e);
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      e.preventDefault();
+      if (toggleCandidate) { if (Math.abs(e.clientX - downX) < 6) return; toggleCandidate = false; }
+      update(e);
+    });
+    canvas.addEventListener('pointerup', () => {
+      if (dragging && toggleCandidate) { clearProfileCursor(); if (ro) ro.hidden = true; }
+      dragging = false; toggleCandidate = false;
+    });
+    canvas.addEventListener('pointercancel', () => { dragging = false; toggleCandidate = false; });
+  }
+
   function renderMobileCourseProfiles() {
     const samples = profile.samples;
     const hasProfile = samples.length > 1;
     const message = $('#profileMessage')?.textContent || '경로를 그리면 그래프가 표시됩니다.';
-    for (const [canvasId, messageId] of [['#mobileRoutesProfileChart', '#mobileRoutesProfileMessage'], ['#mobileEditorProfileChart', '#mobileEditorProfileMessage']]) {
+    for (const [canvasId, messageId] of [['#mobileRoutesProfileChart', '#mobileRoutesProfileMessage'], ['#mobileEditorProfileChart', '#mobileEditorProfileMessage'], ['#mobileMapProfileChart', '#mobileMapProfileMessage']]) {
       const canvas = $(canvasId), label = $(messageId);
       if (!canvas) continue;
       if (label) { label.hidden = hasProfile; label.textContent = message; }
-      const width = canvas.clientWidth, height = canvas.clientHeight;
-      if (!width || !height) continue;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
-      const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, width, height);
-      if (!hasProfile) continue;
-      let min = Infinity, max = -Infinity;
-      for (const sample of samples) { min = Math.min(min, sample.elevation); max = Math.max(max, sample.elevation); }
-      const elevationRange = Math.max(max - min, 10), distance = samples.at(-1).distance || 1;
-      const x = sample => 5 + sample.distance / distance * (width - 10);
-      const y = sample => 7 + (max - sample.elevation) / elevationRange * (height - 17);
-      const fill = ctx.createLinearGradient(0, 0, 0, height); fill.addColorStop(0, 'rgba(56,189,248,.35)'); fill.addColorStop(1, 'rgba(56,189,248,0)');
-      ctx.beginPath(); samples.forEach((sample, index) => index ? ctx.lineTo(x(sample), y(sample)) : ctx.moveTo(x(sample), y(sample))); ctx.lineTo(width - 5, height); ctx.lineTo(5, height); ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
-      const stroke = ctx.createLinearGradient(0, 0, width, 0); stroke.addColorStop(0, '#4edea3'); stroke.addColorStop(.4, '#38bdf8'); stroke.addColorStop(.7, '#f43f5e'); stroke.addColorStop(1, '#38bdf8');
-      ctx.beginPath(); samples.forEach((sample, index) => index ? ctx.lineTo(x(sample), y(sample)) : ctx.moveTo(x(sample), y(sample))); ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
+      drawProfileChart(canvas);
+      bindProfileScrub(canvas);
     }
+    syncProfileHeaderReadouts();
     const distance = $('#profileDistance')?.textContent || '—', average = $('#profileAverage')?.textContent || '—', maximum = $('#profileMaximum')?.textContent || '—';
     $('#mobileRoutesDistance').textContent = distance;
     $('#mobileRoutesAverage').textContent = average;
     $('#mobileRoutesMaximum').textContent = maximum;
+    if ($('#mobileMapDistance')) { $('#mobileMapDistance').textContent = distance; $('#mobileMapAverage').textContent = average; $('#mobileMapMaximum').textContent = maximum; }
     $('#mobileEditorDistance').textContent = distance;
     $('#mobileEditorElevation').textContent = hasProfile ? Math.round(samples.at(-1).elevation - samples[0].elevation) + ' m' : '—';
     $('#mobileEditorSlope').textContent = hasProfile ? maximum + ' / ' + average : '—';
@@ -6054,6 +6563,50 @@ function clearLocalMemberFix(party, userId, sharingEnabled = false) {
   if (myParty && myParty !== party) updateList(myParty.members);
 }
 
+// Rejects after `ms` so a hung request can never keep the `sending` / `polling` flags set forever.
+function withPartyGpsTimeout(promiseLike, label, ms = PARTY_GPS_RPC_TIMEOUT_MS) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([Promise.resolve(promiseLike), timeout]).finally(() => clearTimeout(timer));
+}
+
+// Asks the device for a NEW position (never re-publishes an old one). Resolves true when a fix was received.
+function requestFreshPartyGpsFix() {
+  if (partyGpsRuntime.freshFixRequesting || typeof navigator === 'undefined' || !navigator.geolocation) {
+    return Promise.resolve(false);
+  }
+  partyGpsRuntime.freshFixRequesting = true;
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      partyGpsRuntime.freshFixRequesting = false;
+      resolve(ok);
+    };
+    try {
+      navigator.geolocation.getCurrentPosition(
+        pos => { handlePartyGpsCoords(pos.coords, pos.timestamp); finish(true); },
+        err => { console.warn('Party GPS fresh fix error:', err); finish(false); },
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: PARTY_GPS_FRESH_FIX_TIMEOUT_MS }
+      );
+    } catch (err) {
+      console.warn('Party GPS fresh fix failed:', err);
+      finish(false);
+    }
+    setTimeout(() => finish(false), PARTY_GPS_FRESH_FIX_TIMEOUT_MS + 3000);
+  });
+}
+
+// Exponential backoff after a failed upload so GPS events / timer ticks do not hammer the server.
+function notePartyGpsSendFailure() {
+  partyGpsRuntime.sendFailCount += 1;
+  const delay = Math.min(PARTY_GPS_SEND_BACKOFF_MAX_MS, PARTY_GPS_SEND_BACKOFF_BASE_MS * 2 ** Math.min(partyGpsRuntime.sendFailCount - 1, 5));
+  partyGpsRuntime.nextSendAllowedAt = Date.now() + delay;
+}
+
 async function sendCurrentPartyGpsFix(force = false) {
   const party = state.currentParty;
   const client = supabaseClient;
@@ -6061,6 +6614,11 @@ async function sendCurrentPartyGpsFix(force = false) {
   const fix = partyGpsRuntime.lastFix;
   if (!party?.id || !client || !userId || state.profile?.status !== 'approved') return;
   if (!isMyPartyLocationSharingEnabled(party) || !fix || partyGpsRuntime.sending) return;
+  if (Date.now() < partyGpsRuntime.nextSendAllowedAt) return;
+  const fixTimestamp = Number(fix.timestamp);
+  if (!Number.isFinite(fixTimestamp)
+      || Math.abs(Date.now() - fixTimestamp) > PARTY_GPS_FIX_MAX_AGE_MS
+      || fixTimestamp <= partyGpsRuntime.lastSentFixTimestamp) return;
   const intervalMs = partyGpsRuntime.powerSaveMode
     ? PARTY_GPS_STATIONARY_INTERVAL_MS
     : sanitizePartyGpsInterval(party.gps_interval_seconds) * 1000;
@@ -6069,18 +6627,26 @@ async function sendCurrentPartyGpsFix(force = false) {
   }
   partyGpsRuntime.sending = true;
   try {
-    const { data, error } = await client.rpc('upsert_my_party_location', {
+    const { data, error } = await withPartyGpsTimeout(client.rpc('upsert_my_party_location', {
       p_party_id: party.id,
       p_lat: fix.lat,
       p_lng: fix.lng,
       p_accuracy_m: Number.isFinite(fix.accuracy) ? fix.accuracy : null,
       p_heading: Number.isFinite(fix.heading) ? fix.heading : null,
       p_speed_mps: Number.isFinite(fix.speed) ? fix.speed : null
-    });
+    }), 'upsert_my_party_location');
     if (client !== supabaseClient || state.currentParty !== party) return;
+    if (error) {
+      console.warn('upsert_my_party_location error:', error);
+      notePartyGpsSendFailure();
+      return;
+    }
+    partyGpsRuntime.sendFailCount = 0;
+    partyGpsRuntime.nextSendAllowedAt = 0;
     const updatedIso = typeof data === 'string' && data ? data : new Date().toISOString();
-    if (!error || ['PGRST202', '42883'].includes(error.code)) {
-      partyGpsRuntime.lastSentAt = Date.now();
+    partyGpsRuntime.lastSentAt = Date.now();
+    partyGpsRuntime.lastSentFixTimestamp = fixTimestamp;
+    if (partyGpsRuntime.lastFix?.timestamp === fix.timestamp) {
       partyGpsRuntime.lastFix = { ...fix, updatedAt: updatedIso };
       applyLocalMemberFix(party, userId, fix, updatedIso);
       syncPartyMemberMapMarkers();
@@ -6088,6 +6654,7 @@ async function sendCurrentPartyGpsFix(force = false) {
     }
   } catch (err) {
     console.warn('upsert_my_party_location error:', err);
+    notePartyGpsSendFailure();
   } finally {
     partyGpsRuntime.sending = false;
   }
@@ -6100,7 +6667,9 @@ async function refreshCurrentPartyMemberLocations() {
   if (!party?.id || !client || !userId || state.profile?.status !== 'approved' || partyGpsRuntime.polling) return;
   partyGpsRuntime.polling = true;
   try {
-    const { rows, hasLocationRpc } = await fetchMyPartyMemberRows(client, party.id);
+    const { rows, hasLocationRpc } = await withPartyGpsTimeout(
+      fetchMyPartyMemberRows(client, party.id), 'list_my_party_member_locations'
+    );
     if (client !== supabaseClient || state.session?.user?.id !== userId || state.currentParty !== party) return;
     if (!hasLocationRpc) {
       syncPartyMemberMapMarkers();
@@ -6150,14 +6719,16 @@ function handlePartyGpsCoords(coords, timestamp = Date.now()) {
   const heading = Number.isFinite(Number(coords?.heading)) && Number(coords.heading) >= 0 && Number(coords.heading) <= 360 ? Number(coords.heading) : null;
   const speed = Number.isFinite(Number(coords?.speed)) && Number(coords.speed) >= 0 ? Number(coords.speed) : null;
   const now = Date.now();
+  const measuredAt = Number.isFinite(Number(timestamp)) ? Number(timestamp) : now;
   const nextFix = {
     lat,
     lng,
     accuracy,
     heading,
     speed,
-    timestamp: Number.isFinite(Number(timestamp)) ? Number(timestamp) : now,
-    updatedAt: new Date(now).toISOString()
+    timestamp: measuredAt,
+    // Shown time = when the position was measured, so an old cached coordinate never looks like a new reading.
+    updatedAt: new Date(measuredAt <= now ? measuredAt : now).toISOString()
   };
   partyGpsRuntime.lastFix = nextFix;
   syncMyLocationBlueDotFromFix(coords, timestamp);
@@ -6172,13 +6743,13 @@ function handlePartyGpsCoords(coords, timestamp = Date.now()) {
       partyGpsRuntime.anchorFix = { lat, lng, since: now };
       if (partyGpsRuntime.powerSaveMode) {
         partyGpsRuntime.powerSaveMode = false;
-        schedulePartyGpsTimer();
+        schedulePartyGpsSendTimer();
         sendCurrentPartyGpsFix(true);
         return;
       }
     } else if (!partyGpsRuntime.powerSaveMode && (now - partyGpsRuntime.anchorFix.since) >= PARTY_GPS_STATIONARY_HOLD_MS) {
       partyGpsRuntime.powerSaveMode = true;
-      schedulePartyGpsTimer();
+      schedulePartyGpsSendTimer();
     }
   }
 
@@ -6202,7 +6773,12 @@ function stopPartyGpsWatcher() {
   if (partyGpsRuntime.watchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
     try { navigator.geolocation.clearWatch(partyGpsRuntime.watchId); } catch {}
   }
+  if (partyGpsRuntime.watchRetryTimer !== null) {
+    clearTimeout(partyGpsRuntime.watchRetryTimer);
+    partyGpsRuntime.watchRetryTimer = null;
+  }
   partyGpsRuntime.watchId = null;
+  partyGpsRuntime.watchRetryCount = 0;
   partyGpsRuntime.anchorFix = null;
   partyGpsRuntime.powerSaveMode = false;
   partyGpsRuntime.lastSentAt = 0;
@@ -6210,53 +6786,151 @@ function stopPartyGpsWatcher() {
 
 function stopPartyGpsRuntime({ clearMarkers = false } = {}) {
   stopPartyGpsWatcher();
-  if (partyGpsRuntime.syncTimer !== null) {
-    clearInterval(partyGpsRuntime.syncTimer);
-    partyGpsRuntime.syncTimer = null;
+  if (partyGpsRuntime.sendTimer !== null) {
+    clearInterval(partyGpsRuntime.sendTimer);
+    partyGpsRuntime.sendTimer = null;
+  }
+  if (partyGpsRuntime.pollTimer !== null) {
+    clearInterval(partyGpsRuntime.pollTimer);
+    partyGpsRuntime.pollTimer = null;
   }
   partyGpsRuntime.partyId = '';
+  partyGpsRuntime.sendFailCount = 0;
+  partyGpsRuntime.nextSendAllowedAt = 0;
   if (clearMarkers) clearPartyMemberMapMarkers();
+}
+
+// App back in the foreground / network reconnected: make sure the GPS watch and timers are alive, then fetch
+// the latest member locations and upload a fresh own position right away.
+function recoverPartyGpsRuntime() {
+  const party = state.currentParty;
+  if (!party?.id || !state.session?.user || state.profile?.status !== 'approved') return;
+  if (document.hidden || (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
+  const now = Date.now();
+  if (now - partyGpsRuntime.lastRecoverAt < PARTY_GPS_RECOVER_MIN_GAP_MS) return;
+  partyGpsRuntime.lastRecoverAt = now;
+  partyGpsRuntime.nextSendAllowedAt = 0; // connectivity may be back: allow one retry immediately
+
+  const sharing = isMyPartyLocationSharingEnabled(party);
+  if (sharing) {
+    // A watch that produced nothing for longer than the fix lifetime may be dead (e.g. after backgrounding).
+    const lastFix = partyGpsRuntime.lastFix;
+    if (partyGpsRuntime.watchId !== null && (!lastFix || now - Number(lastFix.timestamp) > PARTY_GPS_FIX_MAX_AGE_MS)
+        && typeof navigator !== 'undefined' && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(partyGpsRuntime.watchId); } catch {}
+      partyGpsRuntime.watchId = null;
+    }
+    if (partyGpsRuntime.watchId === null) {
+      partyGpsRuntime.watchRetryCount = 0;
+      startPartyGpsWatcher();
+    }
+  }
+  if (partyGpsRuntime.pollTimer === null || (sharing && partyGpsRuntime.sendTimer === null)) schedulePartyGpsTimer();
+
+  refreshCurrentPartyMemberLocations();
+  if (sharing) requestFreshPartyGpsFix().then(() => sendCurrentPartyGpsFix(true));
+}
+
+function registerPartyGpsLifecycleListeners() {
+  if (partyGpsLifecycleListenersRegistered || typeof document === 'undefined') return;
+  partyGpsLifecycleListenersRegistered = true;
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) recoverPartyGpsRuntime();
+  });
+  window.addEventListener('online', recoverPartyGpsRuntime);
+}
+
+function schedulePartyGpsWatcherRetry() {
+  if (partyGpsRuntime.watchRetryTimer !== null || !isMyPartyLocationSharingEnabled()
+      || !state.session?.user || state.profile?.status !== 'approved') return;
+  const delay = Math.min(60000, 5000 * 2 ** Math.min(partyGpsRuntime.watchRetryCount, 4));
+  partyGpsRuntime.watchRetryCount += 1;
+  partyGpsRuntime.watchRetryTimer = setTimeout(() => {
+    partyGpsRuntime.watchRetryTimer = null;
+    if (isMyPartyLocationSharingEnabled()) startPartyGpsWatcher();
+  }, delay);
 }
 
 function startPartyGpsWatcher() {
   if (partyGpsRuntime.watchId !== null || typeof navigator === 'undefined' || !navigator.geolocation) return;
+  if (partyGpsRuntime.watchRetryTimer !== null) {
+    clearTimeout(partyGpsRuntime.watchRetryTimer);
+    partyGpsRuntime.watchRetryTimer = null;
+  }
   try {
-    partyGpsRuntime.watchId = navigator.geolocation.watchPosition(
-      pos => handlePartyGpsCoords(pos.coords, pos.timestamp),
-      err => { console.warn('Party GPS watch error:', err); },
+    const watchId = navigator.geolocation.watchPosition(
+      pos => {
+        if (partyGpsRuntime.watchId !== watchId) return;
+        partyGpsRuntime.watchRetryCount = 0;
+        handlePartyGpsCoords(pos.coords, pos.timestamp);
+      },
+      err => {
+        if (partyGpsRuntime.watchId !== watchId) return;
+        console.warn('Party GPS watch error:', err);
+        try { navigator.geolocation.clearWatch(watchId); } catch {}
+        partyGpsRuntime.watchId = null;
+        if (err?.code !== 1) schedulePartyGpsWatcherRetry();
+      },
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
     );
+    partyGpsRuntime.watchId = watchId;
   } catch (err) {
     console.warn('Failed to start party GPS watch:', err);
+    if (err?.name !== 'SecurityError') schedulePartyGpsWatcherRetry();
   }
 }
 
-function schedulePartyGpsTimer() {
-  if (partyGpsRuntime.syncTimer !== null) {
-    clearInterval(partyGpsRuntime.syncTimer);
-    partyGpsRuntime.syncTimer = null;
+function schedulePartyGpsSendTimer() {
+  if (partyGpsRuntime.sendTimer !== null) {
+    clearInterval(partyGpsRuntime.sendTimer);
+    partyGpsRuntime.sendTimer = null;
   }
   const party = state.currentParty;
-  if (!party?.id || !state.session?.user || state.profile?.status !== 'approved') return;
-  const sharing = isMyPartyLocationSharingEnabled(party);
+  if (!party?.id || !state.session?.user || state.profile?.status !== 'approved'
+      || !isMyPartyLocationSharingEnabled(party)) return;
   const normalIntervalMs = sanitizePartyGpsInterval(party.gps_interval_seconds) * 1000;
-  const tickMs = sharing && partyGpsRuntime.powerSaveMode
+  const tickMs = partyGpsRuntime.powerSaveMode
     ? PARTY_GPS_STATIONARY_INTERVAL_MS
     : normalIntervalMs;
-  partyGpsRuntime.syncTimer = setInterval(() => {
+  partyGpsRuntime.sendTimer = setInterval(() => {
     if (!state.currentParty || state.currentParty.id !== party.id) return;
     if (isMyPartyLocationSharingEnabled(state.currentParty)) {
       if (partyGpsRuntime.lastFix && !partyGpsRuntime.powerSaveMode && partyGpsRuntime.anchorFix) {
         if ((Date.now() - partyGpsRuntime.anchorFix.since) >= PARTY_GPS_STATIONARY_HOLD_MS) {
           partyGpsRuntime.powerSaveMode = true;
-          schedulePartyGpsTimer();
+          schedulePartyGpsSendTimer();
           refreshVisiblePartyScreens();
         }
       }
-      sendCurrentPartyGpsFix(true);
+      // A stationary device may stop emitting watch events. If the last fix is old or was already uploaded,
+      // take a real new measurement first; if that fails nothing is sent (stale coordinates are never published).
+      const lastFix = partyGpsRuntime.lastFix;
+      const fixAge = lastFix ? Date.now() - Number(lastFix.timestamp) : Infinity;
+      if (!lastFix || fixAge > PARTY_GPS_FIX_MAX_AGE_MS - 15000 || Number(lastFix.timestamp) <= partyGpsRuntime.lastSentFixTimestamp) {
+        requestFreshPartyGpsFix().then(() => sendCurrentPartyGpsFix(true));
+      } else {
+        sendCurrentPartyGpsFix(true);
+      }
     }
-    refreshCurrentPartyMemberLocations();
   }, tickMs);
+}
+
+function schedulePartyGpsPollTimer() {
+  if (partyGpsRuntime.pollTimer !== null) {
+    clearInterval(partyGpsRuntime.pollTimer);
+    partyGpsRuntime.pollTimer = null;
+  }
+  const party = state.currentParty;
+  if (!party?.id || !state.session?.user || state.profile?.status !== 'approved') return;
+  const intervalMs = sanitizePartyGpsInterval(party.gps_interval_seconds) * 1000;
+  partyGpsRuntime.pollTimer = setInterval(() => {
+    if (state.currentParty?.id === party.id) refreshCurrentPartyMemberLocations();
+  }, intervalMs);
+}
+
+function schedulePartyGpsTimer() {
+  schedulePartyGpsSendTimer();
+  schedulePartyGpsPollTimer();
 }
 
 function syncPartyGpsRuntimeForCurrentParty() {
@@ -6268,8 +6942,10 @@ function syncPartyGpsRuntimeForCurrentParty() {
   if (partyGpsRuntime.partyId && partyGpsRuntime.partyId !== party.id) {
     clearPartyMemberMapMarkers();
     partyGpsRuntime.lastSentAt = 0;
+    partyGpsRuntime.lastSentFixTimestamp = 0;
   }
   partyGpsRuntime.partyId = party.id;
+  registerPartyGpsLifecycleListeners();
   if (isMyPartyLocationSharingEnabled(party)) {
     startPartyGpsWatcher();
     if (partyGpsRuntime.lastFix) sendCurrentPartyGpsFix(true);
@@ -7476,12 +8152,14 @@ async function startPartyMemberRideOn() {
     }
 
     $('#mobileEditorUndoBtn')?.addEventListener('click', undo);
-    for (const [toggleId, bodyId] of [['#mobileRoutesProfileToggle', '#mobileRoutesProfileBody'], ['#mobileEditorProfileToggle', '#mobileEditorProfileBody']]) {
+    for (const [toggleId, bodyId] of [['#mobileRoutesProfileToggle', '#mobileRoutesProfileBody'], ['#mobileEditorProfileToggle', '#mobileEditorProfileBody'], ['#mobileMapProfileToggle', '#mobileMapProfileBody']]) {
       $(toggleId)?.addEventListener('click', e => {
         const body = $(bodyId);
         body.hidden = !body.hidden;
         e.currentTarget.setAttribute('aria-expanded', String(!body.hidden));
-        if (!body.hidden) requestAnimationFrame(renderMobileCourseProfiles);
+        $('.map-panel')?.classList.toggle('mobile-profile-expanded', !$('#mobileMapProfileBody')?.hidden);
+        syncProfileHeaderReadouts();
+        if (body.hidden) clearProfileCursor(); else requestAnimationFrame(renderMobileCourseProfiles);
       });
     }
     $('#mobileEditorDetailToggle')?.addEventListener('click', e => {
@@ -7571,12 +8249,12 @@ async function startPartyMemberRideOn() {
   async function handleAndroidBackButton(appPlugin) {
     if (!introPlaybackComplete) {
       $('#mobileIntroSkipBtn')?.click();
-      return;
+      return true;
     }
 
     if (!$('#gpsRecordingFinishModal')?.hidden) {
       toast('저장 또는 저장 안 함을 선택해 기록 종료를 완료하세요.');
-      return;
+      return true;
     }
 
     const modalCloseControls = [
@@ -7587,19 +8265,19 @@ async function startPartyMemberRideOn() {
       ['#partyLeaderDisbandModal', '#partyLeaderDisbandCloseBtn']
     ];
     for (const [modalId, closeId] of modalCloseControls) {
-      if (clickVisibleControl(modalId, closeId)) return;
+      if (clickVisibleControl(modalId, closeId)) return true;
     }
 
-    if (clickVisibleControl('#stitchAdminCoursePreview', '#stitchAdminCoursePreviewCloseBtn')) return;
-    if (clickVisibleControl('#adminRegionMapPicker', '#adminRegionPickerCancelBtn')) return;
+    if (clickVisibleControl('#stitchAdminCoursePreview', '#stitchAdminCoursePreviewCloseBtn')) return true;
+    if (clickVisibleControl('#adminRegionMapPicker', '#adminRegionPickerCancelBtn')) return true;
     if (!$('#courseSplitHUD')?.hidden) {
       $('#splitCancelBtn')?.click();
-      return;
+      return true;
     }
 
     if (document.body.dataset.mobileAuth === 'signup') {
       $('#mobileSignupBackBtn')?.click();
-      return;
+      return true;
     }
 
     const mobileView = document.body.dataset.mobileView || 'home';
@@ -7609,11 +8287,10 @@ async function startPartyMemberRideOn() {
         ['#mobileAdminRegionsView', '#stitchAdminRegionsBackBtn'],
         ['#mobileAdminUsersView', '#stitchAdminUsersBackBtn'],
         ['#mobileAdminManageView', '#stitchAdminManageHeaderBackBtn'],
-        ['#mobileDeleteAccountView', '#stitchDeleteAccountBackBtn'],
-        ['#mobileAccountMainView', '#stitchAccountBackBtn']
+        ['#mobileDeleteAccountView', '#stitchDeleteAccountBackBtn']
       ];
       for (const [viewId, backId] of accountBackControls) {
-        if (clickVisibleControl(viewId, backId)) return;
+        if (clickVisibleControl(viewId, backId)) return true;
       }
     }
 
@@ -7626,37 +8303,56 @@ async function startPartyMemberRideOn() {
     };
     if (partyBackControls[mobileView]) {
       $(partyBackControls[mobileView])?.click();
-      return;
-    }
-    if (mobileView === 'party') {
-      setMobileAppView('map');
-      return;
+      return true;
     }
 
     if (mobileView === 'course-editor') {
       requestCloseCourseEditor();
-      return;
+      return true;
     }
     if (mobileView === 'ride') {
       $('#rideExitBtn')?.click();
-      return;
+      return true;
     }
-    if (mobileView === 'routes') {
-      setMobileAppView('map');
-      return;
-    }
+    // Previous menu from the view history (no repeated ping-pong between the same screens).
+    if (goBackInAppHistory(mobileView)) return true;
     if (!['home', 'map'].includes(mobileView)) {
-      setMobileAppView('home');
-      return;
+      state.backNavigating = true;
+      try { setMobileAppView('home'); } finally { state.backNavigating = false; }
+      return true;
     }
 
-    if (exitConfirmationOpen) return;
+    if (!appPlugin) return false; // plain browser: let the browser leave the page
+    if (exitConfirmationOpen) return true;
     exitConfirmationOpen = true;
     try {
       if (window.confirm('POWDERLINE 앱을 종료하시겠습니까?')) await appPlugin.exitApp();
     } finally {
       exitConfirmationOpen = false;
     }
+  }
+
+  function goBackInAppHistory(currentView) {
+    while (state.viewStack.length) {
+      const previous = state.viewStack.pop();
+      if (!previous || previous === currentView) continue;
+      state.backNavigating = true;
+      try { setMobileAppView(previous); } finally { state.backNavigating = false; }
+      return true;
+    }
+    return false;
+  }
+
+  // Plain browsers: keep one guard history entry so the browser back button runs the same in-app back logic.
+  function initBrowserBackGuard() {
+    if (window.Capacitor?.getPlatform?.() === 'android') return;
+    const guard = () => { try { history.pushState({ plGuard: true }, ''); } catch { } };
+    try { history.replaceState({ plBase: true }, ''); } catch { return; }
+    guard();
+    window.addEventListener('popstate', async () => {
+      const consumed = await handleAndroidBackButton(null);
+      if (consumed) guard(); else history.back();
+    });
   }
 
   function initAndroidBackButton() {
@@ -7700,6 +8396,7 @@ async function startPartyMemberRideOn() {
   initMobileStandaloneInteractions();
   initGpsRecordingInteractions();
   initAndroidBackButton();
+  initBrowserBackGuard();
   initAuthConnectivityRevalidation();
 
   initializeSupabase().finally(() => { void restoreGpsRecording(); });
