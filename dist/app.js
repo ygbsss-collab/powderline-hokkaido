@@ -35,11 +35,16 @@
       btnFinishDraw: '그리기 완료',
       toolDraw: '그리기',
       toolEdit: '꼭짓점 편집',
+      toolEditPc: '포인트 추가',
+      btnCreateCoursePc: '코스 생성 & 편집',
+      btnSatellitePc: '위성지도',
+      btnTopoPc: '지형도',
       toolCut: '✂ 코스 자르기',
       toolDeleteSegment: '구간 삭제',
       btnUndo: '실행 취소',
       btnRedo: '다시 실행',
       btnDeleteVertex: '선택 꼭짓점 삭제',
+      btnDeleteVertexPc: '선택 포인트 삭제',
       btnClearCourse: '선택 코스 비우기',
       labelWorkingCourses: '작업 중인 코스',
       btnSaveCourse: '선택 코스 저장',
@@ -162,6 +167,7 @@
       toastSegmentDeleted: '구간을 삭제했습니다',
       statusDrawTip: '지도를 클릭하여 코스 포인트를 추가하세요. 끝점에서 계속 이어 그릴 수 있습니다.',
       statusEditTip: '꼭짓점을 드래그하여 이동하거나 클릭하여 선택하세요.',
+      statusEditTipPc: '경로선을 클릭하면 그 위치에 포인트가 추가됩니다. 포인트는 드래그로 이동, 더블클릭으로 삭제합니다.',
       statusCutTip: '분할할 기준 꼭짓점을 클릭하세요.',
       statusDeleteSegTip: '삭제할 구간의 시작 꼭짓점을 클릭하세요.',
       statusSelectSecondPoint: '삭제할 구간의 끝 꼭짓점을 클릭하세요.',
@@ -203,11 +209,16 @@
       btnFinishDraw: 'Finish Drawing',
       toolDraw: 'Draw',
       toolEdit: 'Edit Vertices',
+      toolEditPc: 'Add Point',
+      btnCreateCoursePc: 'Create & Edit Course',
+      btnSatellitePc: 'Satellite',
+      btnTopoPc: 'Topo',
       toolCut: '✂ Cut Course',
       toolDeleteSegment: 'Delete Segment',
       btnUndo: 'Undo',
       btnRedo: 'Redo',
       btnDeleteVertex: 'Delete Vertex',
+      btnDeleteVertexPc: 'Delete Selected Point',
       btnClearCourse: 'Clear Course',
       labelWorkingCourses: 'Working Courses',
       btnSaveCourse: 'Save Course',
@@ -330,6 +341,7 @@
       toastSegmentDeleted: 'Segment deleted',
       statusDrawTip: 'Click on map to add points. Continue drawing from the end point anytime.',
       statusEditTip: 'Drag vertices to move or click to select.',
+      statusEditTipPc: 'Click the route line to add a point there. Drag points to move, double-click to delete.',
       statusCutTip: 'Click an intermediate vertex to split course.',
       statusDeleteSegTip: 'Click the start vertex of the segment to delete.',
       statusSelectSecondPoint: 'Click the end vertex of the segment to delete.',
@@ -351,7 +363,8 @@
     }
   };
   const localSavedRoutes = JSON.parse(localStorage.getItem('powderline.routes') || '[]');
-  const state = { offlineCatalog: { phase: 'idle', message: '' }, nativeMap: { active: false, session: false, shown: false, regionId: '', unavailable: '', route: null, routeTimer: null, eventsBound: false, timer: null, observer: null }, viewStack: [], backNavigating: false, lang: localStorage.getItem('powderline.lang') || 'ko', selectedLiftId: null, points: [], courses: [], selectedCourseId: null, editorMode: false, tool: 'navigate', selectedVertex: null, segmentStart: null, mapStyle: 'satellite', saved: localSavedRoutes, session: null, profile: null, pendingUsers: [], pendingUsersError: null, myParties: [], currentParty: null, partySchemaReady: false };
+  const state = { offlineCatalog: { phase: 'idle', message: '' }, nativeMap: { active: false, session: false, shown: false, regionId: '', unavailable: '', route: null, gpsLine: null, routeTimer: null, eventsBound: false, timer: null, observer: null }, viewStack: [], backNavigating: false, lang: localStorage.getItem('powderline.lang') || 'ko', selectedLiftId: null, points: [], courses: [], selectedCourseId: null, editorMode: false, tool: 'navigate', selectedVertex: null, segmentStart: null, mapStyle: 'satellite', saved: localSavedRoutes, session: null, profile: null, pendingUsers: [], pendingUsersError: null, myParties: [], currentParty: null, partySchemaReady: false };
+  let pcRegionModalKey = null; // PC region course modal; declared here because renderSaved runs during startup
   let mobileEditingSavedRoute = null;
   let mobileRoutePointsHidden = false;
   let mobileSelectedSavedIndex = '';
@@ -820,6 +833,9 @@ geolocateControl.on('error', (e) => {
   const profile = { samples: [], timer: null, pending: false, generation: 0, marker: null, layout: null, selected: null, view: null };
   const editHistory = { past: [], future: [], limit: 50 };
   let splitState = null;
+  let gapCut = null; // PC web 구간 자르기·연결 session (state.points is untouched until 연결 완료)
+  let gapCutKeepProfileOnce = false;
+  let segPick = null; // PC graph-based 구간 삭제 session: { phase: 'pickB'|'preview', A, B, parts, cum, n, first }
   let courseSequence = 0, segmentMarker = null;
   let skiLoadToken = 0, lastFacilityState = { status: 'loading', counts: null };
   function updateFacilityStatus(status, counts, message) {
@@ -846,11 +862,56 @@ geolocateControl.on('error', (e) => {
       const k = el.dataset.i18nPlaceholder;
       if (I18N[state.lang]?.[k]) el.placeholder = I18N[state.lang][k];
     });
-    if ($('#drawBtn')) $('#drawBtn').textContent = state.drawing ? t('btnFinishDrawing') : t('btnCreateCourse');
+    if ($('#drawBtn')) $('#drawBtn').textContent = state.drawing ? t('btnFinishDrawing') : t(document.body.dataset.pcWeb === 'true' ? 'btnCreateCoursePc' : 'btnCreateCourse');
     updateAuthUi();
     if (lastFacilityState) updateFacilityStatus(lastFacilityState.status, lastFacilityState.counts);
     if (!profile.samples.length) $('#profileMessage').textContent = t('profileEmptyMsg');
+    applyPcEditorLabels();
     renderSaved();
+  }
+
+  // PC web shows the GPX point-editing names; Android/mobile keep the original data-i18n labels.
+  function applyPcEditorLabels() {
+    const pc = document.body.dataset.pcWeb === 'true';
+    for (const [selector, key] of [['#editToolBtn', 'toolEdit'], ['#deleteVertexBtn', 'btnDeleteVertex'], ['#satelliteBtn', 'btnSatellite'], ['#topoBtn', 'btnTopo']]) {
+      const el = $(selector);
+      if (el) el.textContent = t(pc ? key + 'Pc' : key);
+    }
+    const drawBtn = $('#drawBtn');
+    if (drawBtn && !state.drawing) drawBtn.textContent = t(pc ? 'btnCreateCoursePc' : 'btnCreateCourse'); // Android keeps 코스 만들기
+    // Short map-style labels on PC (icon + text); the full name stays available as a tooltip.
+    for (const [selector, key] of [['#satelliteBtn', 'btnSatellite'], ['#topoBtn', 'btnTopo']]) {
+      const el = $(selector);
+      if (!el) continue;
+      if (pc) el.title = t(key); else el.removeAttribute?.('title');
+    }
+    if (state.editorMode && state.tool === 'edit' && $('#editorStatus')) $('#editorStatus').textContent = t(pc ? 'statusEditTipPc' : 'statusEditTip');
+  }
+
+  function isNativeMobileApp() {
+    const cap = window.Capacitor;
+    if (cap?.isNativePlatform?.()) return true;
+    const plat = cap?.getPlatform?.();
+    return plat === 'android' || plat === 'ios';
+  }
+
+  // PC web = any non-Capacitor browser wider than the mobile breakpoint. Native is never decided by width.
+  function isPcWebAuthScope() {
+    return !isNativeMobileApp() && !window.matchMedia('(max-width: 768px)').matches;
+  }
+  // Native app keeps its original width-based gate; every web browser is gated at every width.
+  function isAuthGateEnabled() {
+    return !isNativeMobileApp() || window.matchMedia('(max-width: 768px)').matches;
+  }
+
+  function isApprovedAdmin() {
+    return Boolean(
+      supabaseClient &&
+      state.session?.user &&
+      onlineAuthVerified &&
+      state.profile?.role === 'admin' &&
+      state.profile?.status === 'approved'
+    );
   }
 
   function isPublishableKey(key) {
@@ -874,6 +935,7 @@ geolocateControl.on('error', (e) => {
 
     if ($('#authForm')) $('#authForm').hidden = signedIn;
     if ($('#signedInPanel')) $('#signedInPanel').hidden = !signedIn;
+    if ($('#pcWithdrawRow')) $('#pcWithdrawRow').hidden = !signedIn; // PC account modal: 회원탈퇴 only for a signed-in user
     if ($('#signedInEmail')) $('#signedInEmail').textContent = state.session?.user?.email || '';
     if ($('#signedInNickname')) {
       const nick = profile?.nickname || state.session?.user?.user_metadata?.nickname || '';
@@ -910,6 +972,8 @@ geolocateControl.on('error', (e) => {
     }
     if ($('#authStatus')) {
       $('#authStatus').textContent = message || (signedIn ? t('authSignedIn', state.session.user.email || '') : configured ? t('authReady') : t('authNeedKey'));
+      // PC account modal: the email/status already shows in the account card, so the redundant "connected" line is hidden (errors still show).
+      $('#authStatus').hidden = document.body.dataset.pcWeb === 'true' && signedIn && !message;
     }
     if ($('#supabaseStatus')) {
       $('#supabaseStatus').textContent = configured ? t('supabaseStatusReady') : t('supabaseStatusNeedKey');
@@ -921,6 +985,7 @@ geolocateControl.on('error', (e) => {
       $('#adminPanel').hidden = !showAdmin;
     }
     if (typeof syncStitchAccountUI === 'function') syncStitchAccountUI();
+    if (typeof syncPcHeaderAuth === 'function') syncPcHeaderAuth();
   }
 
   async function loadUserProfile() {
@@ -1048,6 +1113,8 @@ geolocateControl.on('error', (e) => {
       }
     }
     if (typeof syncStitchAccountUI === 'function') syncStitchAccountUI();
+    if (typeof syncPcHeaderAuth === 'function') syncPcHeaderAuth();
+    if (typeof renderPcAdminPending === 'function' && !$('#pcAdminModal')?.hidden) renderPcAdminPending();
   }
 
   async function handleSetUserStatus(targetUserId, newStatus) {
@@ -1500,6 +1567,8 @@ function syncRegionSelectors() {
   }
   renderMobileCourseRegions();
   renderMobileHome();
+  // PC course folders use region display names; refresh them when the catalog (labels) changes.
+  if (document.body.dataset.pcWeb === 'true' && typeof renderSaved === 'function') renderSaved();
 }
 
 function parseRegionBbox(value) {
@@ -1734,6 +1803,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
     const nextProfile = await loadUserProfile();
     onlineAuthVerified=Boolean(nextProfile);
+    if (nextProfile) updateAuthUi(); // re-render now that verification is known (gate, header, admin menu)
     if (nextProfile?.status === 'approved') {
       saveOfflineAccessGrant(nextSession, state.profile);
       if (nextSession.user.id !== previousUserId) await loadCloudRoutes({ notify: event === 'SIGNED_IN' });
@@ -2080,7 +2150,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     updateUndoRedoUI();
   }
 
+  function blockedByGapCut() {
+    if (!gapCut) return false;
+    toast(state.lang === 'ko' ? '구간 자르기 중입니다. 연결 완료 또는 취소 후 사용해 주세요.' : 'Finish or cancel the section cut first.');
+    return true;
+  }
+
   function undo() {
+    if (blockedByGapCut()) return;
     if (!editHistory.past.length) return;
     editHistory.future.push({
       courses: JSON.parse(JSON.stringify(state.courses)),
@@ -2105,6 +2182,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function redo() {
+    if (blockedByGapCut()) return;
     if (!editHistory.future.length) return;
     editHistory.past.push({
       courses: JSON.parse(JSON.stringify(state.courses)),
@@ -2136,6 +2214,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function setEditorTool(tool) {
+    if (tool !== 'gap-cut' && gapCut) cancelGapCut(false);
+    if (tool !== 'delete-segment' && segPick) cancelSegPick(false); // stale graph picks never leak into another tool
+    if (tool === 'gap-cut' && !gapCut && !startGapCut()) return;
     state.tool = tool;
     document.querySelectorAll('.tool-grid button').forEach(b => {
       b.classList.toggle('active', b.dataset.tool === tool);
@@ -2145,12 +2226,16 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (button) { button.classList.toggle('active', name === tool); button.setAttribute('aria-pressed', String(name === tool)); }
     }
     state.segmentStart = null;
+    if (tool !== 'delete-segment') syncSegPickUi();
+    else if (pcSparseEditing()) $('#profileChart')?.classList.add('gap-cut-pick');
+    $('#profileChart')?.classList.toggle('gap-cut-pick', pcSparseEditing() && ['edit', 'cut', 'delete-segment'].includes(tool));
     const el = $('#editorStatus');
     if (!el) return;
     if (tool === 'draw') el.textContent = t('statusDrawTip');
-    else if (tool === 'edit') el.textContent = t('statusEditTip');
+    else if (tool === 'edit') el.textContent = t(pcSparseEditing() ? 'statusEditTipPc' : 'statusEditTip');
     else if (tool === 'cut') el.textContent = t('statusCutTip');
     else if (tool === 'delete-segment') el.textContent = t('statusDeleteSegTip');
+    else if (tool === 'gap-cut') syncGapCutUi();
     else el.textContent = t('editorStatusDefault');
   }
 
@@ -2182,6 +2267,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function closeCourseEditor(discard = false) {
+    if (gapCut) cancelGapCut(false);
     if (discard && editHistory.initialSnapshot) {
       try {
         state.courses = JSON.parse(editHistory.initialSnapshot);
@@ -2228,6 +2314,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       b.addEventListener('click', () => {
         const targetId = b.dataset.id;
         if (state.selectedCourseId === targetId) return;
+        if (gapCut) { cancelGapCut(false); setEditorTool('edit'); }
         syncActiveCoursePoints();
         state.selectedCourseId = targetId;
         const c = getActiveCourse();
@@ -2249,7 +2336,508 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     return { type: 'Feature', geometry: { type: 'LineString', coordinates: points.map(p => [p.lng, p.lat]) }, properties: props };
   }
 
+  // ---- PC web GPX editing ----
+  // An imported GPX keeps every coordinate in state.points (line, distance, profile, save and GPX export are
+  // unchanged). On PC web the intermediate coordinates carry `shape: true`: they shape the line but get no edit
+  // marker. Start/end always get one; points the user adds are plain points, so every existing tool (drag,
+  // delete, cut, segment delete) works on them by their real index. Android never sets/uses the flag.
+  function pcSparseEditing() { return document.body.dataset.pcWeb === 'true'; }
+  function isEditAnchor(points, i) {
+    return !pcSparseEditing() || i === 0 || i === points.length - 1 || !points[i]?.shape;
+  }
+  function markGpxShapePoints(points) {
+    if (!pcSparseEditing()) return points;
+    points.forEach((point, i) => { if (i > 0 && i < points.length - 1) point.shape = true; });
+    return points;
+  }
+  // Saving (no DB change: powderline_routes.points is a free jsonb array and every client keeps extra keys).
+  // A course with shape coordinates stores `anchor: true` on its edit points only (a few keys, not thousands);
+  // an ordinary drawn course has no shape coordinates, so its payload stays exactly { lng, lat } as before.
+  function encodeEditPointsForSave(points) {
+    const sparse = points.some(point => point?.shape);
+    return points.map(point => {
+      const out = { lng: Number(point.lng), lat: Number(point.lat) };
+      if (sparse && !point.shape) out.anchor = true;
+      return out;
+    });
+  }
+  // Legacy saves (made before anchors were stored) that look like a recorded/GPX track: many, densely spaced
+  // coordinates. Hand-drawn courses (few clicks, long spacing) never match, so their points all stay editable.
+  const GPX_TRACK_MIN_POINTS = 300;
+  const GPX_TRACK_MAX_MEDIAN_M = 25;
+  function looksLikeGpxTrack(points) {
+    if (points.length < GPX_TRACK_MIN_POINTS) return false;
+    const gaps = [];
+    for (let i = 1; i < points.length; i++) gaps.push(horizontalMeters(points[i - 1], points[i]));
+    gaps.sort((a, b) => a - b);
+    return gaps[Math.floor(gaps.length / 2)] <= GPX_TRACK_MAX_MEDIAN_M;
+  }
+  // Loading a saved course for editing: same marker rule as a fresh GPX import (PC web only; elsewhere this is
+  // the plain copy the callers used before). Coordinates are never changed.
+  function prepareEditPoints(points) {
+    const copy = (points || []).map(point => ({ ...point }));
+    if (!pcSparseEditing() || copy.length < 3) return copy;
+    if (copy.some(point => point.shape)) return copy;                 // device-local save: flags kept as-is
+    if (copy.some(point => point.anchor)) {                           // cloud save with stored edit points
+      copy.forEach((point, i) => {
+        if (i > 0 && i < copy.length - 1 && !point.anchor) point.shape = true;
+        delete point.anchor;
+      });
+      return copy;
+    }
+    return looksLikeGpxTrack(copy) ? markGpxShapePoints(copy) : copy; // legacy GPX save vs. hand-drawn course
+  }
+  // 'edit' tool click on the route line: promote the nearest shape coordinate, or insert a point on the segment
+  // (never changes the line's shape). Returns true when a point was added.
+  function addEditPointAt(screenPoint, tolerancePx = 14) {
+    const pts = state.points;
+    if (!pcSparseEditing() || pts.length < 2) return false;
+    let best = null;
+    let prev = map.project([pts[0].lng, pts[0].lat]);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const next = map.project([pts[i + 1].lng, pts[i + 1].lat]);
+      const dx = next.x - prev.x, dy = next.y - prev.y, len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((screenPoint.x - prev.x) * dx + (screenPoint.y - prev.y) * dy) / len2)) : 0;
+      const d2 = (prev.x + t * dx - screenPoint.x) ** 2 + (prev.y + t * dy - screenPoint.y) ** 2;
+      if (d2 <= tolerancePx * tolerancePx && (!best || d2 < best.d2)) best = { i, t, d2, segPx: Math.sqrt(len2) };
+      prev = next;
+    }
+    if (!best) return false;
+    pushHistory();
+    const a = pts[best.i], b = pts[best.i + 1];
+    // Promote the closer segment end if the click is within 6px of it; otherwise insert on the segment.
+    const closerIsA = best.t <= 0.5;
+    const endGapPx = (closerIsA ? best.t : 1 - best.t) * best.segPx;
+    let index;
+    if (endGapPx <= 6 && closerIsA && a.shape) { index = best.i; delete a.shape; }
+    else if (endGapPx <= 6 && !closerIsA && b.shape) { index = best.i + 1; delete b.shape; }
+    else {
+      index = best.i + 1;
+      pts.splice(index, 0, { lng: a.lng + (b.lng - a.lng) * best.t, lat: a.lat + (b.lat - a.lat) * best.t });
+    }
+    state.selectedVertex = index;
+    syncActiveCoursePoints();
+    renderCourseWorkList();
+    render();
+    toast(state.lang === 'ko' ? '편집 포인트를 추가했습니다. 드래그해 이동하고, 더블클릭하면 삭제됩니다.' : 'Edit point added. Drag to move, double-click to delete.');
+    return true;
+  }
+  // Dragging point i moves only the shape coordinates between its neighbouring edit points, with a smooth
+  // falloff (1 at the point → 0 at the neighbours). Everything outside that span keeps its original form.
+  function buildDragFalloff(i) {
+    const pts = state.points;
+    if (!pcSparseEditing()) return null;
+    let a = null, b = null;
+    for (let j = i - 1; j >= 0; j--) if (isEditAnchor(pts, j)) { a = j; break; }
+    for (let j = i + 1; j < pts.length; j++) if (isEditAnchor(pts, j)) { b = j; break; }
+    const from = a === null ? i : a + 1, to = b === null ? i : b - 1;
+    if (to - from < 1) return null; // no shape coordinates next to this point → plain single-point drag
+    const lo = a ?? i, hi = b ?? i, cum = { [lo]: 0 };
+    for (let k = lo + 1; k <= hi; k++) {
+      const p = pts[k - 1], q = pts[k], cos = Math.cos((p.lat + q.lat) * Math.PI / 360);
+      cum[k] = cum[k - 1] + Math.hypot((q.lng - p.lng) * cos, q.lat - p.lat);
+    }
+    const ease = t => (1 - Math.cos(Math.PI * Math.max(0, Math.min(1, t)))) / 2;
+    const weights = [], orig = [];
+    for (let k = from; k <= to; k++) {
+      orig.push({ ...pts[k] });
+      if (k === i) weights.push(1);
+      else if (k < i) weights.push(ease(cum[i] - cum[lo] > 0 ? (cum[k] - cum[lo]) / (cum[i] - cum[lo]) : 1));
+      else weights.push(ease(cum[hi] - cum[i] > 0 ? (cum[hi] - cum[k]) / (cum[hi] - cum[i]) : 1));
+    }
+    return { from, to, weights, orig, origin: orig[i - from] };
+  }
+  function applyDragFalloff(falloff, lngLat) {
+    const dLng = lngLat.lng - falloff.origin.lng, dLat = lngLat.lat - falloff.origin.lat;
+    for (let k = falloff.from; k <= falloff.to; k++) {
+      const o = falloff.orig[k - falloff.from], w = falloff.weights[k - falloff.from];
+      state.points[k] = { ...o, lng: o.lng + dLng * w, lat: o.lat + dLat * w };
+    }
+  }
+
+  // ---- PC web: 구간 자르기·연결 (gap cut) ----
+  // A route position is a fractional index s = i + t on segment (i, i+1), so A/B can sit anywhere on the line,
+  // and two passes through the same spot (loops, out-and-back) stay distinct because their s (route order) differs.
+  function routeLineCandidates(points, screenPoint, project, tolerancePx = 14) {
+    const hits = [], tol2 = tolerancePx * tolerancePx;
+    let prev = project(points[0]);
+    for (let i = 0; i < points.length - 1; i++) {
+      const next = project(points[i + 1]);
+      const dx = next.x - prev.x, dy = next.y - prev.y, len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((screenPoint.x - prev.x) * dx + (screenPoint.y - prev.y) * dy) / len2)) : 0;
+      const d2 = (prev.x + t * dx - screenPoint.x) ** 2 + (prev.y + t * dy - screenPoint.y) ** 2;
+      if (d2 <= tol2) hits.push({ i, t, d2 });
+      prev = next;
+    }
+    // Contiguous segments near the click are one pass of the route through that spot; keep the closest per pass.
+    const passes = [];
+    for (const h of hits) {
+      const last = passes.at(-1);
+      if (last && h.i - last.lastI <= 1) { last.lastI = h.i; if (h.d2 < last.best.d2) last.best = h; }
+      else passes.push({ lastI: h.i, best: h });
+    }
+    return passes.map(p => ({ s: p.best.i + p.best.t, d2: p.best.d2 }));
+  }
+  function routePosition(points, s) {
+    const last = points.length - 1;
+    let i = Math.floor(Math.max(0, Math.min(last, s))), t = Math.max(0, Math.min(last, s)) - i;
+    if (i >= last) { i = last - 1; t = 1; }
+    if (t > 1 - 1e-9) { i += 1; t = 0; } // snap onto the vertex so joins never duplicate a coordinate
+    if (t < 1e-9) t = 0;
+    const a = points[i], b = points[Math.min(i + 1, last)];
+    return { s: i + t, i, t, lng: a.lng + (b.lng - a.lng) * t, lat: a.lat + (b.lat - a.lat) * t };
+  }
+  function routeKmAt(points, s) {
+    const p = routePosition(points, s);
+    return distanceKm(points.slice(0, p.i + 1)) + (p.t ? distanceKm([points[p.i], p]) : 0);
+  }
+  // front = original points up to A (+ A), removed = A..B (preview), back = (B +) original points after B.
+  // Original coordinates before A and after B are the same objects, untouched; only the joints A/B are new.
+  function splitRouteForGap(points, sA, sB) {
+    if (points.length < 2) return null;
+    let A = routePosition(points, Math.min(sA, sB)), B = routePosition(points, Math.max(sA, sB));
+    if (Math.abs(A.s - B.s) < 1e-9) return null;
+    const joint = p => ({ lng: p.lng, lat: p.lat }); // plain point → shown as an edit point
+    const front = A.t === 0 ? [...points.slice(0, A.i), joint(points[A.i])] : [...points.slice(0, A.i + 1), joint(A)];
+    const back = B.t === 0 ? [joint(points[B.i]), ...points.slice(B.i + 1)] : [joint(B), ...points.slice(B.i + 1)];
+    const removed = [joint(A), ...points.slice(A.i + 1, B.i + 1), joint(B)];
+    return { A, B, front, back, removed };
+  }
+  function joinGapRoute(parts, connection) {
+    return [...parts.front, ...connection.map(p => ({ lng: p.lng, lat: p.lat })), ...parts.back];
+  }
+
+  // ---- Gap cut from the elevation graph: graph x → route distance (m) → route position (same structure as map picks) ----
+  // Profile distance is the cumulative horizontalMeters along the route, so it maps exactly onto routePosition's
+  // fractional index even where the route overlaps itself (loops / out-and-back): distance order, not screen distance.
+  function routeCumulativeMeters(points) {
+    const cum = [0];
+    for (let i = 1; i < points.length; i++) cum.push(cum[i - 1] + horizontalMeters(points[i - 1], points[i]));
+    return cum;
+  }
+  function routePositionAtDistance(points, cum, distance) {
+    const last = points.length - 1, d = Math.max(0, Math.min(cum[last], distance));
+    let lo = 0, hi = last - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (cum[mid] <= d) lo = mid; else hi = mid - 1; }
+    const length = cum[lo + 1] - cum[lo];
+    return routePosition(points, lo + (length > 0 ? (d - cum[lo]) / length : 0));
+  }
+  function routeDistanceAtPosition(cum, pos) {
+    const next = pos.i + 1 < cum.length ? cum[pos.i + 1] : cum[pos.i];
+    return cum[pos.i] + pos.t * (next - cum[pos.i]);
+  }
+  // Click on the PC elevation graph while 구간 자르기 is waiting for A or B. Returns true when the click was consumed.
+  function handleGapCutGraphClick(canvas, clientX) {
+    if (!gapCut || canvas.id !== 'profileChart') return false;
+    if (gapCut.phase !== 'pickA' && gapCut.phase !== 'pickB') return true; // preview/draw: map-side steps only
+    if (profile.samples.length < 2 || !gapCut.cum) {
+      toast(state.lang === 'ko' ? '그래프 계산이 끝난 뒤 선택해 주세요.' : 'Wait for the graph to finish loading.');
+      return true;
+    }
+    const distance = snapDistanceToProfileView(profileDistanceAtClientX(canvas, clientX)); // same x→distance + view snap as normal clicks
+    const pos = routePositionAtDistance(state.points, gapCut.cum, distance);
+    if (gapCut.phase === 'pickA') {
+      gapCut.A = pos;
+      gapCut.candidates = []; gapCut.candidateFor = null; // a graph pick is unambiguous (no pass cycling)
+      gapCut.phase = 'pickB';
+    } else {
+      gapCut.B = pos;
+      if (gapCut.candidateFor !== 'A') { gapCut.candidates = []; gapCut.candidateFor = null; } // keep A's map passes (mixed pick)
+      if (!updateGapCutPreview()) return true;
+    }
+    syncGapCutUi();
+    render();
+    return true;
+  }
+  // A (blue) / B (orange) vertical lines + markers, and the section to delete in red (preview phase, like the map).
+  function drawGapCutOverlay(ctx, g) {
+    const sess = gapCut || segPick;
+    if (!sess?.cum || profile.samples.length < 2) return;
+    const dA = sess.A ? routeDistanceAtPosition(sess.cum, sess.A) : null;
+    const dB = sess.B ? routeDistanceAtPosition(sess.cum, sess.B) : null;
+    if (sess.phase === 'preview' && dA !== null && dB !== null) {
+      const lo = Math.min(dA, dB), hi = Math.max(dA, dB);
+      const x1 = Math.max(0, g.xFor(lo)), x2 = Math.min(g.width, g.xFor(hi));
+      if (x2 > x1) { ctx.fillStyle = 'rgba(239,68,68,.22)'; ctx.fillRect(x1, 0, x2 - x1, g.height); }
+      const run = [profileSampleAt(lo), ...profile.samples.filter(sm => sm.distance > lo && sm.distance < hi), profileSampleAt(hi)].filter(Boolean);
+      if (run.length > 1) {
+        ctx.beginPath();
+        run.forEach((sm, i) => { const x = g.xFor(sm.distance), y = g.yFor(sm.elevation); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+        ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+      }
+    }
+    for (const [distance, color, label] of [[dA, '#38bdf8', 'A'], [dB, '#f59e0b', 'B']]) {
+      if (distance === null) continue;
+      const x = g.xFor(distance);
+      if (x < -1 || x > g.width + 1) continue;
+      const sample = profileSampleAt(distance);
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, g.height); ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+      if (sample) {
+        ctx.beginPath(); ctx.arc(x, g.yFor(sample.elevation), 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      ctx.font = '700 10px Manrope, sans-serif'; ctx.textBaseline = 'top';
+      const left = x > g.width - 16; // keep the label inside the canvas
+      ctx.fillStyle = color; ctx.fillRect(left ? x - 14 : x + 2, 2, 12, 13);
+      ctx.fillStyle = '#0f172a'; ctx.textAlign = 'center'; ctx.fillText(label, (left ? x - 14 : x + 2) + 6, 3.5);
+    }
+  }
+
+  // ---- PC graph-based editing (포인트 추가/선택, 코스 자르기, 구간 삭제) ----
+  // The graph x axis is the cumulative horizontal distance of state.points, so a click maps to a route position
+  // (fractional index) by distance order — overlapping/looping GPX tracks stay unambiguous. Elevation/slope are never edited.
+  function graphPickPosition(canvas, clientX) {
+    const wait = () => toast(state.lang === 'ko' ? '그래프 계산이 끝난 뒤 선택해 주세요.' : 'Wait for the graph to finish loading.');
+    if (profile.samples.length < 2) { wait(); return null; }
+    const cum = routeCumulativeMeters(state.points), total = cum[cum.length - 1];
+    if (!(total > 0) || Math.abs(profile.samples[profile.samples.length - 1].distance - total) > Math.max(5, total * 0.02)) { wait(); return null; } // graph is stale vs. the route
+    const distance = snapDistanceToProfileView(profileDistanceAtClientX(canvas, clientX));
+    const range = profileViewRange(), plotWidth = Math.max(1, canvas.getBoundingClientRect().width - 16);
+    return { cum, distance, pos: routePositionAtDistance(state.points, cum, distance), metersPerPx: (range.end - range.start) / plotWidth };
+  }
+  // Edit point at a route position: reuse an existing edit point, promote a shape coordinate, or insert on the segment.
+  function insertEditPointAtPosition(pos) {
+    const pts = state.points;
+    if (pos.t === 0 && !pts[pos.i].shape) { state.selectedVertex = pos.i; render(); return pos.i; }
+    pushHistory();
+    let index;
+    if (pos.t === 0) { index = pos.i; delete pts[index].shape; }
+    else { index = pos.i + 1; pts.splice(index, 0, { lng: pos.lng, lat: pos.lat }); }
+    state.selectedVertex = index;
+    syncActiveCoursePoints(); renderCourseWorkList(); render();
+    return index;
+  }
+  function syncVertexToGraph(i) { // map selection → graph cursor (same distance axis)
+    if (!pcSparseEditing() || profile.samples.length < 2 || !Number.isInteger(i)) return;
+    const cum = routeCumulativeMeters(state.points);
+    if (Math.abs(profile.samples[profile.samples.length - 1].distance - cum[cum.length - 1]) > Math.max(5, cum[cum.length - 1] * 0.02)) return;
+    selectProfileDistance(cum[i]);
+  }
+  function discardSplit() { if (!splitState) return; splitState.restore?.(); closeSplitHUD(); }
+  function graphCutAt(pos) {
+    const pts = state.points; let index = pos.t === 0 ? pos.i : pos.i + 1, restore = null;
+    if (pos.t === 0 && (index <= 0 || index >= pts.length - 1)) { toast(state.lang === 'ko' ? '시작점이나 끝점은 나눌 수 없습니다. 중간 지점을 선택하세요.' : t('toastCourseCutNeedPoints')); return; }
+    const hadShape = Boolean(pts[index].shape);
+    pushHistory();
+    let marker = pts[index];
+    if (pos.t !== 0) { marker = { lng: pos.lng, lat: pos.lat }; pts.splice(index, 0, marker); }
+    else delete marker.shape;
+    restore = () => { // cancel: leave the route exactly as before (also drops the history entry created for the cut point)
+      if (pts !== state.points || state.points[index] !== marker) return;
+      if (pos.t !== 0) state.points.splice(index, 1); else if (hadShape) marker.shape = true;
+      editHistory.past.pop(); updateUndoRedoUI();
+    };
+    splitState = { splitIndex: index, partA: pts.slice(0, index + 1), partB: pts.slice(index), restore };
+    state.selectedVertex = index;
+    syncActiveCoursePoints(); showSplitHUD(); render();
+    toast(state.lang === 'ko' ? '경로가 구간 A(하늘색)와 구간 B(주황색)로 분할되었습니다. 삭제할 구간을 선택하세요.' : 'Route split into Segment A and B. Select a segment to delete.');
+  }
+  function segPickAccept(pos) { // shared by graph and map clicks
+    const ko = state.lang === 'ko';
+    if (!segPick) {
+      segPick = { phase: 'pickB', A: pos, B: null, parts: null, cum: routeCumulativeMeters(state.points), n: state.points.length, first: state.points[0] };
+    } else {
+      const parts = splitRouteForGap(state.points, segPick.A.s, pos.s);
+      if (!parts) { toast(ko ? 'A와 다른 위치를 B로 선택해 주세요.' : 'Pick B at a different position than A.'); return; }
+      segPick.A = parts.A; segPick.B = parts.B; segPick.parts = parts; segPick.phase = 'preview'; // A before B in route order
+    }
+    state.selectedVertex = null;
+    syncSegPickUi(); render();
+  }
+  function confirmSegPick() {
+    if (!segPick?.parts) return;
+    pushHistory();
+    state.points = joinGapRoute(segPick.parts, []); // everything outside A..B is kept as is
+    state.selectedVertex = null; segPick = null; state.segmentStart = null;
+    syncSegPickUi(); syncActiveCoursePoints(); renderCourseWorkList(); render();
+    toast(t('toastSegmentDeleted'));
+  }
+  function cancelSegPick(message = false) {
+    if (!segPick) return;
+    segPick = null; gapCutKeepProfileOnce = true;
+    syncSegPickUi(); render();
+    if (message) toast(state.lang === 'ko' ? '구간 삭제를 취소했습니다. 경로는 변경되지 않았습니다.' : 'Segment delete cancelled. Route unchanged.');
+  }
+  function syncSegPickUi() {
+    const panel = $('#segDeletePanel'); if (!panel) return;
+    panel.hidden = !segPick;
+    $('#profileChart')?.classList.toggle('gap-cut-pick', Boolean(segPick) || (pcSparseEditing() && state.editorMode && ['edit', 'cut', 'delete-segment'].includes(state.tool)));
+    if (!segPick) return;
+    const ko = state.lang === 'ko', km = p => routeKmAt(state.points, p.s).toFixed(2) + ' km';
+    const text = segPick.phase === 'pickB'
+      ? (ko ? `삭제 구간의 끝 B를 지도 포인트 또는 그래프에서 선택하세요. (A: ${km(segPick.A)})` : `Pick end B on a map point or the graph. (A at ${km(segPick.A)})`)
+      : (ko ? `빨간 구간(${km(segPick.A)} → ${km(segPick.B)})이 삭제됩니다. 확정하거나 B를 다시 선택하세요.` : `Red section (${km(segPick.A)} → ${km(segPick.B)}) will be deleted. Confirm or re-pick B.`);
+    $('#segDeleteStatus').textContent = text;
+    $('#segDeleteConfirmBtn').hidden = segPick.phase !== 'preview';
+    const status = $('#editorStatus'); if (status) status.textContent = text;
+  }
+  function segPickLineFeatures() {
+    if (!segPick?.parts) return [feature(state.points, true)];
+    const { front, back, removed } = segPick.parts, out = [];
+    if (front.length > 1) out.push(feature(front, true));
+    out.push(feature(removed, true, '#ef4444', 'rgba(239,68,68,0.45)'));
+    if (back.length > 1) out.push(feature(back, true));
+    return out;
+  }
+  function segPickPointFeatures() {
+    const pt = (p, color) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { i: -1, color, selected: true } });
+    const out = [];
+    if (segPick.A) out.push(pt(segPick.A, '#38bdf8'));
+    if (segPick.B) out.push(pt(segPick.B, '#f59e0b'));
+    return out;
+  }
+  // Graph click while a PC edit tool is active. Returns true when consumed (otherwise the normal graph lookup runs).
+  function handleEditGraphClick(canvas, clientX) {
+    if (gapCut || canvas.id !== 'profileChart' || !pcSparseEditing() || !state.editorMode) return false;
+    const tool = state.tool;
+    if (tool !== 'edit' && tool !== 'cut' && tool !== 'delete-segment') return false;
+    if (state.points.length < 2) return false;
+    const g = graphPickPosition(canvas, clientX);
+    if (!g) return true;
+    if (tool === 'edit') {
+      let best = -1, gap = Infinity;
+      g.cum.forEach((d, k) => { const diff = Math.abs(d - g.distance); if (isEditAnchor(state.points, k) && diff < gap) { gap = diff; best = k; } });
+      if (best >= 0 && gap <= 9 * g.metersPerPx) { state.selectedVertex = best; render(); selectProfileDistance(g.cum[best]); toast(state.lang === 'ko' ? '편집 포인트를 선택했습니다. 지도에서 드래그해 이동하세요.' : 'Edit point selected. Drag it on the map.'); return true; }
+      const index = insertEditPointAtPosition(g.pos);
+      toast(state.lang === 'ko' ? '편집 포인트를 추가했습니다. 지도에서 드래그해 이동하세요.' : 'Edit point added. Drag it on the map.');
+      const cum2 = routeCumulativeMeters(state.points); selectProfileDistance(cum2[index]);
+      return true;
+    }
+    if (tool === 'cut') { discardSplit(); selectProfileDistance(g.distance); graphCutAt(g.pos); return true; }
+    // delete-segment: a pending map-picked start becomes A
+    if (!segPick && state.segmentStart !== null) { const startPos = routePosition(state.points, state.segmentStart); state.segmentStart = null; segPickAccept(startPos); }
+    selectProfileDistance(g.distance);
+    segPickAccept(g.pos);
+    return true;
+  }
+
+  const projectRoutePoint = p => map.project([p.lng, p.lat]);
+  function gapCutPick(which, candidates) {
+    // B prefers a pass after A in route order unless another pass is clearly closer on screen.
+    const ranked = candidates.map(c => ({ ...c, score: Math.sqrt(c.d2) + (which === 'B' && gapCut.A && c.s < gapCut.A.s ? 6 : 0) }))
+      .sort((a, b) => a.score - b.score);
+    gapCut.candidates = ranked;
+    gapCut.candidateIndex = 0;
+    gapCut.candidateFor = which;
+    gapCut[which] = routePosition(state.points, ranked[0].s);
+  }
+  function startGapCut() {
+    if (!pcSparseEditing()) return false;
+    if (state.points.length < 2) { toast(t('toastNeedRouteFirst')); return false; }
+    gapCut = { phase: 'pickA', A: null, B: null, parts: null, connection: [], candidates: [], candidateIndex: 0, candidateFor: null,
+      cum: routeCumulativeMeters(state.points) }; // route is frozen during the session → cumulative distances stay valid for the graph
+    state.selectedVertex = null;
+    syncGapCutUi();
+    render();
+    return true;
+  }
+  function cancelGapCut(message = true) {
+    if (!gapCut) return;
+    gapCut = null; // nothing was applied yet → the route is exactly as before
+    gapCutKeepProfileOnce = true; // the graph data is still valid: redraw without the DEM recalculation
+    syncGapCutUi();
+    render();
+    if (message) toast(state.lang === 'ko' ? '구간 자르기를 취소했습니다. 경로는 변경되지 않았습니다.' : 'Section cut cancelled. Route unchanged.');
+  }
+  function handleGapCutClick(e) {
+    if (gapCut.phase === 'pickA' || gapCut.phase === 'pickB') {
+      const candidates = routeLineCandidates(state.points, e.point, projectRoutePoint);
+      if (!candidates.length) { toast(state.lang === 'ko' ? '경로선 위를 클릭해 주세요.' : 'Click on the route line.'); return; }
+      const which = gapCut.phase === 'pickA' ? 'A' : 'B';
+      gapCutPick(which, candidates);
+      if (which === 'A') gapCut.phase = 'pickB';
+      else if (!updateGapCutPreview()) return;
+    } else if (gapCut.phase === 'draw') {
+      gapCut.connection.push({ lng: e.lngLat.lng, lat: e.lngLat.lat });
+    }
+    syncGapCutUi();
+    render();
+  }
+  function updateGapCutPreview() {
+    const parts = splitRouteForGap(state.points, gapCut.A.s, gapCut.B.s);
+    if (!parts) {
+      gapCut.B = null; gapCut.phase = 'pickB';
+      toast(state.lang === 'ko' ? 'A와 다른 위치를 B로 선택해 주세요.' : 'Pick B at a different position than A.');
+      syncGapCutUi(); render();
+      return false;
+    }
+    if (gapCut.B.s < gapCut.A.s) { // keep A before B in route order; the pass list follows the point it belongs to
+      [gapCut.A, gapCut.B] = [gapCut.B, gapCut.A];
+      if (gapCut.candidateFor) gapCut.candidateFor = gapCut.candidateFor === 'A' ? 'B' : 'A';
+    }
+    gapCut.parts = parts;
+    gapCut.phase = 'preview';
+    return true;
+  }
+  function cycleGapCutPass() {
+    if (!gapCut || gapCut.candidates.length < 2) return;
+    gapCut.candidateIndex = (gapCut.candidateIndex + 1) % gapCut.candidates.length;
+    const pos = routePosition(state.points, gapCut.candidates[gapCut.candidateIndex].s);
+    gapCut[gapCut.candidateFor] = pos;
+    if (gapCut.phase === 'preview' && !updateGapCutPreview()) return;
+    syncGapCutUi();
+    render();
+  }
+  function finishGapCut() {
+    if (!gapCut || gapCut.phase !== 'draw') return;
+    const merged = joinGapRoute(gapCut.parts, gapCut.connection);
+    pushHistory(); // snapshot of the untouched original → one 실행 취소 restores it; 다시 실행 re-applies
+    state.points = merged;
+    state.selectedVertex = null;
+    syncActiveCoursePoints(); // marks the course dirty → must be saved again
+    gapCut = null;
+    syncGapCutUi();
+    setEditorTool('edit');
+    renderCourseWorkList();
+    render(); // also reschedules the elevation/slope profile for the whole joined route (DEM sampled as before)
+    toast(state.lang === 'ko' ? '구간을 연결했습니다. 저장하면 코스에 반영됩니다.' : 'Section joined. Save to keep it.');
+  }
+  function gapCutLineFeatures() {
+    if (!gapCut?.parts) return [feature(state.points, true)];
+    const { front, back, removed } = gapCut.parts;
+    const out = [];
+    if (front.length > 1) out.push(feature(front, true));
+    if (gapCut.phase === 'preview') out.push(feature(removed, true, '#ef4444', 'rgba(239,68,68,0.45)'));
+    else out.push(feature([front.at(-1), ...gapCut.connection, back[0]], true, '#facc15', 'rgba(250,204,21,0.45)'));
+    if (back.length > 1) out.push(feature(back, true));
+    return out;
+  }
+  function gapCutPointFeatures() {
+    const pt = (p, color, selected = false) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { i: -1, color, selected } });
+    const out = [];
+    if (gapCut.A) out.push(pt(gapCut.A, '#38bdf8', true));
+    if (gapCut.B) out.push(pt(gapCut.B, '#f59e0b', true));
+    if (gapCut.phase === 'draw') gapCut.connection.forEach(p => out.push(pt(p, '#d8ff43')));
+    return out;
+  }
+  function syncGapCutUi() {
+    const panel = $('#gapCutPanel');
+    if (!panel) return;
+    panel.hidden = !gapCut;
+    $('#profileChart')?.classList.toggle('gap-cut-pick', Boolean(gapCut && (gapCut.phase === 'pickA' || gapCut.phase === 'pickB')));
+    if (!gapCut) return;
+    const ko = state.lang === 'ko';
+    const km = pos => pos ? routeKmAt(state.points, pos.s).toFixed(2) + ' km' : '';
+    const passes = gapCut.candidates.length > 1 && gapCut.phase !== 'draw'
+      ? (ko ? ` · 이 위치를 ${gapCut.candidates.length}번 통과합니다 (${gapCut.candidateIndex + 1}/${gapCut.candidates.length})` : ` · ${gapCut.candidates.length} passes here`) : '';
+    const text = {
+      pickA: ko ? '1단계: 경로선 위 또는 하단 그래프에서 자를 시작점 A를 클릭하세요.' : 'Step 1: click start cut point A on the route or the elevation graph.',
+      pickB: ko ? `2단계: 지도 또는 그래프에서 종료점 B를 클릭하세요. (A: ${km(gapCut.A)} 지점${passes})` : `Step 2: click end cut point B on the map or graph. (A at ${km(gapCut.A)}${passes})`,
+      preview: ko ? `빨간 구간(${km(gapCut.A)} → ${km(gapCut.B)})이 제거됩니다${passes}. 확인하면 제거합니다.` : `Red section (${km(gapCut.A)} → ${km(gapCut.B)}) will be removed${passes}.`,
+      draw: ko ? `3단계: A(파랑)에서 B(주황)까지 지도를 클릭해 새 경로를 그리세요. 새 점 ${gapCut.connection.length}개` : `Step 3: click the map to draw from A (blue) to B (orange). ${gapCut.connection.length} new points`
+    }[gapCut.phase];
+    $('#gapCutStatus').textContent = text;
+    $('#gapCutNextPassBtn').hidden = !(gapCut.candidates.length > 1 && gapCut.phase !== 'draw');
+    $('#gapCutConfirmBtn').hidden = gapCut.phase !== 'preview';
+    $('#gapCutUndoPointBtn').hidden = gapCut.phase !== 'draw';
+    $('#gapCutUndoPointBtn').disabled = !gapCut.connection.length;
+    $('#gapCutFinishBtn').hidden = gapCut.phase !== 'draw';
+    const status = $('#editorStatus');
+    if (status) status.textContent = text;
+  }
+
   function render() {
+    if (segPick && (segPick.n !== state.points.length || segPick.first !== state.points[0])) { segPick = null; syncSegPickUi(); } // route replaced (undo/redo/other edit)
     const routeSource = map.getSource('route'), pointSource = map.getSource('route-points');
     const lineFeatures = [];
     if (splitState && splitState.partA.length > 1 && splitState.partB.length > 1) {
@@ -2258,6 +2846,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     } else if (state.editorMode && state.courses.length) {
       for (const c of state.courses) {
         if (window.matchMedia('(max-width: 768px)').matches && c.id !== state.selectedCourseId) continue;
+        if (gapCut && c.id === state.selectedCourseId) { lineFeatures.push(...gapCutLineFeatures()); continue; }
+        if (segPick && c.id === state.selectedCourseId) { lineFeatures.push(...segPickLineFeatures()); continue; }
         if (c.points.length > 1) {
           lineFeatures.push(feature(c.points, c.id === state.selectedCourseId));
         }
@@ -2271,7 +2861,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     routeSource.setData(routeCollection);
 
     const showEditorPoints = state.editorMode && !(window.matchMedia('(max-width: 768px)').matches && mobileRoutePointsHidden);
-    const pointFeatures = (showEditorPoints ? state.points : []).map((p, i) => {
+    const pointFeatures = (showEditorPoints ? state.points : []).flatMap((p, i) => {
+      if (!isEditAnchor(state.points, i)) return []; // PC GPX shape-only coordinate: line only, no marker
       let ptColor = null;
       let isSelected = state.editorMode && (state.selectedVertex === i || (state.tool === 'delete-segment' && state.segmentStart === i));
       if (splitState) {
@@ -2286,13 +2877,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       }
       const props = { i, selected: isSelected };
       if (ptColor) props.color = ptColor;
-      return {
+      return [{
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
         properties: props
-      };
+      }];
     });
-    pointSource.setData({ type: 'FeatureCollection', features: pointFeatures });
+    // During 구간 자르기 only A, B and the newly drawn connection points are shown.
+    pointSource.setData({ type: 'FeatureCollection', features: gapCut ? gapCutPointFeatures() : segPick ? segPickPointFeatures() : pointFeatures });
 
     $('#points').textContent = state.points.length;
     const curKm = distanceKm(state.points);
@@ -2307,7 +2899,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       mobileCourseNameEl.textContent = (curCourse && curCourse.name) ? curCourse.name : t('brandSubtitle');
     }
     renderGpsRecordingRoute();
-    scheduleProfile();
+    // 구간 자르기 session: the route is unchanged, so keep the graph data (A/B picks must not blank it or re-query DEM).
+    const keepProfile = (gapCut || segPick || gapCutKeepProfileOnce) && profile.samples.length > 1;
+    gapCutKeepProfileOnce = false;
+    if (keepProfile) drawProfile(); else scheduleProfile();
   }
 
   function distanceKm(ps) { let d = 0; for (let i = 1; i < ps.length; i++) { const a = ps[i - 1], b = ps[i], r = Math.PI / 180, x = (b.lng - a.lng) * r * Math.cos((a.lat + b.lat) * r / 2), y = (b.lat - a.lat) * r; d += 6371 * Math.sqrt(x * x + y * y) } return d }
@@ -2433,9 +3028,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function renderGpsRecordingRoute() {
     const startedAt = performance.now();
     gpsRecordingLastMapRenderAt = startedAt;
+    const coordinates = gpsRecording.points.map(point => [point.lng, point.lat]);
+    // Offline (Native) map: same recorded points, same look (#38bdf8 line + glow). Sent before the web-source check,
+    // because offline the web style may never load and then the web source does not exist.
+    pushNativeGpsRoute(coordinates);
     const source = typeof map?.getSource === 'function' ? map.getSource('gps-recording-route') : null;
     if (!source) return;
-    const coordinates = gpsRecording.points.map(point => [point.lng, point.lat]);
     source.setData(coordinates.length > 1 ? {
       type: 'FeatureCollection',
       features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } }]
@@ -3222,6 +3820,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
+    if (canvas.id === 'profileChart' && (gapCut || segPick)) drawGapCutOverlay(ctx, { xFor, yFor, width, height });
   }
   function drawProfile() {
     const canvas = $('#profileChart');
@@ -3376,6 +3975,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   map.on('click', e => {
     if (adminRegionPicker) return;
     if (!state.editorMode) return;
+    if (gapCut) { handleGapCutClick(e); return; }
+    if (state.tool === 'edit' && pcSparseEditing()) {
+      // PC 포인트 추가: click the route line (not an existing marker) to place an edit point there.
+      if (map.getLayer('route-points') && map.queryRenderedFeatures(e.point, { layers: ['route-points'] }).length) return;
+      addEditPointAt(e.point);
+      return;
+    }
     if (state.tool === 'draw') {
       if (map.getLayer('route-points') && map.queryRenderedFeatures(e.point, { layers: ['route-points'] }).length) return;
       pushHistory();
@@ -3393,7 +3999,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     let dragIndex = null;
 
     function onDown(e) {
-      if (adminRegionPicker) return;
+      if (adminRegionPicker || gapCut) return; // gap-cut markers are not draggable route vertices
       if (!state.editorMode || !state.points.length) return;
       const features = map.queryRenderedFeatures(e.point, { layers: ['route-points'] });
       if (!features.length) return;
@@ -3420,6 +4026,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
       if (state.tool === 'delete-segment') {
         e.preventDefault();
+        if (segPick) { segPickAccept(routePosition(state.points, i)); return; } // graph-started A/B: map point can be B
         if (state.segmentStart === null) {
           state.segmentStart = i;
           state.selectedVertex = i;
@@ -3454,9 +4061,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       e.preventDefault();
       state.selectedVertex = i;
       render();
+      syncVertexToGraph(i); // map selection → same position on the graph
       isDragging = true;
       let dragHistorySaved = false;
       dragIndex = i;
+      const falloff = buildDragFalloff(i); // null → original single-point drag
       map.getCanvas().style.cursor = 'grabbing';
       map.dragPan.disable();
 
@@ -3468,7 +4077,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
           pushHistory();
           dragHistorySaved = true;
         }
-        state.points[dragIndex] = { lng: ev.lngLat.lng, lat: ev.lngLat.lat };
+        if (falloff) applyDragFalloff(falloff, ev.lngLat);
+        else state.points[dragIndex] = { lng: ev.lngLat.lng, lat: ev.lngLat.lat };
         syncActiveCoursePoints();
         render();
       }
@@ -3498,7 +4108,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   setupVertexInteractions();
 
   function removeVertex(event) {
-    if (adminRegionPicker) return;
+    if (adminRegionPicker || gapCut) return;
     if (!state.editorMode) return;
     event.preventDefault();
     event.originalEvent?.stopPropagation();
@@ -3601,6 +4211,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   $('#exportBtn').addEventListener('click', async () => {
+    if (blockedByGapCut()) return;
     if (state.points.length < 2) return toast(t('toastNeedRouteFirst'));
     const xml = gpxString();
     if (!xml) return toast(t('toastNeedRouteFirst'));
@@ -3646,7 +4257,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         return;
       }
       pushHistory();
-      state.points = pts;
+      state.points = markGpxShapePoints(pts); // PC: only start/end markers; full geometry kept
       state.selectedVertex = null;
       const name = xml.querySelector('trk>name,name')?.textContent?.trim() || f.name.replace(/\.gpx$/i, '');
       const cur = getActiveCourse();
@@ -3671,18 +4282,76 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   });
 
+  // PC web only: saved courses grouped into collapsible folders by region display name (unassigned → own folder).
+  const PC_SAVED_FOLDERS_KEY = 'powderline.pcSavedCollapsedFolders';
+  const PC_SAVED_UNASSIGNED = '__unassigned__';
+  const pcSavedCollapsedFolders = new Set((() => {
+    try { const v = JSON.parse(localStorage.getItem(PC_SAVED_FOLDERS_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+  })());
+  function groupSavedByRegion(saved) {
+    const groups = new Map();
+    saved.forEach((route, index) => {
+      const key = route.region ? String(route.region) : PC_SAVED_UNASSIGNED;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(index);
+    });
+    const order = key => key === PC_SAVED_UNASSIGNED ? Infinity : (regions[key]?.sortOrder ?? 9999);
+    return [...groups.entries()]
+      .map(([key, indexes]) => ({ key, indexes, label: key === PC_SAVED_UNASSIGNED ? '지역 미지정' : (regions[key]?.label || key) }))
+      .sort((a, b) => order(a.key) - order(b.key) || a.label.localeCompare(b.label));
+  }
+  // PC sidebar list: own cloud courses / device-only courses get a delete button next to the item.
+  const savedRowHtml = (r, i) => '<div class="saved-row"><button class="saved-item" data-i="' + i + '"><span>' + escapeHtml(r.name) + '</span><small>' + r.km.toFixed(1) + ' km' + (r.syncStatus === 'pending' ? ' · 동기화 대기' : '') + '</small></button>'
+    + (canDeleteSavedRoute(r) ? '<button class="saved-delete" type="button" data-i="' + i + '" aria-label="' + escapeHtml(r.name) + ' 코스 삭제">삭제</button>' : '') + '</div>';
+
+  // PC sidebar: region name + course count only. The course rows live in the region modal.
+  function renderPcSavedTree() {
+    return groupSavedByRegion(state.saved).map(({ key, indexes, label }) =>
+      '<button type="button" class="pc-saved-folder pc-saved-region" data-folder="' + escapeHtml(key) + '" aria-haspopup="dialog">' +
+      '<span class="material-symbols-outlined" aria-hidden="true">folder</span><span class="pc-saved-folder-name">' + escapeHtml(label) + '</span>' +
+      '<span class="pc-saved-folder-count">' + indexes.length + '</span></button>').join('');
+  }
+  function closePcRegionModal() {
+    pcRegionModalKey = null;
+    const m = $('#pcRegionCoursesModal'); if (m) m.hidden = true;
+  }
+  function renderPcRegionModal() {
+    const m = $('#pcRegionCoursesModal'); if (!m || pcRegionModalKey === null) return;
+    const group = groupSavedByRegion(state.saved).find(g => g.key === pcRegionModalKey);
+    if (!group) { closePcRegionModal(); return; }
+    $('#pcRegionCoursesTitle').textContent = group.label + ' · ' + group.indexes.length;
+    const body = $('#pcRegionCoursesBody');
+    body.innerHTML = group.indexes.map(i => savedRowHtml(state.saved[i], i)).join('');
+    bindSavedRowActions(body);
+    m.hidden = false;
+  }
+  function openPcRegionModal(key) {
+    if (document.body.dataset.pcWeb !== 'true') return;
+    if (!$('#pcAccountModal')?.hidden) closePcAccountModal();
+    if (!$('#pcAdminModal')?.hidden) closePcAdminModal();
+    pcRegionModalKey = key;
+    renderPcRegionModal();
+  }
+
   function renderSaved() {
     const el = $('#savedList');
     $('#savedCount').textContent = state.saved.length;
     if (!state.saved.length) {
       el.innerHTML = '<p class="empty" data-i18n="emptySaved">' + t('emptySaved') + '</p>';
+      closePcRegionModal();
       return;
     }
-    // PC sidebar list: own cloud courses / device-only courses get a delete button next to the item.
-    el.innerHTML = state.saved.map((r, i) => '<div class="saved-row"><button class="saved-item" data-i="' + i + '"><span>' + escapeHtml(r.name) + '</span><small>' + r.km.toFixed(1) + ' km' + (r.syncStatus === 'pending' ? ' · 동기화 대기' : '') + '</small></button>'
-      + (canDeleteSavedRoute(r) ? '<button class="saved-delete" type="button" data-i="' + i + '" aria-label="' + escapeHtml(r.name) + ' 코스 삭제">삭제</button>' : '') + '</div>').join('');
+    el.innerHTML = document.body.dataset.pcWeb === 'true'
+      ? renderPcSavedTree()
+      : state.saved.map(savedRowHtml).join('');
+    el.querySelectorAll('.pc-saved-region').forEach(b => b.addEventListener('click', () => openPcRegionModal(b.dataset.folder)));
     renderMobileSavedRoutes();
-    el.querySelectorAll('.saved-delete').forEach(b => b.addEventListener('click', async event => {
+    if (document.body.dataset.pcWeb !== 'true') bindSavedRowActions(el);
+    if (pcRegionModalKey !== null) renderPcRegionModal();
+  }
+
+  function bindSavedRowActions(root) {
+    root.querySelectorAll('.saved-delete').forEach(b => b.addEventListener('click', async event => {
       event.stopPropagation();
       const item = state.saved[+b.dataset.i];
       if (!canDeleteSavedRoute(item)) { toast('직접 만든 코스만 삭제할 수 있습니다.'); return; }
@@ -3694,10 +4363,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       renderSaved();
       toast(state.lang === 'ko' ? '코스가 삭제되었습니다.' : 'Course deleted.');
     }));
-    el.querySelectorAll('.saved-item').forEach(b => b.addEventListener('click', () => {
+    root.querySelectorAll('.saved-item').forEach(b => b.addEventListener('click', () => {
       const item = state.saved[+b.dataset.i];
       pushHistory();
-      state.points = item.points.map(point => ({ ...point }));
+      state.points = prepareEditPoints(item.points);
       state.selectedVertex = null;
       const cur = getActiveCourse();
       if (cur) {
@@ -3712,11 +4381,16 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         const bounds = state.points.reduce((box, point) => box.extend([point.lng, point.lat]), new mapboxgl.LngLatBounds([state.points[0].lng, state.points[0].lat], [state.points[0].lng, state.points[0].lat]));
         map.fitBounds(bounds, { padding: 90, duration: 900, maxZoom: 13 });
       }
+      closePcRegionModal();
       toast(t('toastLoadedSaved'));
     }));
   }
 
   async function saveActiveCourse() {
+    if (gapCut) { // not saved until the new section is connected
+      toast(state.lang === 'ko' ? '새 구간을 연결 완료한 뒤 저장해 주세요.' : 'Join the new section before saving.');
+      return false;
+    }
     if (state.points.length < 2) {
       toast(t('toastNeedRouteFirst'));
       return false;
@@ -3738,7 +4412,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         user_id: state.session.user.id,
         name,
         region: $('#region').value,
-        points: state.points.map(point => ({ lng: Number(point.lng), lat: Number(point.lat) })),
+        points: encodeEditPointsForSave(state.points),
         distance_km: km,
         updated_at: new Date().toISOString()
       };
@@ -3885,6 +4559,26 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   $('#undoBtn').addEventListener('click', undo);
   $('#redoBtn').addEventListener('click', redo);
+
+  // PC 구간 자르기·연결 panel
+  $('#gapCutNextPassBtn')?.addEventListener('click', cycleGapCutPass);
+  $('#gapCutConfirmBtn')?.addEventListener('click', () => {
+    if (gapCut?.phase !== 'preview') return;
+    gapCut.phase = 'draw'; // removed section is dropped from the preview; route data changes only on 연결 완료
+    gapCut.candidates = [];
+    syncGapCutUi();
+    render();
+  });
+  $('#gapCutUndoPointBtn')?.addEventListener('click', () => {
+    if (gapCut?.phase !== 'draw' || !gapCut.connection.length) return;
+    gapCut.connection.pop();
+    syncGapCutUi();
+    render();
+  });
+  $('#gapCutFinishBtn')?.addEventListener('click', finishGapCut);
+  $('#segDeleteConfirmBtn')?.addEventListener('click', confirmSegPick);
+  $('#segDeleteCancelBtn')?.addEventListener('click', () => cancelSegPick(true));
+  $('#gapCutCancelBtn')?.addEventListener('click', () => { cancelGapCut(true); setEditorTool('edit'); });
 
   $('#deleteVertexBtn').addEventListener('click', () => {
     if (!state.points.length) return toast(t('toastNoPointsToDelete'));
@@ -4247,6 +4941,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     select.value = routes.some(({ index }) => String(index) === previous) ? previous : '';
   }
 
+  const pcLayoutOrigins = new Map();
+  let pcAdminActiveTab = 'users';
+  // Must be initialised before initMobileHud() → syncMobileMode() → syncPcWebLayout() → getPcMapCtrlNodes() runs;
+  // declaring it later threw a TDZ ReferenceError that aborted app.js before initializeSupabase() (stuck on 계정 상태).
+  let pcMapCtrlNodes = null;
+
   function initMobileHud() {
     const mobileMedia = window.matchMedia('(max-width: 768px)');
     const profilePanel = $('#profilePanel');
@@ -4378,6 +5078,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
           if (!desktopProfileCollapsed) drawProfile();
         });
       }
+      if (typeof syncPcWebLayout === 'function') {
+        syncPcWebLayout(!isNativeMobileApp() && !mobileMedia.matches);
+      }
+      if (typeof syncMobileAuthState === 'function') syncMobileAuthState(); // PC ↔ mobile web auth styling
     }
 
     const mobileRegion = $('#mobileRegionSelect');
@@ -4485,15 +5189,506 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
   initMobileHud();
 
+  // ==========================================================================
+  // PC Web Layout & Unified Admin Console (Isolated from Android Native App)
+  // ==========================================================================
+
+  function moveNodeWithOrigin(node, targetParent) {
+    if (!node || !targetParent) return;
+    if (!pcLayoutOrigins.has(node)) {
+      pcLayoutOrigins.set(node, { parent: node.parentNode, nextSibling: node.nextSibling });
+    }
+    if (node.parentNode !== targetParent) {
+      targetParent.appendChild(node);
+    }
+  }
+
+  function restoreNodeToOrigin(node) {
+    const origin = pcLayoutOrigins.get(node);
+    if (!origin || !origin.parent) return;
+    if (node.parentNode !== origin.parent) {
+      if (origin.nextSibling && origin.nextSibling.parentNode === origin.parent) {
+        origin.parent.insertBefore(node, origin.nextSibling);
+      } else {
+        origin.parent.appendChild(node);
+      }
+    }
+  }
+
+  // PC right-top map controls -------------------------------------------------------------------------------
+  // (pcMapCtrlNodes is declared with pcLayoutOrigins: syncPcWebLayout already runs from initMobileHud() at startup.)
+  function getPcMapCtrlNodes() {
+    if (!pcMapCtrlNodes) { // resolved once from the map's own DOM (before they are moved); no Mapbox private API
+      const root = $('#map');
+      const pick = selector => root?.querySelector(selector)?.closest('.mapboxgl-ctrl');
+      const nodes = [pick('.mapboxgl-ctrl-geolocate'), pick('.mapboxgl-ctrl-zoom-in')].filter(Boolean);
+      if (nodes.length === 2) pcMapCtrlNodes = nodes;
+    }
+    return pcMapCtrlNodes || [];
+  }
+  // 2D = pitch 0; 3D = the region's default tilt. Center/zoom/bearing are left untouched by easeTo.
+  function pcSetMapView(mode) {
+    const pitch = mode === '2d' ? 0 : (Number(regions[$('#region')?.value]?.pitch) || 54);
+    map.easeTo({ pitch, duration: 700 });
+    syncPcViewSwitch(pitch);
+  }
+  function syncPcViewSwitch(pitch = map.getPitch()) {
+    const is3d = pitch > 1;
+    for (const [id, on] of [['#pcView2dBtn', !is3d], ['#pcView3dBtn', is3d]]) {
+      const button = $(id);
+      if (!button) continue;
+      button.classList.toggle('active', on);
+      button.setAttribute('aria-pressed', String(on));
+    }
+  }
+
+  function syncPcWebLayout(enable) {
+    const active = Boolean(enable) && !isNativeMobileApp();
+    const topHeader = $('#pcTopHeader');
+    const brandSlot = $('#pcHeaderBrandSlot');
+    const accountModalBody = $('#pcAccountModalBody');
+    const brandHeader = $('.sidebar .brand-header') || $('#pcHeaderBrandSlot .brand-header');
+    const regionSelect = $('#region');
+    const styleSwitch = $('.sidebar .style-switch') || $('#pcHeaderControlsSlot .style-switch') || $('#pcMapStyleSlot .style-switch');
+    const mapControls = $('#pcMapControls');
+    const mapNavNodes = getPcMapCtrlNodes(); // existing Mapbox locate + zoom/compass groups (reused, not recreated)
+    const authPanel = $('.auth-panel');
+    const settingsNodes = [...document.querySelectorAll('.sidebar > details.settings, #pcAccountModalBody > details.settings')];
+    const profileTooltip = $('#profileTooltip');
+    const wasActive = document.body.dataset.pcWeb === 'true';
+
+    if (active) {
+      document.body.dataset.pcWeb = 'true';
+      if (topHeader) topHeader.hidden = false;
+      moveNodeWithOrigin(brandHeader, brandSlot);
+      // #region stays (or returns) in its own place: the top of the sidebar controls, above 코스 만들기 / 표시 설정.
+      restoreNodeToOrigin(regionSelect);
+      if (mapControls) mapControls.hidden = false;
+      moveNodeWithOrigin(styleSwitch, $('#pcMapStyleSlot')); // map right-top only; no longer in the header
+      mapNavNodes.forEach(node => moveNodeWithOrigin(node, $('#pcMapNavSlot'))); // order: locate → zoom in/out → compass
+      moveNodeWithOrigin(authPanel, accountModalBody);
+      settingsNodes.forEach(node => moveNodeWithOrigin(node, accountModalBody));
+      // Selected-point readout: out of the graph, into the panel title (same single element → no duplicate).
+      moveNodeWithOrigin(profileTooltip, $('#profileToggle'));
+      if (profileTooltip?.parentNode && $('#profileChevron')?.parentNode === profileTooltip.parentNode) {
+        profileTooltip.parentNode.insertBefore(profileTooltip, $('#profileChevron')); // title · readout · chevron
+      }
+      syncPcHeaderAuth();
+    } else {
+      delete document.body.dataset.pcWeb;
+      if (topHeader) topHeader.hidden = true;
+      closePcAccountModal();
+      closePcAdminModal();
+      if (mapControls) mapControls.hidden = true;
+      [brandHeader, regionSelect, styleSwitch, ...mapNavNodes, authPanel, ...settingsNodes, profileTooltip].forEach(restoreNodeToOrigin);
+    }
+    syncPcViewSwitch();
+    if (wasActive !== active) renderSaved(); // folder tree (PC) ↔ flat list (others)
+    applyPcEditorLabels();
+    requestAnimationFrame(() => { map.resize(); drawProfile(); });
+  }
+
+  function syncPcHeaderAuth() {
+    const adminBtn = $('#pcAdminOpenBtn');
+    const accountLabel = $('#pcAccountBtnLabel');
+    const badge = $('#pcAdminPendingBadge');
+    const tabBadge = $('#pcAdminTabPendingBadge');
+    const isAdmin = isApprovedAdmin();
+    const signedIn = Boolean(state.session?.user);
+    const pendingCount = state.pendingUsers ? state.pendingUsers.length : 0;
+
+    if (accountLabel) {
+      if (signedIn) {
+        const nick = state.profile?.nickname || state.session.user.user_metadata?.nickname || state.session.user.email || '계정·설정';
+        accountLabel.textContent = nick;
+      } else {
+        accountLabel.textContent = '계정·설정';
+      }
+    }
+    if (adminBtn) adminBtn.hidden = !isAdmin;
+    for (const el of [badge, tabBadge]) {
+      if (!el) continue;
+      el.textContent = String(pendingCount);
+      el.hidden = !isAdmin || pendingCount === 0;
+    }
+    if (!isAdmin && !$('#pcAdminModal')?.hidden) {
+      closePcAdminModal();
+    }
+  }
+
+  // ---- PC 회원탈퇴 (UI + safe client call). The account is deleted ONLY by the server-side Edge Function 'delete-my-account'
+  // (JWT-verified, password re-auth, atomic DB function). The browser never holds a service key and never sends a user id. ----
+  let pcWithdrawBusy = false;
+  function withdrawText() { return state.lang === 'ko' ? {
+    title: '회원탈퇴',
+    info: '<p><strong>탈퇴하면 계정이 영구 삭제되며 복구할 수 없습니다.</strong></p><p>삭제되는 데이터</p><ul><li>계정 정보(이메일, 닉네임, 승인 상태)</li><li>내가 클라우드에 저장한 모든 코스</li><li>내 파티 멤버십·초대 기록, 그리고 나 혼자 남은 내 파티</li><li>이 브라우저에 저장된 내 계정의 로컬 캐시와 로그인 세션</li></ul><p>삭제되지 않는 것: 다른 회원의 데이터와 공유 데이터(지역·스키장 정보). 다른 멤버가 있는 파티의 리더이거나 마지막 관리자라면 탈퇴할 수 없으며, 정리 후 다시 시도해야 합니다.</p>',
+    pw: '비밀번호 확인 (본인 확인)', ack: '위 내용을 확인했으며 계정과 데이터가 영구 삭제됨을 이해합니다.', cancel: '취소', submit: '회원탈퇴', busy: '처리 중…',
+  } : {
+    title: 'Delete account',
+    info: '<p><strong>Your account will be permanently deleted and cannot be recovered.</strong></p><p>What is deleted</p><ul><li>Account info (email, nickname, approval status)</li><li>All courses you saved to the cloud</li><li>Your party memberships/invitations and parties where you are the only member</li><li>Local caches of your account and the login session in this browser</li></ul><p>Not deleted: other members\' data and shared data (regions, ski data). You cannot delete the account while you lead a party with other members or are the last administrator; resolve that first.</p>',
+    pw: 'Confirm password (identity check)', ack: 'I understand that my account and data will be permanently deleted.', cancel: 'Cancel', submit: 'Delete account', busy: 'Working…',
+  }; }
+  function syncPcWithdrawSubmit() {
+    const btn = $('#pcWithdrawSubmitBtn'); if (!btn) return;
+    btn.disabled = pcWithdrawBusy || !$('#pcWithdrawPassword')?.value || !$('#pcWithdrawAck')?.checked;
+  }
+  function openPcWithdrawModal() {
+    if (document.body.dataset.pcWeb !== 'true' || !state.session?.user) return;
+    const tx = withdrawText();
+    $('#pcWithdrawTitle').textContent = tx.title; $('#pcWithdrawInfo').innerHTML = tx.info; $('#pcWithdrawPwLabel').textContent = tx.pw;
+    $('#pcWithdrawAckLabel').textContent = tx.ack; $('#pcWithdrawCancelBtn').textContent = tx.cancel; $('#pcWithdrawSubmitBtn').textContent = tx.submit;
+    $('#pcWithdrawPassword').value = ''; $('#pcWithdrawAck').checked = false;
+    const err = $('#pcWithdrawError'); err.hidden = true; err.textContent = '';
+    syncPcWithdrawSubmit();
+    $('#pcWithdrawModal').hidden = false;
+    $('#pcWithdrawPassword').focus();
+  }
+  function closePcWithdrawModal() {
+    if (pcWithdrawBusy) return; // never abandon a request that is in flight
+    const m = $('#pcWithdrawModal'); if (m) m.hidden = true;
+    const pw = $('#pcWithdrawPassword'); if (pw) pw.value = '';
+  }
+  function withdrawErrorMessage(code, kind) {
+    const ko = state.lang === 'ko';
+    const untouched = ko ? ' 계정과 데이터는 변경되지 않았습니다.' : ' Your account and data were not changed.';
+    const map = {
+      PASSWORD_INVALID: ko ? '비밀번호가 올바르지 않습니다.' + untouched : 'Incorrect password.' + untouched,
+      PARTY_LEADER: ko ? '다른 멤버가 있는 파티의 리더입니다. 파티를 해산하거나 멤버를 정리한 뒤 다시 시도해 주세요.' + untouched : 'You lead a party that has other members. Disband it or remove the members first.' + untouched,
+      LAST_ADMIN: ko ? '마지막 관리자 계정은 탈퇴할 수 없습니다. 다른 관리자를 지정한 뒤 시도해 주세요.' + untouched : 'The last administrator cannot be deleted. Appoint another administrator first.' + untouched,
+      ROUTE_IN_USE: ko ? '내 코스가 다른 회원의 파티에서 사용 중입니다. 해당 파티에서 코스를 변경한 뒤 다시 시도해 주세요.' + untouched : 'One of your courses is used by another member\'s party. Change it there first.' + untouched,
+      UNAUTHORIZED: ko ? '로그인이 만료되었습니다. 다시 로그인한 뒤 시도해 주세요.' : 'Your session expired. Sign in again and retry.',
+      NOT_DEPLOYED: ko ? '회원탈퇴 서버 기능이 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.' + untouched : 'The account deletion service is not set up yet. Please contact the administrator.' + untouched,
+      NETWORK: ko ? '서버 응답을 확인하지 못했습니다. 로그아웃 후 다시 로그인해 계정 상태를 확인해 주세요.' : 'No response from the server. Sign out and back in to check the account status.',
+    };
+    return map[code] || (ko ? '회원탈퇴에 실패했습니다.' + untouched : 'Account deletion failed.' + untouched);
+  }
+  async function submitPcWithdraw(event) {
+    event.preventDefault();
+    if (pcWithdrawBusy || document.body.dataset.pcWeb !== 'true') return;
+    const uid = state.session?.user?.id, password = $('#pcWithdrawPassword').value;
+    if (!supabaseClient || !uid || !password || !$('#pcWithdrawAck').checked) return;
+    const errEl = $('#pcWithdrawError'); errEl.hidden = true;
+    pcWithdrawBusy = true; syncPcWithdrawSubmit(); $('#pcWithdrawSubmitBtn').textContent = withdrawText().busy;
+    let failure = null;
+    try {
+      // Only the password and an explicit confirmation are sent; the server takes the user id from the verified JWT.
+      const { data, error } = await supabaseClient.functions.invoke('delete-my-account', { body: { password, confirm: true } });
+      if (error) {
+        let code = '';
+        const res = error.context;
+        if (res && typeof res.json === 'function') { try { code = (await res.json())?.code || ''; } catch { } }
+        if (!code) code = res && res.status === 404 ? 'NOT_DEPLOYED' : (res && res.status === 401 ? 'UNAUTHORIZED' : (error.name === 'FunctionsFetchError' ? 'NETWORK' : 'FAILED'));
+        failure = code;
+      } else if (data?.ok !== true) failure = data?.code || 'FAILED';
+    } catch (e) { failure = 'NETWORK'; }
+    pcWithdrawBusy = false; $('#pcWithdrawSubmitBtn').textContent = withdrawText().submit; syncPcWithdrawSubmit();
+    $('#pcWithdrawPassword').value = ''; syncPcWithdrawSubmit();
+    if (failure) { // nothing local is touched when the server did not confirm the deletion
+      errEl.textContent = withdrawErrorMessage(failure); errEl.hidden = false; return;
+    }
+    // Server confirmed: remove this user's local caches and the session, then back to the login screen.
+    try {
+      clearOfflineAccessGrant(uid);
+      for (const prefix of [GPS_RECORDING_STORAGE_PREFIX, GPS_PENDING_ROUTES_PREFIX, CLOUD_ROUTES_CACHE_PREFIX]) localStorage.removeItem(`${prefix}${uid}`);
+      try { await supabaseClient.auth.signOut({ scope: 'local' }); } catch { }
+    } finally {
+      state.session = null; state.profile = null; state.pendingUsers = [];
+      closePcWithdrawModal(); closePcAccountModal(); closePcAdminModal();
+      updateAuthUi(); useLocalRoutes();
+      toast(state.lang === 'ko' ? '회원탈퇴가 완료되었습니다.' : 'Your account has been deleted.');
+    }
+  }
+
+  function openPcAccountModal() {
+    if (document.body.dataset.pcWeb !== 'true') return;
+    closePcRegionModal();
+    const modal = $('#pcAccountModal');
+    if (modal) modal.hidden = false;
+  }
+
+  function closePcAccountModal() {
+    const modal = $('#pcAccountModal');
+    if (modal) modal.hidden = true;
+  }
+
+  function openPcAdminModal(tab = 'users') {
+    if (!isApprovedAdmin()) {
+      toast('관리자 권한이 필요합니다.');
+      return;
+    }
+    closePcRegionModal();
+    const modal = $('#pcAdminModal');
+    if (!modal) return;
+    modal.hidden = false;
+    switchPcAdminTab(tab);
+  }
+
+  function closePcAdminModal() {
+    if (adminRegionPicker) exitAdminRegionPicker(false);
+    const regionsContent = $('#pcAdminRegionsSlot .admin-courses-content');
+    if (regionsContent) restoreNodeToOrigin(regionsContent);
+    const coursesContent = $('#pcAdminCoursesSlot .admin-courses-content');
+    if (coursesContent) {
+      closeAdminRoutePreview();
+      restoreNodeToOrigin(coursesContent);
+    }
+    const modal = $('#pcAdminModal');
+    if (modal) modal.hidden = true;
+  }
+
+  function switchPcAdminTab(tab) {
+    if (!isApprovedAdmin()) {
+      closePcAdminModal();
+      return;
+    }
+    if (pcAdminActiveTab === 'courses' && tab !== 'courses') closeAdminRoutePreview();
+    pcAdminActiveTab = ['users', 'pending', 'courses', 'regions'].includes(tab) ? tab : 'users';
+    const tabs = [
+      ['users', '#pcAdminTabUsers', '#pcAdminPanelUsers'],
+      ['pending', '#pcAdminTabPending', '#pcAdminPanelPending'],
+      ['courses', '#pcAdminTabCourses', '#pcAdminPanelCourses'],
+      ['regions', '#pcAdminTabRegions', '#pcAdminPanelRegions']
+    ];
+    for (const [key, btnSel, panelSel] of tabs) {
+      const btn = $(btnSel), panel = $(panelSel);
+      const isSelected = key === pcAdminActiveTab;
+      if (btn) {
+        btn.classList.toggle('active', isSelected);
+        btn.setAttribute('aria-selected', String(isSelected));
+      }
+      if (panel) panel.hidden = !isSelected;
+    }
+    if (pcAdminActiveTab === 'users') {
+      loadAdminUsersList().then(renderPcAdminUsers);
+    } else if (pcAdminActiveTab === 'pending') {
+      loadPendingUsers().then(renderPcAdminPending);
+    } else if (pcAdminActiveTab === 'courses') {
+      // Reuse the Android admin course viewer as-is (same RPCs, search, paging, map preview, GPX download).
+      const coursesContent = $('#mobileAdminCoursesView .admin-courses-content') || $('#pcAdminCoursesSlot .admin-courses-content');
+      moveNodeWithOrigin(coursesContent, $('#pcAdminCoursesSlot'));
+      renderAdminRoutes();
+      if (adminRoutePage === 0 && !adminRouteLoading) loadAdminRoutes();
+    } else if (pcAdminActiveTab === 'regions') {
+      const regionsContent = $('#mobileAdminRegionsView .admin-courses-content') || $('#pcAdminRegionsSlot .admin-courses-content');
+      moveNodeWithOrigin(regionsContent, $('#pcAdminRegionsSlot'));
+      loadAdminRegions();
+    }
+  }
+
+  function renderPcAdminUsers() {
+    if (!isApprovedAdmin()) return;
+    const listEl = $('#pcAdminUsersList');
+    const summaryEl = $('#pcAdminUsersSummary');
+    if (!listEl) return;
+
+    const query = ($('#pcAdminUserSearch')?.value || '').trim().toLowerCase();
+    const statusFilter = $('#pcAdminUserStatusFilter')?.value || 'all';
+
+    const all = adminUsersCache || [];
+    const totalCount = all.length;
+    const approvedCount = all.filter(u => u.status === 'approved').length;
+    const pendingCount = all.filter(u => u.status === 'pending').length;
+    const rejectedCount = all.filter(u => u.status === 'rejected' || u.status === 'revoked').length;
+
+    if (summaryEl) {
+      summaryEl.innerHTML = `<span>전체 <strong>${totalCount}</strong>명</span><span>승인 완료 <strong>${approvedCount}</strong>명</span><span>승인 대기 <strong>${pendingCount}</strong>명</span><span>거절/차단 <strong>${rejectedCount}</strong>명</span>`;
+    }
+
+    const filtered = all.filter(u => {
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'rejected') {
+          if (u.status !== 'rejected' && u.status !== 'revoked') return false;
+        } else if (u.status !== statusFilter) {
+          return false;
+        }
+      }
+      if (!query) return true;
+      return (u.nickname || '').toLowerCase().includes(query) || (u.email || '').toLowerCase().includes(query);
+    });
+
+    if (!filtered.length) {
+      listEl.innerHTML = '<p class="empty" style="padding:20px;text-align:center;">조건에 해당하는 회원이 없습니다.</p>';
+      return;
+    }
+
+    const statusLabel = s => s === 'approved' ? '승인 완료' : s === 'pending' ? '승인 대기' : '거절/차단';
+    const statusClass = s => s === 'approved' ? 'pc-status-approved' : s === 'pending' ? 'pc-status-pending' : 'pc-status-rejected';
+
+    listEl.innerHTML = `
+      <table class="pc-admin-table">
+        <thead>
+          <tr>
+            <th>닉네임</th>
+            <th>이메일</th>
+            <th>승인 상태</th>
+            <th>권한</th>
+            <th>가입일</th>
+            <th>관리</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(u => {
+            const isSelf = u.id === state.session?.user?.id;
+            const roleLabel = u.role === 'admin' ? '관리자' : '일반 회원';
+            const roleClass = u.role === 'admin' ? 'pc-role-admin' : 'pc-role-member';
+            const dateText = u.created_at ? new Date(u.created_at).toLocaleDateString() : '—';
+            const actions = isSelf
+              ? '<span style="font-size:11px;color:#64748b;">본인 계정</span>'
+              : u.status === 'approved'
+                ? `<button type="button" class="pc-btn-reject" data-pc-user-action="reject" data-user-id="${u.id}">승인 취소</button>`
+                : `<button type="button" class="pc-btn-approve" data-pc-user-action="approve" data-user-id="${u.id}">승인</button>`;
+            return `
+              <tr>
+                <td><strong>${escapeHtml(u.nickname || '익명 라이더')}</strong></td>
+                <td>${escapeHtml(u.email || '—')}</td>
+                <td><span class="pc-status-pill ${statusClass(u.status)}">${statusLabel(u.status)}</span></td>
+                <td><span class="pc-role-pill ${roleClass}">${roleLabel}</span></td>
+                <td>${dateText}</td>
+                <td><div class="pc-admin-row-actions">${actions}</div></td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderPcAdminPending() {
+    if (!isApprovedAdmin()) return;
+    const listEl = $('#pcAdminPendingList');
+    if (!listEl) return;
+
+    if (state.pendingUsersError) {
+      listEl.innerHTML = `<div class="pending-error-notice" style="padding:12px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;font-size:13px;"><strong>조회 오류</strong>: ${escapeHtml(state.pendingUsersError)}</div>`;
+      return;
+    }
+    const pending = state.pendingUsers || [];
+    if (!pending.length) {
+      listEl.innerHTML = '<p class="empty" style="padding:20px;text-align:center;">대기 중인 가입 요청이 없습니다.</p>';
+      return;
+    }
+    listEl.innerHTML = pending.map(u => `
+      <div class="pc-admin-pending-card">
+        <div>
+          <strong style="display:block;font-size:14px;">${escapeHtml(u.nickname || u.email)}</strong>
+          <small style="color:#64748b;font-size:12px;">${escapeHtml(u.email || '')} · ${u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}</small>
+        </div>
+        <div class="pc-admin-row-actions">
+          <button type="button" class="pc-btn-approve" data-pc-user-action="approve" data-user-id="${u.id}">승인</button>
+          <button type="button" class="pc-btn-reject" data-pc-user-action="reject" data-user-id="${u.id}">거절</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function handlePcAdminUserAction(e) {
+    const btn = e.target.closest('[data-pc-user-action]');
+    if (!btn) return;
+    if (!isApprovedAdmin()) {
+      toast('관리자 권한이 필요합니다.');
+      return;
+    }
+    const userId = btn.dataset.userId;
+    const action = btn.dataset.pcUserAction;
+    const newStatus = action === 'approve' ? 'approved' : 'rejected';
+    btn.disabled = true;
+    try {
+      await handleSetUserStatus(userId, newStatus);
+      await loadAdminUsersList();
+      renderPcAdminUsers();
+      renderPcAdminPending();
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function initPcWebUi() {
+    $('#pcAccountOpenBtn')?.addEventListener('click', openPcAccountModal);
+    $('#pcAccountCloseBtn')?.addEventListener('click', closePcAccountModal);
+    $('#pcAccountModal')?.addEventListener('click', e => {
+      if (e.target.id === 'pcAccountModal') closePcAccountModal();
+    });
+
+    $('#pcAdminOpenBtn')?.addEventListener('click', () => openPcAdminModal('users'));
+    $('#pcAdminCloseBtn')?.addEventListener('click', closePcAdminModal);
+    $('#pcAdminModal')?.addEventListener('click', e => {
+      if (e.target.id === 'pcAdminModal') closePcAdminModal();
+    });
+
+    $('#pcAdminTabUsers')?.addEventListener('click', () => switchPcAdminTab('users'));
+    $('#pcAdminTabPending')?.addEventListener('click', () => switchPcAdminTab('pending'));
+    $('#pcView2dBtn')?.addEventListener('click', () => pcSetMapView('2d'));
+    $('#pcView3dBtn')?.addEventListener('click', () => pcSetMapView('3d'));
+    map.on('pitchend', () => syncPcViewSwitch()); // also follows user tilt (drag) and region fly-to
+    $('#pcAdminTabCourses')?.addEventListener('click', () => switchPcAdminTab('courses'));
+    $('#pcAdminTabRegions')?.addEventListener('click', () => switchPcAdminTab('regions'));
+    // Redraw the profile when its PC width changes (layout, panel toggle, sidebar) — not only on window resize.
+    const profileWrap = $('#profilePanel .profile-chart-wrap');
+    if (profileWrap && typeof ResizeObserver === 'function') {
+      let lastWidth = 0;
+      new ResizeObserver(entries => {
+        const width = Math.round(entries[0]?.contentRect?.width || 0);
+        if (document.body.dataset.pcWeb !== 'true' || !width || width === lastWidth) return;
+        lastWidth = width;
+        requestAnimationFrame(drawProfile);
+      }).observe(profileWrap);
+    }
+
+    $('#pcAdminUserSearch')?.addEventListener('input', renderPcAdminUsers);
+    $('#pcAdminUserStatusFilter')?.addEventListener('change', renderPcAdminUsers);
+    $('#pcAdminUsersRefreshBtn')?.addEventListener('click', async e => {
+      if (!isApprovedAdmin()) return;
+      e.currentTarget.disabled = true;
+      try {
+        await loadAdminUsersList();
+        renderPcAdminUsers();
+      } finally {
+        e.currentTarget.disabled = false;
+      }
+    });
+    $('#pcAdminPendingRefreshBtn')?.addEventListener('click', async e => {
+      if (!isApprovedAdmin()) return;
+      e.currentTarget.disabled = true;
+      try {
+        await loadPendingUsers();
+        renderPcAdminPending();
+      } finally {
+        e.currentTarget.disabled = false;
+      }
+    });
+
+    $('#pcWithdrawOpenBtn')?.addEventListener('click', openPcWithdrawModal);
+    $('#pcWithdrawCloseBtn')?.addEventListener('click', closePcWithdrawModal);
+    $('#pcWithdrawCancelBtn')?.addEventListener('click', closePcWithdrawModal);
+    $('#pcWithdrawModal')?.addEventListener('click', e => { if (e.target.id === 'pcWithdrawModal') closePcWithdrawModal(); });
+    $('#pcWithdrawForm')?.addEventListener('submit', submitPcWithdraw);
+    $('#pcWithdrawPassword')?.addEventListener('input', syncPcWithdrawSubmit);
+    $('#pcWithdrawAck')?.addEventListener('change', syncPcWithdrawSubmit);
+    $('#pcRegionCoursesCloseBtn')?.addEventListener('click', closePcRegionModal);
+    $('#pcRegionCoursesModal')?.addEventListener('click', e => { if (e.target.id === 'pcRegionCoursesModal') closePcRegionModal(); });
+    $('#pcAdminUsersList')?.addEventListener('click', handlePcAdminUserAction);
+    $('#pcAdminPendingList')?.addEventListener('click', handlePcAdminUserAction);
+
+    window.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      if (!$('#pcWithdrawModal')?.hidden) closePcWithdrawModal();
+      else if (!$('#pcRegionCoursesModal')?.hidden) closePcRegionModal();
+      else if (!$('#pcAccountModal')?.hidden) closePcAccountModal();
+      else if (!$('#pcAdminModal')?.hidden && !adminRegionPicker) closePcAdminModal();
+    });
+
+    syncPcWebLayout(!isNativeMobileApp() && window.matchMedia('(min-width: 769px)').matches);
+  }
+  initPcWebUi();
+
 
   // ==========================================================================
   // Stitch Mobile Auth Controller (Screens 6b751362408f4979843ace0eca26502d / 70abe4796b054231b135cf11d270684e)
   // ==========================================================================
   function setMobileAuthView(view) {
     mobileAuthActiveView = view === 'signup' ? 'signup' : 'login';
-    const isMobile = window.matchMedia('(max-width: 768px)').matches;
     const isApproved = state.profile?.status === 'approved';
-    if (isMobile && authInitializationComplete && !isApproved) {
+    if (isAuthGateEnabled() && authInitializationComplete && !isApproved) {
       document.body.dataset.mobileAuth = mobileAuthActiveView;
     }
     const checkingView = $('#mobileAuthCheckingView');
@@ -4520,26 +5715,31 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function syncMobileAuthState(customMessage = '') {
-    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    const pcScope = isPcWebAuthScope();
     const signedIn = Boolean(state.session?.user);
     const profile = state.profile;
-    const isApproved = (onlineAuthVerified && profile?.status === 'approved') || offlineAccessActive;
+    // PC web requires a live server approval; the cached offline grant only applies to the existing mobile flow.
+    const isApproved = (onlineAuthVerified && profile?.status === 'approved') || (offlineAccessActive && !pcScope);
     const container = $('#mobileAuthContainer');
     const checkingView = $('#mobileAuthCheckingView');
     const loginView = $('#mobileLoginView');
     const signupView = $('#mobileSignupView');
 
-    if (!isMobile) {
+    if (pcScope) document.body.dataset.authScope = 'pc';
+    else delete document.body.dataset.authScope;
+
+    if (!isAuthGateEnabled()) {
       delete document.body.dataset.mobileAuth;
       if (container) container.hidden = true;
       return;
     }
 
-    if (!introPlaybackComplete || !authInitializationComplete) {
+    const introDone = introPlaybackComplete; // PC web: set only by video end / skip / playback failure (see initMobileAuthInteractions); auth results never end the intro
+    if (!introDone || !authInitializationComplete) {
       document.body.dataset.mobileAuth = 'checking';
       if (container) container.hidden = false;
       if (checkingView) checkingView.hidden = false;
-      checkingView?.classList.toggle('intro-finished', introPlaybackComplete);
+      checkingView?.classList.toggle('intro-finished', introDone);
       if (loginView) loginView.hidden = true;
       if (signupView) signupView.hidden = true;
       return;
@@ -4548,6 +5748,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     // Mobile auth gating: if user is not signed in or not approved, show Stitch Auth
     if (!signedIn || !isApproved) {
       document.body.dataset.mobileAuth = mobileAuthActiveView;
+      if (pcScope) {
+        // Nothing from the work screen may stay open behind (or over) the PC login page.
+        if ($('#pcAccountModal') && !$('#pcAccountModal').hidden && typeof closePcAccountModal === 'function') closePcAccountModal();
+        if ($('#pcAdminModal') && !$('#pcAdminModal').hidden && typeof closePcAdminModal === 'function') closePcAdminModal();
+        if ($('#signupModal') && !$('#signupModal').hidden && typeof closeSignupModal === 'function') closeSignupModal();
+        if (offlineAccessActive && !customMessage) customMessage = '온라인 인증을 확인할 수 없습니다. 네트워크 연결 후 다시 로그인해 주세요.';
+      }
       if (container) container.hidden = false;
       if (checkingView) checkingView.hidden = true;
       if (loginView) loginView.hidden = mobileAuthActiveView !== 'login';
@@ -4573,7 +5780,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const wasGated = 'mobileAuth' in document.body.dataset;
       delete document.body.dataset.mobileAuth;
       if (container) container.hidden = true;
-      if (wasGated && typeof setMobileAppView === 'function') setMobileAppView('home');
+      if (pcScope) {
+        if ($('#pcAccountModal') && !$('#pcAccountModal').hidden && typeof closePcAccountModal === 'function') closePcAccountModal();
+      } else if (wasGated && typeof setMobileAppView === 'function') setMobileAppView('home');
       const loginFeedback = $('#mobileLoginFeedback');
       if (loginFeedback) { loginFeedback.textContent = ''; loginFeedback.hidden = true; }
       requestAnimationFrame(() => {
@@ -4584,17 +5793,60 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   function initMobileAuthInteractions() {
     const introVideo = $('#mobileIntroVideo');
+    // PC web: the intro plays from the start on every document load (new visit AND reload, any login state).
+    // It ends only on video 'ended', the skip button, or a real playback failure — never because auth finished.
+    const pcIntro = isPcWebAuthScope();
+    let introStalled = null;
     const finishIntro = () => {
       if (introPlaybackComplete) return;
       introPlaybackComplete = true;
+      clearTimeout(introStalled);
       introVideo?.pause();
       syncMobileAuthState();
     };
     $('#mobileIntroSkipBtn')?.addEventListener('click', finishIntro);
     introVideo?.addEventListener('ended', finishIntro, { once: true });
     introVideo?.addEventListener('error', finishIntro, { once: true });
-    if (introVideo?.ended || introVideo?.error) finishIntro();
-    else introVideo?.play().catch(finishIntro);
+    // Logo fade-in follows the video clock (not wall time): hidden for 3s of playback, then 0→1 over 2s. Pause/stall freezes it.
+    const appIntro = document.body.dataset.appIntro === '1'; // Android app intro (set by the inline script in index.html)
+    const introLogo = $('#pcIntroLogo');
+    if ((pcIntro || appIntro) && introLogo && introVideo) {
+      const syncLogo = () => { introLogo.style.opacity = String(Math.max(0, Math.min(1, ((introVideo.currentTime || 0) - 3) / 2))); };
+      const tickLogo = () => { if (introPlaybackComplete || introVideo.paused || introVideo.ended) return; syncLogo(); requestAnimationFrame(tickLogo); };
+      syncLogo(); // start state: hidden
+      ['timeupdate', 'seeked', 'pause', 'ended'].forEach(ev => introVideo.addEventListener(ev, syncLogo));
+      introVideo.addEventListener('playing', tickLogo);
+      if (!introVideo.paused && !introVideo.ended) tickLogo(); // already playing (event missed): smooth per-frame fade from now on
+    }
+    if (pcIntro) {
+      // Last-resort guard only for a video that never starts: slow loading is NOT a failure, so the timer is long and is
+      // re-armed whenever the browser reports loading progress; it is cancelled for good once playback starts.
+      const armStall = () => { clearTimeout(introStalled); introStalled = setTimeout(finishIntro, 30000); };
+      armStall();
+      ['loadstart', 'progress', 'loadeddata', 'canplay', 'waiting', 'stalled'].forEach(ev => introVideo?.addEventListener(ev, () => { if (!introVideo.currentTime) armStall(); }));
+      introVideo?.addEventListener('playing', () => clearTimeout(introStalled), { once: true });
+    } else if (appIntro && introVideo) {
+      // The video starts autoplaying as soon as index.html sets its src — usually BEFORE this script runs — so the 'playing'
+      // event may already be gone. Never rely on the event alone: look at the real playback state now and on later events.
+      const isPlayingNow = () => !introVideo.paused && !introVideo.ended && introVideo.readyState >= 3;
+      const showVideo = () => { if (!isPlayingNow()) return false; introVideo.classList.add('intro-video-ready'); return true; }; // idempotent: no flicker
+      const startedSomehow = () => !introVideo.ended && !introVideo.paused && introVideo.currentTime > 0;
+      showVideo();
+      ['playing', 'loadeddata', 'canplay', 'timeupdate'].forEach(ev => introVideo.addEventListener(ev, () => { if (showVideo()) clearTimeout(introStalled); }));
+      // Guard for a video that never starts. A video that IS playing (even if its event was missed) is never cut off.
+      const guard = () => { if (showVideo() || startedSomehow()) return; finishIntro(); };
+      if (document.body.dataset.introWeb === '1') {
+        // Mobile web downloads the clip over the network: slow loading is not a failure. Long guard, re-armed on progress.
+        const armStall = () => { clearTimeout(introStalled); introStalled = setTimeout(guard, 30000); };
+        armStall();
+        ['loadstart', 'progress', 'waiting', 'stalled'].forEach(ev => introVideo.addEventListener(ev, () => { if (!introVideo.currentTime) armStall(); }));
+      } else {
+        introStalled = setTimeout(guard, 8000); // Android app (local asset)
+      }
+    }
+    // play() may reject with AbortError when the element reloads (autoplay keeps going) — that is not a failure.
+    if ((pcIntro && !introVideo) || introVideo?.ended || introVideo?.error) finishIntro();
+    else introVideo?.play().catch(e => { if (!(pcIntro || appIntro) || e?.name !== 'AbortError') finishIntro(); });
 
     const rememberedEmailKey = 'powderline.mobileLoginEmail';
     const rememberEmail = $('#mobileRememberEmail');
@@ -4690,7 +5942,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         saveOfflineAccessGrant(state.session, state.profile);
         $('#mobileLoginPassword').value = '';
         if ($('#authPassword')) $('#authPassword').value = '';
-        syncMobileAuthState();
+        // Full sync (not just the gate): onlineAuthVerified changed after loadUserProfile's last render, so the
+        // account label / admin menu must be refreshed too.
+        updateAuthUi();
         toast(t('toastLoginSuccess'));
       } catch (err) {
         console.error('Mobile login error:', err);
@@ -4823,6 +6077,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       state.profile?.role === 'admin' && state.profile?.status === 'approved');
   }
 
+  // The admin course viewer is "open" on Android when its subview is visible (unchanged), and on PC web when the
+  // admin console's 전체 코스 tab is showing. Server RPCs still enforce admin access either way.
+  function isAdminRoutesViewOpen() {
+    if (!$('#mobileAdminCoursesView')?.hidden) return true;
+    return document.body.dataset.pcWeb === 'true' && pcAdminActiveTab === 'courses' &&
+      $('#pcAdminModal')?.hidden === false && isApprovedAdmin();
+  }
+
   function renderAdminRoutes() {
     const list = $('#stitchAdminCoursesList');
     const status = $('#stitchAdminCoursesStatus');
@@ -4863,7 +6125,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   async function loadAdminRoutes(loadAll = false) {
-    if (adminRouteLoading || !adminRouteHasMore || !hasAdminRouteAccess() || $('#mobileAdminCoursesView')?.hidden) return;
+    if (adminRouteLoading || !adminRouteHasMore || !hasAdminRouteAccess() || !isAdminRoutesViewOpen()) return;
     const client = supabaseClient;
     const userId = state.session.user.id;
     adminRouteLoading = true;
@@ -4883,7 +6145,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         adminRoutePage++;
         adminRouteHasMore = rows.length === adminRoutePageSize;
         renderAdminRoutes();
-      } while (loadAll && adminRouteHasMore && !$('#mobileAdminCoursesView')?.hidden && $('#stitchAdminCoursesSearch')?.value.trim());
+      } while (loadAll && adminRouteHasMore && isAdminRoutesViewOpen() && $('#stitchAdminCoursesSearch')?.value.trim());
     } catch (error) {
       if (error?.code === '42501' || /administrator access required|permission denied/i.test(error?.message || '')) {
         adminRoutesForbiddenForUser = userId;
@@ -4897,7 +6159,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     } finally {
       adminRouteLoading = false;
       renderAdminRoutes();
-      if (!adminRouteLoadError && adminRouteHasMore && !$('#mobileAdminCoursesView')?.hidden && $('#stitchAdminCoursesSearch')?.value.trim()) {
+      if (!adminRouteLoadError && adminRouteHasMore && isAdminRoutesViewOpen() && $('#stitchAdminCoursesSearch')?.value.trim()) {
         loadAdminRoutes(true);
       }
     }
@@ -4959,7 +6221,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const { data, error } = await client.rpc('get_admin_route_points', { route_id: routeId }).single();
       if (error) throw error;
       if (client !== supabaseClient || state.session?.user?.id !== userId || !hasAdminRouteAccess() ||
-          $('#mobileAdminCoursesView')?.hidden || (action === 'map' && requestId !== adminRoutePreviewRequest)) return;
+          !isAdminRoutesViewOpen() || (action === 'map' && requestId !== adminRoutePreviewRequest)) return;
       if (!data || !Array.isArray(data.points) || data.id !== routeId) throw new Error('코스 좌표를 불러올 수 없습니다.');
       if (action === 'map') {
         showAdminRoutePreview(data);
@@ -5077,14 +6339,37 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
     const { error } = await loadRegionCatalog(client);
     if (error) showAdminRegionError(error, status);
-    else renderAdminRegions();
+    else {
+      renderAdminRegions();
+      const form = $('#stitchAdminRegionForm');
+      const idInput = form?.elements.namedItem('id');
+      if (idInput && !form.dataset.editId && !idInput.value) idInput.value = generateRegionId();
+    }
+  }
+
+  const REGION_ID_PATTERN = /^[a-z][a-z0-9_]*$/;
+  const REGION_TEXT_MAX = 30;
+  // Auto ID: "region_" + 8 base36 chars (15 chars, matches the existing id rule), unique against known regions.
+  function generateRegionId(existingIds = new Set([...adminRegionRows.map(row => row.id), ...catalogRegionIds, ...builtInRegionIds])) {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      let suffix = '';
+      const bytes = crypto.getRandomValues(new Uint8Array(8));
+      for (const byte of bytes) suffix += (byte % 36).toString(36);
+      const id = `region_${suffix}`;
+      if (!existingIds.has(id)) return id;
+    }
+    return `region_${Date.now().toString(36)}`.slice(0, REGION_TEXT_MAX);
+  }
+  function bboxEquals(a, b) {
+    if (!a || !b) return !a && !b;
+    return a.length === 4 && b.length === 4 && a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
   }
 
   function resetAdminRegionForm(row = null) {
     const form = $('#stitchAdminRegionForm');
     form.reset();
     form.dataset.editId = row?.id || '';
-    form.elements.namedItem('id').value = row?.id || '';
+    form.elements.namedItem('id').value = row?.id || generateRegionId();
     form.elements.namedItem('id').disabled = Boolean(row);
     for (const name of ['label', 'center_lng', 'center_lat', 'zoom', 'bearing', 'pitch']) {
       if (row) form.elements.namedItem(name).value = row[name];
@@ -5258,8 +6543,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     document.body.classList.remove('admin-region-picking');
     $('#adminRegionPickBboxBtn').setAttribute('aria-pressed', 'false');
     drawAdminRegionBbox();
-    setMobileAppView('account');
-    setStitchAccountSubView('adminRegions');
+    if (document.body.dataset.pcWeb === 'true') {
+      if (typeof openPcAdminModal === 'function') openPcAdminModal('regions');
+    } else {
+      setMobileAppView('account');
+      setStitchAccountSubView('adminRegions');
+    }
     if (apply) toast('지정한 위치·범위가 폼에 반영되었습니다. 저장 버튼을 눌러 완료하세요.');
   }
 
@@ -5362,18 +6651,36 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       errorEl.textContent = '지역 중심점은 bbox 내부에 있어야 합니다.';
       return;
     }
-    const payload = {
-      label: value('label'), center_lng: centerLng,
-      center_lat: centerLat, zoom: Number(value('zoom')),
-      bearing: Number(value('bearing')), pitch: Number(value('pitch')), bbox
-    };
-    if (!editId) {
-      payload.id = value('id');
-      payload.sort_order = Math.max(0, ...adminRegionRows.map(row => Number(row.sort_order) || 0)) + 1;
+    const label = value('label');
+    if (!label || [...label].length > REGION_TEXT_MAX) {
+      errorEl.textContent = `지역명은 1~${REGION_TEXT_MAX}자로 입력해 주세요.`;
+      return;
     }
+    const newId = editId ? '' : (value('id') || generateRegionId());
+    if (!editId) {
+      if (newId.length > REGION_TEXT_MAX || !REGION_ID_PATTERN.test(newId)) {
+        errorEl.textContent = `지역 ID는 영문 소문자로 시작하는 소문자·숫자·밑줄 ${REGION_TEXT_MAX}자 이하여야 합니다.`;
+        return;
+      }
+      if (adminRegionRows.some(row => row.id === newId) || catalogRegionIds.has(newId) || builtInRegionIds.has(newId)) {
+        errorEl.textContent = '이미 사용 중인 지역 ID입니다.';
+        return;
+      }
+    }
+    const payload = {
+      label, center_lng: centerLng,
+      center_lat: centerLat, zoom: Number(value('zoom')),
+      bearing: Number(value('bearing')), pitch: Number(value('pitch'))
+    };
     const previousRegion = adminRegionRows.find(row => row.id === editId);
     const previousBbox = parseRegionBbox(previousRegion?.bbox);
-    const bboxChanged = !editId || JSON.stringify(previousBbox) !== JSON.stringify(bbox);
+    const bboxChanged = !editId || !bboxEquals(previousBbox, bbox);
+    // Only send bbox when it changed, so metadata-only edits never touch ski_data_status / offline_data_version.
+    if (bboxChanged) payload.bbox = bbox;
+    if (!editId) {
+      payload.id = newId;
+      payload.sort_order = Math.max(0, ...adminRegionRows.map(row => Number(row.sort_order) || 0)) + 1;
+    }
     const shouldPrepareSkiData = Boolean(bbox && (bboxChanged ||
       ['pending', 'failed'].includes(previousRegion?.ski_data_status)));
     const savedRegionId = editId || payload.id;
@@ -5461,6 +6768,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (nextSubview === 'adminManage') {
       loadPendingUsers();
     } else if (nextSubview === 'adminUsers') {
+      switchAdminTab(currentAdminTab); // tabs/sections always consistent when the screen opens
       loadAdminUsersList();
     } else if (nextSubview === 'adminCourses' && adminRoutePage === 0 && !adminRouteLoading) {
       loadAdminRoutes();
@@ -5692,7 +7000,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const listEl = $('#stitchAdminRevokedList');
       if (listEl) {
         if (!revokedUsers.length) {
-          listEl.innerHTML = '<div class="text-center py-6 text-outline font-body-sm">거절되거나 탈퇴한 회원이 없습니다.</div>';
+          listEl.innerHTML = '<div class="text-center py-6 text-outline font-body-sm">거절되거나 차단된 회원이 없습니다.<br>탈퇴한(삭제된) 계정은 목록에 없으며 재승인할 수 없습니다.</div>';
         } else {
           listEl.innerHTML = revokedUsers.map(u => {
             const nick = escapeHtml(u.nickname || '익명');
@@ -5716,25 +7024,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   function switchAdminTab(type) {
     currentAdminTab = type;
-    const tabs = ['pending', 'approved', 'revoked'];
-    tabs.forEach(t => {
+    for (const t of ['pending', 'approved', 'revoked']) {
       const btn = $('#stitchTab' + t.charAt(0).toUpperCase() + t.slice(1));
-      if (btn) {
-        if (t === type) {
-          btn.className = "flex flex-col items-center justify-center py-2.5 px-1 rounded transition-all duration-200 bg-surface-container-high shadow-md";
-          const firstSpan = btn.querySelector('.font-label-md');
-          if (firstSpan) {
-            firstSpan.className = "font-label-md text-label-md font-bold text-primary-container";
-          }
-        } else {
-          btn.className = "flex flex-col items-center justify-center py-2.5 px-1 rounded transition-all duration-200 hover:bg-surface-container-high/40";
-          const firstSpan = btn.querySelector('.font-label-md');
-          if (firstSpan) {
-            firstSpan.className = "font-label-md text-label-md text-on-surface-variant";
-          }
-        }
-      }
-    });
+      if (btn) { btn.classList.toggle('active', t === type); btn.setAttribute('aria-pressed', String(t === type)); } // look comes from .admin-tab-card (dark card, teal when active)
+    }
 
     const pendingSec = $('#stitchAdminContentPending');
     const approvedSec = $('#stitchAdminContentApproved');
@@ -6646,13 +7939,27 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   // ---- web -> native bridges (no-ops unless the Native map is active) ----
+  // Course route(s) + the GPS recording line in one collection for the Native route source (the line is drawn last = on top).
+  function nativeRouteCollection(nm) {
+    if (!nm.gpsLine) return nm.route;
+    return { type: 'FeatureCollection', features: [...(nm.route?.features || []), nm.gpsLine] };
+  }
+  function pushNativeGpsRoute(coordinates) {
+    const nm = state.nativeMap;
+    const had = Boolean(nm.gpsLine);
+    nm.gpsLine = coordinates.length > 1
+      ? { type: 'Feature', properties: { color: '#38bdf8', glowColor: '#38bdf8', selected: true, gpsRecording: true }, geometry: { type: 'LineString', coordinates } }
+      : null;
+    if (nm.gpsLine || had) pushNativeRoute(null); // kept while the Native map is hidden; sent again by showNativeRegion
+  }
   function pushNativeRoute(collection, immediate = false) {
     const nm = state.nativeMap;
     if (collection) nm.route = collection;
     if (!nm.active) return;
     const send = () => {
       const plugin = nativeMapPlugin();
-      if (plugin?.setEmbeddedRoute && nm.route) plugin.setEmbeddedRoute({ geojson: JSON.stringify(nm.route) }).catch(() => { });
+      const data = nativeRouteCollection(nm) || (nm.gpsLine === null && nm.route === null ? { type: 'FeatureCollection', features: [] } : null);
+      if (plugin?.setEmbeddedRoute && data) plugin.setEmbeddedRoute({ geojson: JSON.stringify(data) }).catch(() => { });
     };
     if (immediate) { send(); return; }
     clearTimeout(nm.routeTimer);
@@ -6816,7 +8123,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function applySavedRoute(item, destinationView = 'map') {
     if (!item) return;
     pushHistory();
-    state.points = item.points.map(p => ({ ...p }));
+    state.points = prepareEditPoints(item.points);
     state.selectedVertex = null;
     const cur = getActiveCourse();
     if (cur) {
@@ -6998,6 +8305,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   // Touch/drag on a profile chart selects a distance; map marker + vertical line follow in real time.
+  // Graph x (client px) → cumulative route distance (m) within the currently shown distance window.
+  function profileDistanceAtClientX(canvas, clientX) {
+    const padLeft = 8, padRight = 8;
+    const rect = canvas.getBoundingClientRect(), plotWidth = Math.max(1, rect.width - padLeft - padRight);
+    const range = profileViewRange();
+    return range.start + Math.max(0, Math.min(plotWidth, clientX - rect.left - padLeft)) / plotWidth * (range.end - range.start);
+  }
   function bindProfileScrub(canvas) {
     if (!canvas || canvas.dataset.scrubBound) return;
     canvas.dataset.scrubBound = '1';
@@ -7005,11 +8319,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const ro = canvas.parentElement?.querySelector('.profile-tooltip'); // desktop tooltip only
     let dragging = false, toggleCandidate = false, downX = 0;
     const padLeft = 8, padRight = 8;
-    const distanceAt = clientX => {
-      const rect = canvas.getBoundingClientRect(), plotWidth = Math.max(1, rect.width - padLeft - padRight);
-      const range = profileViewRange();
-      return range.start + Math.max(0, Math.min(plotWidth, clientX - rect.left - padLeft)) / plotWidth * (range.end - range.start);
-    };
+    const distanceAt = clientX => profileDistanceAtClientX(canvas, clientX);
     const selectedClientX = () => {
       const rect = canvas.getBoundingClientRect(), plotWidth = Math.max(1, rect.width - padLeft - padRight);
       const range = profileViewRange();
@@ -7021,6 +8331,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (sample && ro) { ro.textContent = profileReadoutText(sample); ro.hidden = false; }
     };
     canvas.addEventListener('pointerdown', e => {
+      if (gapCut && handleGapCutGraphClick(canvas, e.clientX)) { e.preventDefault(); return; } // PC 구간 자르기: A/B pick
+      if (handleEditGraphClick(canvas, e.clientX)) { e.preventDefault(); return; } // PC edit tools: graph click → route position
       dragging = true;
       try { canvas.setPointerCapture(e.pointerId); } catch {}
       e.preventDefault();
@@ -8692,7 +10004,7 @@ async function startPartyMemberRideOn() {
       if (!item) return;
       state.editorMode = false;
       state.selectedVertex = null;
-      state.points = item.points.map(p => ({ ...p }));
+      state.points = prepareEditPoints(item.points);
       const cur = getActiveCourse();
       if (cur) {
         cur.name = item.name;
@@ -8911,6 +10223,7 @@ async function startPartyMemberRideOn() {
 
   function deletePartA() {
     if (!splitState) return;
+    splitState.restore?.(); // drop the temporary cut-point history entry; the delete below is a single undo step
     pushHistory();
     state.points = [...splitState.partB];
     state.selectedVertex = null;
@@ -8923,6 +10236,7 @@ async function startPartyMemberRideOn() {
 
   function deletePartB() {
     if (!splitState) return;
+    splitState.restore?.();
     pushHistory();
     state.points = [...splitState.partA];
     state.selectedVertex = null;
@@ -8935,6 +10249,7 @@ async function startPartyMemberRideOn() {
 
   function cancelSplit() {
     if (!splitState) return;
+    splitState.restore?.();
     closeSplitHUD();
     render();
     toast(state.lang === 'ko' ? '구간 나누기를 취소했습니다.' : 'Cancelled route split.');

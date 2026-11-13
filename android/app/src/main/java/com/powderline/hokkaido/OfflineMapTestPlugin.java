@@ -10,6 +10,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
@@ -36,6 +37,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.lifecycle.LifecycleOwner;
@@ -88,6 +90,8 @@ import com.mapbox.android.gestures.RotateGestureDetector;
 import com.mapbox.android.gestures.ShoveGestureDetector;
 import com.mapbox.maps.EdgeInsets;
 import com.mapbox.maps.ScreenCoordinate;
+import com.mapbox.maps.ImageHolder;
+import com.mapbox.maps.plugin.LocationPuck2D;
 import com.mapbox.maps.plugin.PuckBearing;
 import com.mapbox.maps.plugin.animation.CameraAnimationsUtils;
 import com.mapbox.maps.plugin.animation.MapAnimationOptions;
@@ -2684,6 +2688,50 @@ public class OfflineMapTestPlugin extends Plugin {
     }
 
     @SuppressWarnings("MissingPermission")
+    /**
+     * My-location marker drawn exactly like the online map (mapbox-gl v2.2 GeolocateControl, dp = CSS px):
+     * dot r=7.5 #1DA1F2, 2dp white ring (r=9.5) with a 3dp soft shadow, and the heading arrowhead #4AA1EB
+     * (apex 21.9dp above the centre, outer corners +-7.5dp at 11.6dp, notch at 14.4dp) that rotates with the compass.
+     * Returns null on any error so the caller keeps the SDK default puck.
+     */
+    @Nullable
+    private LocationPuck2D buildWebStyleLocationPuck(@NonNull Activity activity) {
+        try {
+            final float d = activity.getResources().getDisplayMetrics().density;
+            final int topSize = Math.round(26f * d);
+            Bitmap top = Bitmap.createBitmap(topSize, topSize, Bitmap.Config.ARGB_8888);
+            Canvas tc = new Canvas(top);
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            float c = topSize / 2f;
+            p.setColor(Color.WHITE);
+            p.setShadowLayer(3f * d / 2f, 0f, 0f, Color.argb(0x59, 0, 0, 0));
+            tc.drawCircle(c, c, 9.5f * d, p);
+            p.clearShadowLayer();
+            p.setColor(Color.parseColor("#1DA1F2"));
+            tc.drawCircle(c, c, 7.5f * d, p);
+
+            final int bearingSize = Math.round(48f * d);
+            Bitmap bearing = Bitmap.createBitmap(bearingSize, bearingSize, Bitmap.Config.ARGB_8888);
+            Canvas bc = new Canvas(bearing);
+            float bcx = bearingSize / 2f;
+            Path arrow = new Path();
+            arrow.moveTo(bcx, bcx - 21.9f * d);
+            arrow.lineTo(bcx + 7.5f * d, bcx - 11.6f * d);
+            arrow.lineTo(bcx, bcx - 14.4f * d);
+            arrow.lineTo(bcx - 7.5f * d, bcx - 11.6f * d);
+            arrow.close();
+            Paint ap = new Paint(Paint.ANTI_ALIAS_FLAG);
+            ap.setStyle(Paint.Style.FILL);
+            ap.setColor(Color.parseColor("#4AA1EB"));
+            bc.drawPath(arrow, ap);
+
+            return new LocationPuck2D(ImageHolder.from(top), ImageHolder.from(bearing), null, null, 1.0f);
+        } catch (Throwable e) {
+            Log.w(TAG, "web-style puck failed, using default: " + e.getMessage());
+            return null;
+        }
+    }
+
     private void enableLocationComponentIfPermitted() {
         Activity activity = getActivity();
         if (activity == null || !hasLocationPermission(activity)) return;
@@ -2692,8 +2740,17 @@ public class OfflineMapTestPlugin extends Plugin {
             try {
                 LocationComponentPlugin locPlugin = LocationComponentUtils.getLocationComponent(mapView);
                 locPlugin.setEnabled(true);
+                // Same marker as the online (web mapbox-gl GeolocateControl) map; falls back to the SDK default puck.
+                LocationPuck2D webPuck = buildWebStyleLocationPuck(activity);
+                locPlugin.setLocationPuck(webPuck != null ? webPuck : LocationComponentUtils.createDefault2DPuck(true));
+                try {
+                    locPlugin.setShowAccuracyRing(true); // web: .mapboxgl-user-location-accuracy-circle (#1da1f2 @ 20%)
+                    locPlugin.setAccuracyRingColor(Color.argb(0x33, 0x1D, 0xA1, 0xF2));
+                    locPlugin.setAccuracyRingBorderColor(Color.TRANSPARENT);
+                } catch (Throwable ringError) {
+                    Log.w(TAG, "accuracy ring settings warning: " + ringError.getMessage());
+                }
                 // Phone compass heading (sensor only, works offline); never replaced by GPS course.
-                locPlugin.setLocationPuck(LocationComponentUtils.createDefault2DPuck(true)); // blue dot + heading arrow
                 locPlugin.setPuckBearingEnabled(true);
                 locPlugin.setPuckBearing(PuckBearing.HEADING);
                 hookGpsFollowGestures();
