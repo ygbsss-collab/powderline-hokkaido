@@ -7,9 +7,36 @@
     <link rel="stylesheet" href="./vendor/mapbox-gl.css" />
     <link rel="stylesheet" href="./vendor/fonts.css" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="icon" type="image/png" href="./assets/favicon.png" />
   </head>
   <body data-mobile-auth="checking">
+    <script>
+      // Before first paint: PC web gates on the auth page (web intro video first, once per tab); a wide native screen keeps its
+      // original ungated start. Native is detected via Capacitor, never by width alone.
+      (function () {
+        var b = document.body, c = window.Capacitor, p = c && c.getPlatform ? c.getPlatform() : '';
+        var native = !!(c && ((c.isNativePlatform && c.isNativePlatform()) || p === 'android' || p === 'ios'));
+        var wide = !window.matchMedia('(max-width: 768px)').matches;
+        if (!native && wide) b.dataset.authScope = 'pc';
+        if (native && wide) delete b.dataset.mobileAuth;
+      })();
+    </script>
     <main class="app-shell">
+      <header id="pcTopHeader" class="pc-top-header" hidden>
+        <div id="pcHeaderBrandSlot" class="pc-header-brand"></div>
+        <div id="pcHeaderControlsSlot" class="pc-header-controls"></div>
+        <div class="pc-header-actions">
+          <button id="pcAdminOpenBtn" type="button" class="pc-header-btn pc-header-admin-btn" hidden>
+            <span class="material-symbols-outlined">admin_panel_settings</span>
+            <span>관리자</span>
+            <span id="pcAdminPendingBadge" class="pc-badge" hidden>0</span>
+          </button>
+          <button id="pcAccountOpenBtn" type="button" class="pc-header-btn pc-header-account-btn">
+            <span class="material-symbols-outlined">account_circle</span>
+            <span id="pcAccountBtnLabel">계정·설정</span>
+          </button>
+        </div>
+      </header>
       <aside class="sidebar">
         <div class="brand-header">
           <div class="brand"><span class="brand-mark">✦</span><div><strong>POWDERLINE</strong><small data-i18n="brandSubtitle">백컨트리 경로 설계</small></div></div>
@@ -27,8 +54,22 @@
             <label class="field-label" for="courseName" data-i18n="labelCourseName">코스 이름</label>
             <input id="courseName" type="text" maxlength="80" placeholder="코스 이름" data-i18n-placeholder="placeholderCourseName" />
             <div class="editor-actions"><button id="newCourseBtn" type="button" data-i18n="btnNewCourse">＋ 새 코스</button><button id="finishDrawBtn" type="button" data-i18n="btnFinishDraw">그리기 완료</button></div>
-            <div class="tool-grid" role="group" aria-label="코스 편집 도구"><button id="drawToolBtn" type="button" data-tool="draw" data-i18n="toolDraw">그리기</button><button id="editToolBtn" type="button" data-tool="edit" data-i18n="toolEdit">꼭짓점 편집</button><button id="cutToolBtn" type="button" data-tool="cut" data-i18n="toolCut">✂ 코스 자르기</button><button id="deleteSegmentToolBtn" type="button" data-tool="delete-segment" data-i18n="toolDeleteSegment">구간 삭제</button></div>
+            <div class="tool-grid" role="group" aria-label="코스 편집 도구"><button id="drawToolBtn" type="button" data-tool="draw" data-i18n="toolDraw">그리기</button><button id="editToolBtn" type="button" data-tool="edit" data-i18n="toolEdit">꼭짓점 편집</button><button id="cutToolBtn" type="button" data-tool="cut" data-i18n="toolCut">✂ 코스 자르기</button><button id="deleteSegmentToolBtn" type="button" data-tool="delete-segment" data-i18n="toolDeleteSegment">구간 삭제</button><button id="gapCutToolBtn" type="button" data-tool="gap-cut" class="pc-only-tool">✂ 구간 자르기·연결</button></div>
+            <div id="gapCutPanel" class="gap-cut-panel" hidden>
+              <p id="gapCutStatus" class="gap-cut-status" role="status" aria-live="polite"></p>
+              <div class="gap-cut-actions">
+                <button id="gapCutNextPassBtn" type="button" hidden>다른 통과 지점</button>
+                <button id="gapCutConfirmBtn" type="button" hidden>선택 구간 제거</button>
+                <button id="gapCutUndoPointBtn" type="button" hidden>마지막 점 지우기</button>
+                <button id="gapCutFinishBtn" type="button" class="gap-cut-primary" hidden>연결 완료</button>
+                <button id="gapCutCancelBtn" type="button">취소</button>
+              </div>
+            </div>
             <div class="editor-actions"><button id="undoBtn" type="button" data-i18n="btnUndo">실행 취소</button><button id="redoBtn" type="button" data-i18n="btnRedo">다시 실행</button></div>
+            <div id="segDeletePanel" class="gap-cut-panel" hidden>
+              <p id="segDeleteStatus" class="gap-cut-status" role="status" aria-live="polite"></p>
+              <div class="gap-cut-actions"><button id="segDeleteConfirmBtn" type="button" class="gap-cut-primary" hidden>구간 삭제 확정</button><button id="segDeleteCancelBtn" type="button">취소</button></div>
+            </div>
             <div class="editor-actions"><button id="deleteVertexBtn" type="button" data-i18n="btnDeleteVertex">선택 꼭짓점 삭제</button><button id="clearBtn" type="button" data-i18n="btnClearCourse">선택 코스 비우기</button></div>
             <div class="course-worklist"><span class="field-label" data-i18n="labelWorkingCourses">작업 중인 코스</span><div id="courseWorkList"></div></div>
             <button id="saveBtn" class="wide" type="button" data-i18n="btnSaveCourse">선택 코스 저장</button>
@@ -80,6 +121,12 @@
       </aside>
       <section class="map-panel profile-open">
         <div id="map"></div>
+        <!-- PC web only: right-top map controls. The existing style switch and Mapbox zoom/compass/locate controls are moved in here (never duplicated). -->
+        <div id="pcMapControls" class="pc-map-controls" hidden>
+          <div id="pcMapStyleSlot" class="pc-map-style-slot"></div>
+          <div id="pcViewSwitch" class="pc-view-switch" role="group" aria-label="지도 시점 2D / 3D"><button id="pcView2dBtn" type="button" aria-pressed="false">2D</button><button id="pcView3dBtn" type="button" class="active" aria-pressed="true">3D</button></div>
+          <div id="pcMapNavSlot" class="pc-map-nav-slot"></div>
+        </div>
         <section id="adminRegionMapPicker" class="admin-region-map-picker" hidden aria-label="관리자 지역 지도 선택">
           <div class="admin-region-picker-top"><strong>지역 위치·범위 선택</strong><p id="adminRegionPickerStatus" role="status" aria-live="polite">지도를 이동한 뒤 중심을 지정하세요.</p></div>
           <div class="admin-region-picker-bottom">
@@ -541,7 +588,7 @@
                   <span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span>
                   <span class="font-label-sm text-label-sm uppercase tracking-wider text-primary-container">POWDERLINE</span>
                 </div>
-                <h1 class="font-headline-md text-headline-md text-on-surface">관리자 관리</h1>
+                <h1 class="font-headline-md text-headline-md text-on-surface">관리자 메뉴</h1>
               </div>
             </div>
             <div class="flex items-center gap-space-sm"></div>
@@ -554,10 +601,6 @@
                 <span class="material-symbols-outlined text-[20px]">arrow_back_ios</span>
                 <span class="font-body-md text-body-md font-semibold">내 계정으로 복귀</span>
               </button>
-            </div>
-            <div class="flex flex-col gap-0.5 mb-space-md">
-              <h2 class="font-headline-xl-mobile text-headline-xl-mobile text-on-surface font-bold tracking-tight">관리자 관리 (Admin Console)</h2>
-              <p class="font-body-sm text-body-sm text-on-surface-variant">회원 승인, 전체 GPX 코스 및 원정 지역을 관리합니다.</p>
             </div>
             <div class="flex flex-col gap-space-md">
               <!-- Menu 1: Member Management (Active) -->
@@ -636,8 +679,8 @@
           <div id="stitchAdminRegionsList" class="admin-courses-list"></div>
           <form id="stitchAdminRegionForm" class="admin-region-form">
             <h2 id="stitchAdminRegionFormTitle">지역 추가</h2>
-            <label for="stitchRegionId">지역 ID</label><input id="stitchRegionId" name="id" required maxlength="50" pattern="[a-z][a-z0-9_]*" placeholder="예: sapporo" />
-            <label for="stitchRegionLabel">지역명</label><input id="stitchRegionLabel" name="label" required maxlength="100" />
+            <label for="stitchRegionId">지역 ID</label><input id="stitchRegionId" name="id" required maxlength="30" pattern="[a-z][a-z0-9_]*" placeholder="자동 생성 (수정 가능)" />
+            <label for="stitchRegionLabel">지역명</label><input id="stitchRegionLabel" name="label" required maxlength="30" />
             <button id="stitchAdminRegionMapPickBtn" class="admin-region-map-open" type="button">지도에서 위치 선택</button>
             <div class="admin-region-grid"><label>중심 경도<input name="center_lng" type="number" step="any" min="-180" max="180" required /></label><label>중심 위도<input name="center_lat" type="number" step="any" min="-90" max="90" required /></label></div>
             <div class="admin-region-grid"><label>Zoom<input name="zoom" type="number" step="any" min="0" max="22" required value="11" /></label><label>Bearing<input name="bearing" type="number" step="any" min="-180" max="180" required value="0" /></label><label>Pitch<input name="pitch" type="number" step="any" min="0" max="75" required value="54" /></label></div>
@@ -671,35 +714,30 @@
 
       <!-- Subview 2: Admin Users Management Console -->
       <div id="mobileAdminUsersView" class="stitch-subview" hidden>
-        <header class="fixed top-0 w-full z-50 pt-safe bg-surface/80 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-16 px-margin flex items-center justify-between"><div class="flex flex-col justify-center"><div class="flex items-center gap-space-xs"><span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span><span class="font-label-sm text-label-sm uppercase tracking-wider text-primary-container">POWDERLINE</span></div><h1 class="font-headline-md text-headline-md text-on-surface">Account</h1></div><div class="flex items-center gap-space-sm"></div></div></header><main class="flex flex-col relative w-full pt-16 pb-28 bg-surface min-h-screen"><div class="flex flex-col w-full px-margin pb-space-xl">
+        <header class="fixed top-0 w-full z-50 pt-safe bg-surface/80 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-16 px-margin flex items-center justify-between"><div class="flex flex-col justify-center"><div class="flex items-center gap-space-xs"><span class="w-1.5 h-1.5 rounded-full bg-primary-container shadow-[0_0_8px_rgba(56,189,248,0.8)]"></span><span class="font-label-sm text-label-sm uppercase tracking-wider text-primary-container">POWDERLINE</span></div><h1 class="font-headline-md text-headline-md text-on-surface">회원 관리</h1></div><div class="flex items-center gap-space-sm"></div></div></header><main class="flex flex-col relative w-full pt-16 pb-28 bg-surface min-h-screen"><div class="flex flex-col w-full px-margin pb-space-xl">
 <!-- Sub-Header / Admin Navigation Bar -->
 <div class="flex items-center justify-between py-space-sm mb-space-md">
 <button id="stitchAdminUsersBackBtn" class="flex items-center gap-space-xs text-primary transition-opacity hover:opacity-80 active:scale-95 duration-150 bg-transparent border-0 p-0 cursor-pointer" type="button"><span class="material-symbols-outlined text-[20px]">arrow_back_ios</span><span class="font-body-md text-body-md font-semibold">내 계정으로 복귀</span></button>
 
 </div>
-<!-- Operational HUD Title -->
-<div class="flex flex-col gap-0.5 mb-space-md">
-
-<h2 class="font-headline-xl-mobile text-headline-xl-mobile text-on-surface font-bold tracking-tight">회원 관리 (Admin Console)</h2>
-</div>
 <!-- Real-time Admin Status Filter Tabs -->
 <div class="grid grid-cols-3 gap-space-xs p-1 rounded-lg bg-surface-container-lowest mb-space-md shadow-inner">
-<button class="flex flex-col items-center justify-center py-2.5 px-1 rounded transition-all duration-200 bg-surface-container-high shadow-md" id="stitchTabPending" onclick="switchAdminTab('pending')">
+<button class="admin-tab-card active" type="button" id="stitchTabPending" onclick="switchAdminTab('pending')">
 <div class="flex items-center gap-1">
 <span class="w-1.5 h-1.5 rounded-full bg-primary-container"></span>
 <span class="font-label-md text-label-md font-bold text-primary-container">승인 대기</span>
 </div>
 <span class="font-label-sm text-label-sm text-primary-container/80 mt-0.5 font-semibold">2 건</span>
 </button>
-<button class="flex flex-col items-center justify-center py-2.5 px-1 rounded transition-all duration-200 hover:bg-surface-container-high/40" id="stitchTabApproved" onclick="switchAdminTab('approved')">
+<button class="admin-tab-card" type="button" id="stitchTabApproved" onclick="switchAdminTab('approved')">
 <div class="flex items-center gap-1">
 <span class="font-label-md text-label-md text-on-surface-variant">승인 완료</span>
 </div>
 <span class="font-label-sm text-label-sm text-outline mt-0.5">14 명</span>
 </button>
-<button class="flex flex-col items-center justify-center py-2.5 px-1 rounded transition-all duration-200 hover:bg-surface-container-high/40" id="stitchTabRevoked" onclick="switchAdminTab('revoked')">
+<button class="admin-tab-card" type="button" id="stitchTabRevoked" onclick="switchAdminTab('revoked')">
 <div class="flex items-center gap-1">
-<span class="font-label-md text-label-md text-on-surface-variant">거절/탈퇴</span>
+<span class="font-label-md text-label-md text-on-surface-variant">거절/차단</span>
 </div>
 <span class="font-label-sm text-label-sm text-outline mt-0.5">3 명</span>
 </button>
@@ -790,21 +828,21 @@
 </div>
 
 <!-- TAB CONTENT 3: Revoked / Rejected -->
-<div class="flex flex-col gap-space-md hidden" id="stitchAdminContentRevoked">
+<div class="flex flex-col gap-space-md" id="stitchAdminContentRevoked" hidden>
   <div class="flex items-center justify-between">
     <div class="flex items-center gap-2">
       <span class="material-symbols-outlined text-outline text-[18px]">block</span>
-      <h3 class="font-headline-md text-headline-md text-on-surface font-semibold">거절 / 탈퇴 회원</h3>
+      <h3 class="font-headline-md text-headline-md text-on-surface font-semibold">거절 / 차단 회원</h3>
     </div>
     <span class="font-label-sm text-label-sm text-outline">비활성</span>
   </div>
   <div id="stitchAdminRevokedList" class="flex flex-col gap-space-md">
-    <div class="text-center py-6 text-outline font-body-sm">거절되거나 탈퇴한 회원이 없습니다.</div>
+    <div class="text-center py-6 text-outline font-body-sm">거절되거나 차단된 회원이 없습니다.</div>
   </div>
 </div>
 
 <!-- TAB CONTENT 2: Active / Approved Members (승인 완료 예시 및 관리) -->
-<div class="flex flex-col gap-space-md mt-space-lg" id="stitchAdminContentApproved">
+<div class="flex flex-col gap-space-md" id="stitchAdminContentApproved" hidden>
 <div class="flex items-center justify-between">
 <div class="flex items-center gap-2">
 <span class="material-symbols-outlined text-secondary text-[18px]">how_to_reg</span>
@@ -1000,6 +1038,27 @@
         <div class="mobile-intro-player">
           <video id="mobileIntroVideo" class="mobile-intro-video" src="./assets/POWDERLINE_intro_v2.mp4" autoplay muted playsinline preload="auto"></video>
           <button id="mobileIntroSkipBtn" class="mobile-intro-skip" type="button">건너뛰기</button>
+          <img id="pcIntroLogo" class="pc-intro-logo" alt="POWDERLINE" hidden>
+          <script>
+            // PC web → web intro (16:9). Android app AND mobile web → app intro (portrait). iOS app keeps the original video.
+            // All new intros add the white logo overlay.
+            (function () {
+              var b = document.body, v = document.getElementById('mobileIntroVideo'), l = document.getElementById('pcIntroLogo');
+              var c = window.Capacitor, p = c && c.getPlatform ? c.getPlatform() : '';
+              var native = !!(c && ((c.isNativePlatform && c.isNativePlatform()) || p === 'android' || p === 'ios'));
+              if (b.dataset.authScope === 'pc') v.src = './assets/powderline-web-intro.mp4';
+              else if (p === 'android' || !native) {
+                b.dataset.appIntro = '1';
+                if (!native) { b.dataset.introWeb = '1'; v.muted = true; v.defaultMuted = true; v.playsInline = true; } // mobile browsers: muted inline autoplay
+                // WebView draws a grey placeholder + big play icon for a <video> without a poster: use an invisible poster, no controls.
+                v.controls = false; v.removeAttribute('controls'); v.disablePictureInPicture = true;
+                v.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+                v.src = './assets/powderline-app-intro.mp4';
+              }
+              else return;
+              l.src = './assets/powderline-logo.png'; l.hidden = false;
+            })();
+          </script>
         </div>
         <div class="mobile-auth-checking-content"><span class="mobile-auth-checking-logo">✦</span><strong>POWDERLINE</strong><span class="mobile-auth-spinner" aria-hidden="true"></span><p>계정 상태를 확인하는 중입니다.</p></div>
       </section>
@@ -1092,6 +1151,92 @@
             <button id="submitSignupBtn" type="submit" class="primary" data-i18n="btnSubmitSignup">신청하기</button>
           </div>
         </form>
+      </div>
+    </div>
+    <div id="pcAccountModal" class="pc-modal-backdrop" hidden>
+      <div class="pc-modal-dialog pc-account-dialog" role="dialog" aria-modal="true" aria-labelledby="pcAccountModalTitle">
+        <div class="pc-modal-header">
+          <h2 id="pcAccountModalTitle">계정 및 설정</h2>
+          <button id="pcAccountCloseBtn" type="button" class="pc-modal-close" aria-label="닫기"><span class="material-symbols-outlined">close</span></button>
+        </div>
+        <div id="pcAccountModalBody" class="pc-modal-body"></div>
+        <div id="pcWithdrawRow" class="pc-withdraw-row" hidden>
+          <span class="pc-withdraw-label">위험 작업</span>
+          <button id="pcWithdrawOpenBtn" type="button" class="pc-withdraw-link">회원탈퇴</button>
+        </div>
+      </div>
+    </div>
+    <div id="pcWithdrawModal" class="pc-modal-backdrop" hidden>
+      <div class="pc-modal-dialog pc-withdraw-dialog" role="alertdialog" aria-modal="true" aria-labelledby="pcWithdrawTitle">
+        <div class="pc-modal-header">
+          <h2 id="pcWithdrawTitle">회원탈퇴</h2>
+          <button id="pcWithdrawCloseBtn" type="button" class="pc-modal-close" aria-label="닫기"><span class="material-symbols-outlined">close</span></button>
+        </div>
+        <form id="pcWithdrawForm" class="pc-modal-body" autocomplete="off">
+          <div id="pcWithdrawInfo" class="pc-withdraw-info"></div>
+          <label class="pc-withdraw-field"><span id="pcWithdrawPwLabel">비밀번호 확인</span><input id="pcWithdrawPassword" type="password" autocomplete="current-password" /></label>
+          <label class="pc-withdraw-check"><input id="pcWithdrawAck" type="checkbox" /><span id="pcWithdrawAckLabel"></span></label>
+          <p id="pcWithdrawError" class="pc-withdraw-error" role="alert" hidden></p>
+          <div class="pc-withdraw-actions">
+            <button id="pcWithdrawCancelBtn" type="button" class="ghost">취소</button>
+            <button id="pcWithdrawSubmitBtn" type="submit" class="pc-withdraw-danger" disabled>회원탈퇴</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <div id="pcRegionCoursesModal" class="pc-modal-backdrop" hidden>
+      <div class="pc-modal-dialog pc-region-courses-dialog" role="dialog" aria-modal="true" aria-labelledby="pcRegionCoursesTitle">
+        <div class="pc-modal-header">
+          <h2 id="pcRegionCoursesTitle">지역 코스</h2>
+          <button id="pcRegionCoursesCloseBtn" type="button" class="pc-modal-close" aria-label="닫기"><span class="material-symbols-outlined">close</span></button>
+        </div>
+        <div id="pcRegionCoursesBody" class="pc-modal-body saved-list"></div>
+      </div>
+    </div>
+    <div id="pcAdminModal" class="pc-modal-backdrop" hidden>
+      <div class="pc-modal-dialog pc-admin-dialog" role="dialog" aria-modal="true" aria-labelledby="pcAdminModalTitle">
+        <div class="pc-modal-header">
+          <div class="pc-admin-title-group">
+            <span class="material-symbols-outlined">admin_panel_settings</span>
+            <h2 id="pcAdminModalTitle">관리자 콘솔</h2>
+          </div>
+          <button id="pcAdminCloseBtn" type="button" class="pc-modal-close" aria-label="닫기"><span class="material-symbols-outlined">close</span></button>
+        </div>
+        <div class="pc-admin-tabs" role="tablist" aria-label="관리자 메뉴">
+          <button id="pcAdminTabUsers" type="button" class="pc-admin-tab active" role="tab" aria-selected="true" data-tab="users">회원 관리</button>
+          <button id="pcAdminTabPending" type="button" class="pc-admin-tab" role="tab" aria-selected="false" data-tab="pending">가입 요청 관리 <span id="pcAdminTabPendingBadge" class="pc-badge" hidden>0</span></button>
+          <button id="pcAdminTabCourses" type="button" class="pc-admin-tab" role="tab" aria-selected="false" data-tab="courses">전체 코스</button>
+          <button id="pcAdminTabRegions" type="button" class="pc-admin-tab" role="tab" aria-selected="false" data-tab="regions">지역 등록·수정</button>
+        </div>
+        <div class="pc-modal-body pc-admin-body">
+          <section id="pcAdminPanelUsers" class="pc-admin-tab-panel" role="tabpanel">
+            <div class="pc-admin-toolbar">
+              <input id="pcAdminUserSearch" type="search" placeholder="닉네임 또는 이메일 검색…" autocomplete="off" />
+              <select id="pcAdminUserStatusFilter" aria-label="상태 필터">
+                <option value="all">전체 상태</option>
+                <option value="approved">승인 완료</option>
+                <option value="pending">승인 대기</option>
+                <option value="rejected">거절/차단</option>
+              </select>
+              <button id="pcAdminUsersRefreshBtn" type="button" class="ghost">새로고침</button>
+            </div>
+            <div id="pcAdminUsersSummary" class="pc-admin-summary"></div>
+            <div id="pcAdminUsersList" class="pc-admin-users-table-wrap"></div>
+          </section>
+          <section id="pcAdminPanelPending" class="pc-admin-tab-panel" role="tabpanel" hidden>
+            <div class="pc-admin-toolbar">
+              <span id="pcAdminPendingInfo" class="pc-admin-info">대기 중인 가입 요청을 승인 또는 거절할 수 있습니다.</span>
+              <button id="pcAdminPendingRefreshBtn" type="button" class="ghost">새로고침</button>
+            </div>
+            <div id="pcAdminPendingList" class="pc-admin-pending-list"></div>
+          </section>
+          <section id="pcAdminPanelCourses" class="pc-admin-tab-panel" role="tabpanel" hidden>
+            <div id="pcAdminCoursesSlot" class="pc-admin-regions-slot pc-admin-courses-slot"></div>
+          </section>
+          <section id="pcAdminPanelRegions" class="pc-admin-tab-panel" role="tabpanel" hidden>
+            <div id="pcAdminRegionsSlot" class="pc-admin-regions-slot"></div>
+          </section>
+        </div>
       </div>
     </div>
     <script src="./config.js"></script>

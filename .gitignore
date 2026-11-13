@@ -1,0 +1,43 @@
+# Node dependencies
+node_modules/
+
+# Raw OpenSkiData files
+work/openskidata-*.geojson.gz
+
+# Certificates and keys
+cert.pfx
+*.pfx
+*.jks
+*.keystore
+
+# Backups and temporary files
+dist-backup/
+supabase/.temp/
+supabase/functions/.env
+supabase/functions/.env.*
+!supabase/functions/.env.example
+
+# Android build outputs and local configuration
+.gradle/
+build/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+android/capacitor-cordova-android-plugins/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+*.apk
+*.aab
+*.aar
+*.dex
+*.class
+*.hprof
+
+# OS files
+.DS_Store
+Thumbs.db

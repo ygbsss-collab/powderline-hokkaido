@@ -1,0 +1,11 @@
+{
+  "appId": "com.powderline.hokkaido",
+  "appName": "POWDERLINE",
+  "webDir": "dist",
+  "android": {
+    "useLegacyBridge": true
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

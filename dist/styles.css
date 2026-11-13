@@ -2753,13 +2753,15 @@ select {
 /* ==========================================================================
    Stitch Mobile Auth Screens (Login / Signup)
    Design System: Alpine Tactical Navigation (Screen IDs: 6b751362408f4979843ace0eca26502d / 70abe4796b054231b135cf11d270684e)
-   Only active on screens <= 768px when user is not approved
+   Active whenever body[data-mobile-auth] is set (JS sets it only while the gate applies: every web browser,
+   and the native app at <= 768px as before). Rules below only style the auth container, so they are not
+   width-scoped; PC-only overrides live at the end of this file under body[data-auth-scope="pc"].
    ========================================================================== */
 .mobile-auth-container {
   display: none;
 }
 
-@media (max-width: 768px) {
+@media all {
 
   /* When body has data-mobile-auth="login" or "signup", show mobile-auth-container and hide main map & HUD */
   body[data-mobile-auth] .mobile-auth-container {
@@ -5109,6 +5111,23 @@ select {
   font-family: inherit;
 }
 
+/* Android admin 회원 관리 tabs: the unselected <button>s had no background class, so the browser default (white) showed.
+   One dark card style; selected = dark teal. Scoped to the stitch account screen. */
+.stitch-account-screen .admin-tab-card {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 0;
+  padding: 10px 4px; border: 1px solid #36393f; border-radius: 8px; background: #1c2025; color: #bdc8d1; cursor: pointer;
+  transition: background-color .2s, border-color .2s;
+}
+.stitch-account-screen .admin-tab-card .font-label-md,
+.stitch-account-screen .admin-tab-card .font-label-sm { color: inherit; }
+.stitch-account-screen .admin-tab-card .font-label-sm { font-weight: 700; color: #e0e2ea; }
+.stitch-account-screen .admin-tab-card .w-1\.5 { background: #87929a; }
+.stitch-account-screen .admin-tab-card.active { border-color: rgba(56, 189, 248, .55); background: #0f3b4f; color: #e0f2fe; box-shadow: none; }
+.stitch-account-screen .admin-tab-card.active .font-label-sm { color: #7dd3fc; }
+.stitch-account-screen .admin-tab-card.active .w-1\.5 { background: #38bdf8; }
+.stitch-account-screen .admin-tab-card:active { background: #262a30; }
+.stitch-account-screen .admin-tab-card.active:active { background: #124a63; }
+
 
 .stitch-account-screen .\-right\-12 { right: -3rem; }
 .stitch-account-screen .\-right\-8 { right: -2rem; }
@@ -5884,3 +5903,1024 @@ html.native-map-active #map { visibility: hidden; }
 /* Course screen forces the web #map visible (!important); with the Native map active it must stay hidden, otherwise the
    web map covers the Native map and swallows nothing (touches go to the hidden Native view). */
 html.native-map-active body[data-mobile-view="routes"] .map-panel #map { visibility: hidden !important; }
+
+/* =========================================================
+   PC Web Dedicated Layout (Isolated from Android Native & Mobile)
+   ========================================================= */
+body[data-pc-web="true"] .app-shell {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  grid-template-rows: 56px 1fr;
+  height: 100vh;
+  min-height: 540px;
+}
+
+body[data-pc-web="true"] .pc-top-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  background: #ffffff;
+  border-bottom: 1px solid #dfe5df;
+  z-index: 30;
+}
+
+body[data-pc-web="true"] .pc-header-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+body[data-pc-web="true"] .pc-header-brand .brand-header {
+  padding-bottom: 0;
+  border-bottom: 0;
+  gap: 14px;
+}
+
+body[data-pc-web="true"] .pc-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+body[data-pc-web="true"] .pc-header-controls #region {
+  width: auto;
+  min-width: 170px;
+  height: 36px;
+  margin: 0;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+body[data-pc-web="true"] .pc-header-controls .style-switch {
+  width: 210px;
+  height: 36px;
+}
+
+body[data-pc-web="true"] .pc-header-controls .style-switch button {
+  height: 34px;
+  font-size: 11px;
+}
+
+body[data-pc-web="true"] .pc-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+body[data-pc-web="true"] .pc-header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+body[data-pc-web="true"] .pc-header-btn:hover {
+  background: #f3f6f2;
+}
+
+body[data-pc-web="true"] .pc-header-btn .material-symbols-outlined {
+  font-size: 18px;
+}
+
+body[data-pc-web="true"] .pc-header-admin-btn {
+  border-color: var(--deep);
+  background: var(--deep);
+  color: #fff;
+}
+
+body[data-pc-web="true"] .pc-header-admin-btn:hover {
+  background: #1d352e;
+}
+
+body[data-pc-web="true"] .pc-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+body[data-pc-web="true"] .sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+  height: calc(100vh - 56px);
+  overflow-y: auto;
+}
+
+body[data-pc-web="true"] .sidebar .hint,
+body[data-pc-web="true"] .sidebar #adminPanel {
+  display: none !important;
+}
+
+body[data-pc-web="true"] .sidebar .controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 0;
+}
+
+body[data-pc-web="true"] .sidebar .controls .layer-label {
+  display: none !important;
+}
+
+body[data-pc-web="true"] .sidebar .layer-settings {
+  margin: 0;
+  padding: 10px 12px;
+  gap: 6px;
+}
+
+body[data-pc-web="true"] .sidebar .stats {
+  margin-top: 0;
+}
+
+body[data-pc-web="true"] .sidebar .saved {
+  margin-top: 0;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+}
+
+body[data-pc-web="true"] .sidebar .saved-list {
+  flex: 1 1 auto;
+  min-height: 140px;
+  max-height: none;
+  overflow-y: auto;
+}
+
+body[data-pc-web="true"] .map-panel {
+  grid-column: 2;
+  grid-row: 2;
+  height: calc(100vh - 56px);
+}
+
+/* PC Web Modals (Account/Settings & Admin Console) */
+body[data-pc-web="true"] .pc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, .56);
+  backdrop-filter: blur(4px);
+}
+
+body[data-pc-web="true"].admin-region-picking #pcAdminModal {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+body[data-pc-web="true"] .pc-modal-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+  border: 1px solid #dfe5df;
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--ink);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, .3);
+  overflow: hidden;
+}
+
+body[data-pc-web="true"] .pc-account-dialog {
+  width: min(460px, 92vw);
+}
+
+body[data-pc-web="true"] .pc-admin-dialog {
+  width: min(940px, 92vw);
+  height: min(760px, 86vh);
+}
+
+body[data-pc-web="true"] .pc-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #dfe5df;
+  background: #f9fbf6;
+}
+
+body[data-pc-web="true"] .pc-modal-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+body[data-pc-web="true"] .pc-admin-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--deep);
+}
+
+body[data-pc-web="true"] .pc-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #dfe5df;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+body[data-pc-web="true"] .pc-modal-close:hover {
+  background: #eef2ec;
+}
+
+body[data-pc-web="true"] .pc-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+body[data-pc-web="true"] .pc-modal-body .auth-panel {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+body[data-pc-web="true"] .pc-modal-body .settings {
+  margin-top: 4px;
+}
+
+/* PC Admin Console Tabs & Content */
+body[data-pc-web="true"] .pc-admin-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 20px 0;
+  border-bottom: 1px solid #dfe5df;
+  background: #f9fbf6;
+}
+
+body[data-pc-web="true"] .pc-admin-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+body[data-pc-web="true"] .pc-admin-tab.active {
+  background: #ffffff;
+  color: var(--deep);
+  border-color: #dfe5df;
+  margin-bottom: -1px;
+  padding-bottom: 10px;
+}
+
+body[data-pc-web="true"] .pc-admin-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+body[data-pc-web="true"] .pc-admin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+body[data-pc-web="true"] .pc-admin-toolbar input[type="search"],
+body[data-pc-web="true"] .pc-admin-toolbar select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+body[data-pc-web="true"] .pc-admin-toolbar input[type="search"] {
+  flex: 1 1 220px;
+}
+
+body[data-pc-web="true"] .pc-admin-toolbar button {
+  height: 36px;
+  padding: 0 12px;
+}
+
+body[data-pc-web="true"] .pc-admin-info {
+  flex: 1;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+body[data-pc-web="true"] .pc-admin-summary {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+body[data-pc-web="true"] .pc-admin-users-table-wrap {
+  border: 1px solid #dfe5df;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+body[data-pc-web="true"] .pc-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
+}
+
+body[data-pc-web="true"] .pc-admin-table th,
+body[data-pc-web="true"] .pc-admin-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #edf1ec;
+  vertical-align: middle;
+}
+
+body[data-pc-web="true"] .pc-admin-table th {
+  background: #f9fbf6;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+body[data-pc-web="true"] .pc-admin-table tr:last-child td {
+  border-bottom: 0;
+}
+
+body[data-pc-web="true"] .pc-status-pill,
+body[data-pc-web="true"] .pc-role-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+body[data-pc-web="true"] .pc-status-approved { background: #dcfce7; color: #166534; }
+body[data-pc-web="true"] .pc-status-pending { background: #fef9c3; color: #854d0e; }
+body[data-pc-web="true"] .pc-status-rejected { background: #fee2e2; color: #991b1b; }
+
+body[data-pc-web="true"] .pc-role-admin { background: #e0f2fe; color: #075985; }
+body[data-pc-web="true"] .pc-role-member { background: #f1f5f9; color: #475569; }
+
+body[data-pc-web="true"] .pc-admin-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+body[data-pc-web="true"] .pc-admin-row-actions button {
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+body[data-pc-web="true"] .pc-btn-approve { background: #16a34a; color: #fff; }
+body[data-pc-web="true"] .pc-btn-reject { background: #fff; border-color: #ef4444 !important; color: #dc2626; }
+
+body[data-pc-web="true"] .pc-admin-pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+body[data-pc-web="true"] .pc-admin-pending-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #dfe5df;
+  border-radius: 8px;
+  background: #f9fbf6;
+}
+
+/* Reuse existing Regions management content cleanly inside PC Admin Modal */
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-courses-content {
+  padding: 0;
+  color: var(--ink);
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-courses-content > p:first-child,
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-courses-status {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-courses-status.error {
+  color: #dc2626;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-courses-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #dfe5df;
+  border-radius: 8px;
+  background: #f9fbf6;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-item strong {
+  display: block;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-item small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-actions button {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid #dfe5df;
+  border-radius: 10px;
+  background: #f9fbf6;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-map-open {
+  padding: 9px 12px;
+  border: 1px solid #0284c7;
+  border-radius: 6px;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form-actions button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--deep);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form-actions button + button {
+  background: #fff;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+/* ==========================================================================
+   PC web login entry page — reuses the Stitch auth screen (#mobileAuthContainer).
+   body[data-auth-scope="pc"] is set only for non-Capacitor browsers wider than 768px.
+   ========================================================================== */
+body[data-auth-scope="pc"][data-mobile-auth] .pc-top-header,
+body[data-auth-scope="pc"][data-mobile-auth] .pc-modal-backdrop,
+body[data-auth-scope="pc"][data-mobile-auth] .modal-backdrop,
+body[data-auth-scope="pc"][data-mobile-auth] .party-create-course-modal,
+body[data-auth-scope="pc"][data-mobile-auth] .party-leader-modal,
+body[data-auth-scope="pc"][data-mobile-auth] .mobile-standalone-screen,
+body[data-auth-scope="pc"][data-mobile-auth] .mobile-hud-bottom-nav {
+  display: none !important;
+}
+
+body[data-auth-scope="pc"][data-mobile-auth] .mobile-auth-container {
+  z-index: 1000;
+  background:
+    linear-gradient(180deg, rgba(16, 20, 25, .55) 0%, rgba(16, 20, 25, .82) 100%),
+    url('images/login-bg.jpg') center / cover no-repeat,
+    #101419;
+}
+
+/* PC web: the intro player shows until it finishes (same classes as Android); the spinner page follows it. */
+body[data-auth-scope="pc"] .mobile-intro-video { width: 100%; height: 100%; object-fit: cover; object-position: center; } /* fills the screen, no side bars; edges may crop */
+/* PC web intro logo: white wordmark + swoosh (transparent PNG) centred over the video; PC only (img stays hidden/unloaded elsewhere) */
+body[data-auth-scope="pc"] .pc-intro-logo {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: min(46vw, 80vh); height: auto; max-width: 92vw; max-height: 40vh; object-fit: contain;
+  pointer-events: none; user-select: none;
+  opacity: 0; /* faded in by JS from video.currentTime: 0 until 3s, 0→1 over 3–5s, then 1 */
+}
+.pc-intro-logo { display: none; }
+body[data-auth-scope="pc"] .pc-intro-logo:not([hidden]) { display: block; }
+/* Android app intro: same white logo + 3s/2s fade (video clock), centred; sized for a portrait phone. Video itself is cover-fit by the base rule. */
+body[data-app-intro="1"] .pc-intro-logo {
+  display: block; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 74vw; height: auto; max-height: 30vh; object-fit: contain; pointer-events: none; user-select: none; opacity: 0;
+}
+body[data-app-intro="1"] .pc-intro-logo[hidden] { display: none; }
+/* Android app intro: no WebView placeholder/play icon. Dark backdrop while loading; the video fades in only once it is really playing. */
+body[data-app-intro="1"] .mobile-intro-player { background: #050b16; }
+/* Android app only: the clip's first frame (same cover/center fit as the video) shows while the video loads, so there is
+   no dark/black gap; the video then fades in over the identical frame. Mobile web keeps the plain dark backdrop. */
+body[data-app-intro="1"]:not([data-intro-web]) .mobile-intro-player { background: #050b16 url('./assets/powderline-app-intro-first.jpg') center / cover no-repeat; }
+body[data-app-intro="1"] .mobile-intro-video { opacity: 0; background: transparent; transition: opacity .2s ease; }
+body[data-app-intro="1"] .mobile-intro-video.intro-video-ready { opacity: 1; }
+body[data-app-intro="1"] .mobile-intro-video::-webkit-media-controls,
+body[data-app-intro="1"] .mobile-intro-video::-webkit-media-controls-panel,
+body[data-app-intro="1"] .mobile-intro-video::-webkit-media-controls-start-playback-button,
+body[data-app-intro="1"] .mobile-intro-video::-webkit-media-controls-overlay-play-button { display: none !important; -webkit-appearance: none; }
+/* PC intro/checking page is a fixed full-screen layer: no scrollbar beside the video */
+body[data-auth-scope="pc"][data-mobile-auth="checking"] .mobile-auth-container { overflow: hidden; }
+body[data-auth-scope="pc"] .mobile-auth-checking-view.intro-finished .mobile-auth-checking-content {
+  display: flex;
+}
+
+body[data-auth-scope="pc"] .mobile-auth-view {
+  background: transparent;
+}
+
+body[data-auth-scope="pc"] .mobile-auth-header {
+  background: rgba(16, 20, 25, .55);
+}
+
+body[data-auth-scope="pc"] .mobile-auth-main {
+  flex: 1;
+  justify-content: center;
+  max-width: 460px;
+  padding: 40px 24px;
+}
+
+body[data-auth-scope="pc"] .mobile-auth-card {
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 18px;
+  background: rgba(16, 20, 25, .9);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .45);
+}
+
+/* ==========================================================================
+   PC web — Android (Stitch) dark design applied to the PC work screen.
+   Everything below is scoped to body[data-pc-web="true"] (never set in the Capacitor app).
+   Surfaces/text/outline reuse the Android Stitch values; the POWDERLINE lime (--accent) stays the highlight.
+   ========================================================================== */
+body[data-pc-web="true"] {
+  --paper: #101419;      /* Android surface */
+  --ink: #e0e2ea;        /* Android on-surface */
+  --muted: #87929a;      /* Android outline */
+  --line: #36393f;       /* Android surface-bright */
+  --deep: #262a30;       /* Android surface-container-high */
+  --accent: #d8ff43;     /* POWDERLINE lime (kept) */
+  --pc-surface: #181c22;
+  --pc-field: #1c2025;   /* Android inline-form input */
+  --pc-card: #262a30;
+  --pc-hover: #30353c;
+  --pc-sub: #bdc8d1;     /* Android on-surface-variant */
+  --pc-on-accent: #101419;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* Header & sidebar */
+body[data-pc-web="true"] .pc-top-header { background: var(--pc-surface); border-bottom-color: var(--line); }
+body[data-pc-web="true"] .sidebar { background: var(--paper); border-right: 1px solid var(--line); }
+body[data-pc-web="true"] .brand small,
+body[data-pc-web="true"] .field-label,
+body[data-pc-web="true"] .section-title,
+body[data-pc-web="true"] .layer-settings legend,
+body[data-pc-web="true"] .editor-heading small { color: var(--muted); }
+body[data-pc-web="true"] .pc-header-btn { border-color: var(--line); background: var(--pc-card); color: var(--ink); }
+body[data-pc-web="true"] .pc-header-btn:hover { background: var(--pc-hover); }
+body[data-pc-web="true"] .pc-header-admin-btn { border-color: var(--accent); background: var(--accent); color: var(--pc-on-accent); }
+body[data-pc-web="true"] .pc-header-admin-btn:hover { background: #c6ec2f; }
+
+/* Inputs & selects */
+body[data-pc-web="true"] select,
+body[data-pc-web="true"] .sidebar input[type="text"],
+body[data-pc-web="true"] .pc-modal-body input:not([type="checkbox"]):not([type="radio"]),
+body[data-pc-web="true"] .pc-admin-toolbar input[type="search"],
+body[data-pc-web="true"] .pc-admin-toolbar select {
+  border: 1px solid var(--line);
+  background: var(--pc-field);
+  color: var(--ink);
+}
+body[data-pc-web="true"] select:focus,
+body[data-pc-web="true"] input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+body[data-pc-web="true"] input::placeholder { color: var(--muted); }
+
+/* Segmented switches: inactive = field, active = lime */
+body[data-pc-web="true"] .style-switch,
+body[data-pc-web="true"] .lang-switch { border-color: var(--line); }
+body[data-pc-web="true"] .style-switch button,
+body[data-pc-web="true"] .lang-switch button { background: var(--pc-field); color: var(--muted); }
+body[data-pc-web="true"] .style-switch button:hover:not(.active),
+body[data-pc-web="true"] .lang-switch button:hover:not(.active) { background: var(--pc-hover); color: var(--ink); }
+body[data-pc-web="true"] .style-switch button.active,
+body[data-pc-web="true"] .lang-switch button.active { background: var(--accent); color: var(--pc-on-accent); font-weight: 800; }
+body[data-pc-web="true"] .layer-settings { border-color: var(--line); background: var(--pc-surface); }
+body[data-pc-web="true"] .layer-settings input { accent-color: var(--accent); }
+
+/* Buttons */
+body[data-pc-web="true"] .primary { background: var(--pc-card); color: var(--ink); border: 1px solid var(--line); }
+body[data-pc-web="true"] .wide,
+body[data-pc-web="true"] .primary.wide { background: var(--accent); color: var(--pc-on-accent); border: 0; }
+body[data-pc-web="true"] .ghost { border-color: var(--line); color: var(--ink); }
+body[data-pc-web="true"] .primary:hover:not(:disabled),
+body[data-pc-web="true"] .ghost:hover:not(:disabled) { background: var(--pc-hover); }
+body[data-pc-web="true"] .wide:hover:not(:disabled) { background: #c6ec2f; }
+body[data-pc-web="true"] button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Course editor */
+body[data-pc-web="true"] .course-editor { border-color: rgba(216, 255, 67, .55); background: var(--pc-surface); }
+body[data-pc-web="true"] .editor-heading button,
+body[data-pc-web="true"] .editor-actions button,
+body[data-pc-web="true"] .tool-grid button,
+body[data-pc-web="true"] .course-item { border-color: var(--line); background: var(--pc-card); color: var(--ink); }
+body[data-pc-web="true"] .editor-actions button:hover:not(:disabled),
+body[data-pc-web="true"] .tool-grid button:hover:not(.active):not(:disabled),
+body[data-pc-web="true"] .course-item:hover { background: var(--pc-hover); }
+body[data-pc-web="true"] .tool-grid button.active,
+body[data-pc-web="true"] .course-item.active { border-color: var(--accent); background: var(--accent); color: var(--pc-on-accent); }
+body[data-pc-web="true"] .course-item.active small { color: var(--pc-on-accent); }
+
+/* Stats & settings */
+body[data-pc-web="true"] .stats { border-color: var(--line); }
+body[data-pc-web="true"] .settings { border-color: var(--line); background: var(--pc-surface); color: var(--ink); }
+
+/* Saved courses — region folder tree (PC only; Android keeps its own list) */
+body[data-pc-web="true"] .saved-list { gap: 6px; }
+body[data-pc-web="true"] .pc-saved-folder { border: 1px solid var(--line); border-radius: 8px; background: var(--pc-surface); overflow: hidden; }
+body[data-pc-web="true"] .pc-saved-folder-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px;
+  border: 0; background: transparent; color: var(--ink); font-size: 12px; font-weight: 700; text-align: left; cursor: pointer;
+}
+body[data-pc-web="true"] .pc-saved-folder-toggle:hover { background: var(--pc-hover); }
+body[data-pc-web="true"] .pc-saved-folder-chevron { color: var(--accent); font-size: 12px; transition: transform .15s; }
+body[data-pc-web="true"] .pc-saved-folder.collapsed .pc-saved-folder-chevron { transform: rotate(-90deg); }
+body[data-pc-web="true"] .pc-saved-folder-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body[data-pc-web="true"] .pc-saved-folder-count {
+  min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--pc-card); color: var(--pc-sub);
+  font: 700 10px 'JetBrains Mono', 'DM Mono', monospace; text-align: center;
+}
+body[data-pc-web="true"] .pc-saved-folder-items { display: flex; flex-direction: column; gap: 5px; padding: 0 8px 8px 22px; }
+body[data-pc-web="true"] .pc-saved-folder.collapsed .pc-saved-folder-items { display: none; }
+body[data-pc-web="true"] .saved-item { border-color: var(--line); background: var(--pc-card); color: var(--ink); }
+body[data-pc-web="true"] .saved-item:hover { border-color: var(--accent); background: var(--pc-hover); }
+body[data-pc-web="true"] .saved-item small { color: var(--pc-sub); }
+
+/* Elevation/slope panel: graph spans the full width, stats in one row below, point readout in the title */
+body[data-pc-web="true"] .route-profile {
+  border-color: var(--line);
+  background: rgba(24, 28, 34, .95);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .45);
+}
+body[data-pc-web="true"] .profile-toggle { justify-content: flex-start; gap: 14px; height: 30px; color: var(--ink); }
+body[data-pc-web="true"] .profile-toggle #profileChevron { margin-left: auto; color: var(--accent); }
+body[data-pc-web="true"] #profileToggle #profileTooltip {
+  position: static; flex: 0 1 auto; min-width: 0; padding: 0; border: 0; background: transparent; box-shadow: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #facc15; font: 700 11px 'JetBrains Mono', monospace;
+}
+body[data-pc-web="true"] .profile-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; gap: 6px; padding: 0 14px 8px; }
+body[data-pc-web="true"] .profile-chart-wrap { height: 92px; }
+body[data-pc-web="true"] .profile-stats {
+  grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px;
+}
+body[data-pc-web="true"] .profile-stats > div { padding: 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--pc-card); }
+body[data-pc-web="true"] .profile-stats span { color: var(--muted); }
+body[data-pc-web="true"] .profile-stats strong { margin-top: 2px; color: var(--ink); font-size: 13px; }
+body[data-pc-web="true"] .profile-note { line-height: 1.25; }
+body[data-pc-web="true"] .map-panel.profile-open .map-legend,
+body[data-pc-web="true"] .map-panel.profile-open .toast { bottom: 232px !important; }
+body[data-pc-web="true"] .map-panel.profile-open .mapboxgl-ctrl-bottom-left,
+body[data-pc-web="true"] .map-panel.profile-open .mapboxgl-ctrl-bottom-right { bottom: 212px; }
+
+/* Map overlay cards (text uses --ink, so the light card background must follow) */
+body[data-pc-web="true"] .pill,
+body[data-pc-web="true"] .top-actions button,
+body[data-pc-web="true"] .top-actions a,
+body[data-pc-web="true"] .map-legend { background: rgba(24, 28, 34, .9); border-color: var(--line); color: var(--ink); }
+body[data-pc-web="true"] .top-actions button:hover,
+body[data-pc-web="true"] .top-actions a:hover { background: var(--pc-hover); }
+
+/* Modals & admin console */
+body[data-pc-web="true"] .pc-modal-backdrop { background: rgba(0, 0, 0, .6); }
+body[data-pc-web="true"] .pc-modal-dialog { border-color: var(--line); background: var(--pc-surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0, 0, 0, .55); }
+body[data-pc-web="true"] .pc-modal-header,
+body[data-pc-web="true"] .pc-admin-tabs { border-bottom-color: var(--line); background: var(--paper); }
+body[data-pc-web="true"] .pc-admin-title-group { color: var(--accent); }
+body[data-pc-web="true"] .pc-modal-close { border-color: var(--line); background: var(--pc-card); color: var(--ink); }
+body[data-pc-web="true"] .pc-modal-close:hover { background: var(--pc-hover); }
+body[data-pc-web="true"] .pc-admin-tab:hover:not(.active) { color: var(--ink); background: var(--pc-card); }
+body[data-pc-web="true"] .pc-admin-tab.active { border-color: var(--line); background: var(--pc-surface); color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+body[data-pc-web="true"] .pc-admin-users-table-wrap { border-color: var(--line); }
+body[data-pc-web="true"] .pc-admin-table th { background: var(--paper); color: var(--muted); }
+body[data-pc-web="true"] .pc-admin-table th,
+body[data-pc-web="true"] .pc-admin-table td { border-bottom-color: var(--line); }
+body[data-pc-web="true"] .pc-admin-table tbody tr:hover td { background: var(--pc-card); }
+body[data-pc-web="true"] .pc-status-approved { background: rgba(78, 222, 163, .16); color: #4edea3; }
+body[data-pc-web="true"] .pc-status-pending { background: rgba(250, 204, 21, .16); color: #facc15; }
+body[data-pc-web="true"] .pc-status-rejected { background: rgba(255, 180, 171, .16); color: #ffb4ab; }
+body[data-pc-web="true"] .pc-role-admin { background: rgba(56, 189, 248, .16); color: #8ed5ff; }
+body[data-pc-web="true"] .pc-role-member { background: var(--pc-card); color: var(--pc-sub); }
+body[data-pc-web="true"] .pc-btn-approve { background: var(--accent); color: var(--pc-on-accent); }
+body[data-pc-web="true"] .pc-btn-reject { background: transparent; color: #ffb4ab; border-color: #ffb4ab !important; }
+body[data-pc-web="true"] .pc-admin-pending-card { border-color: var(--line); background: var(--pc-card); }
+body[data-pc-web="true"] .pc-modal-body .empty,
+body[data-pc-web="true"] .pc-admin-pending-card small { color: var(--pc-sub) !important; }
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-item { border-color: var(--line); background: var(--pc-card); color: var(--ink); }
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-item small { color: var(--pc-sub); }
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-course-actions button,
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form-actions button + button { border: 1px solid var(--line); background: var(--pc-hover); color: var(--ink); }
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form-actions button:first-child { background: var(--accent); color: var(--pc-on-accent); }
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form { border-color: var(--line); background: var(--paper); }
+body[data-pc-web="true"] .pc-admin-regions-slot .admin-region-form input { border-color: var(--line); background: var(--pc-field); color: var(--ink); }
+
+/* Admin 전체 코스 tab (Android viewer moved into the PC console) */
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-courses-content { display: flex; flex-direction: column; gap: 10px; }
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-courses-content > label { color: var(--muted); font-size: 12px; }
+body[data-pc-web="true"] .pc-admin-courses-slot #stitchAdminCoursesSearch {
+  height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--pc-field); color: var(--ink); font-size: 13px;
+}
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-courses-more {
+  align-self: center; padding: 8px 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--pc-card); color: var(--ink); cursor: pointer;
+}
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-courses-more[hidden],
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-course-preview[hidden] { display: none !important; }
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-course-preview { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--pc-card); }
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-course-preview-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-course-preview-heading button { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--pc-hover); color: var(--ink); cursor: pointer; }
+body[data-pc-web="true"] .pc-admin-courses-slot .admin-course-preview-map { height: 320px; border-radius: 8px; overflow: hidden; }
+
+/* PC 구간 자르기·연결: tool + step panel (the tool button never shows outside PC web) */
+.tool-grid .pc-only-tool { display: none; }
+body[data-pc-web="true"] .tool-grid .pc-only-tool { display: block; grid-column: 1 / -1; }
+body[data-pc-web="true"] .gap-cut-panel { margin-top: 9px; padding: 10px; border: 1px solid rgba(250, 204, 21, .5); border-radius: 8px; background: var(--pc-card); }
+body[data-pc-web="true"] .gap-cut-panel[hidden] { display: none; }
+body[data-pc-web="true"] .gap-cut-status { margin: 0 0 8px; color: var(--ink); font-size: 12px; line-height: 1.45; }
+body[data-pc-web="true"] .gap-cut-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+body[data-pc-web="true"] .gap-cut-actions button { flex: 1 1 auto; min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--pc-hover); color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
+body[data-pc-web="true"] .gap-cut-actions button[hidden] { display: none; }
+body[data-pc-web="true"] .gap-cut-actions #gapCutConfirmBtn { border-color: #ef4444; background: #dc2626; color: #fff; }
+body[data-pc-web="true"] .gap-cut-actions .gap-cut-primary { border-color: var(--accent); background: var(--accent); color: var(--pc-on-accent); }
+
+/* PC map right-top controls: style switch, 2D/3D, then locate → zoom in/out → compass (existing controls, moved in) */
+/* Design = Android map HUD (mobile-hud card/btn): dark slate card, transparent buttons, sky-blue tinted active state. */
+body[data-pc-web="true"] .top-actions a[href*="maplibre-backup"],
+body[data-pc-web="true"] #tiltBtn { display: none !important; } /* MapLibre backup link removed; 기울이기 replaced by 2D/3D (handlers kept) */
+body[data-pc-web="true"] .pc-map-controls {
+  --pc-ctrl-bg: rgba(2, 6, 23, .8);            /* Android .mobile-hud card */
+  --pc-ctrl-border: rgba(100, 116, 139, .55);
+  --pc-ctrl-text: #94a3b8;                     /* Android .mobile-hud-btn */
+  --pc-ctrl-hover: rgba(148, 163, 184, .14);
+  --pc-ctrl-hover-text: #e2e8f0;
+  --pc-ctrl-active-bg: rgba(56, 189, 248, .18); /* Android .mobile-hud-btn.active */
+  --pc-ctrl-active-border: rgba(56, 189, 248, .4);
+  --pc-ctrl-active-text: #38bdf8;
+  --pc-ctrl-radius: 12px;
+  --pc-ctrl-btn-radius: 9px;
+  --pc-ctrl-btn-h: 32px;
+  position: absolute; top: 72px; right: 24px; z-index: 4;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  pointer-events: none;
+}
+body[data-pc-web="true"] .pc-map-controls > * { pointer-events: auto; }
+
+/* Shared card: style switch, 2D/3D and the Mapbox groups use the same background, border, radius, padding, shadow */
+body[data-pc-web="true"] .pc-map-style-slot .style-switch,
+body[data-pc-web="true"] .pc-view-switch,
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group {
+  padding: 2px; gap: 2px;
+  border: 1px solid var(--pc-ctrl-border); border-radius: var(--pc-ctrl-radius);
+  background: var(--pc-ctrl-bg); box-shadow: 0 4px 12px rgba(0, 0, 0, .3);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+body[data-pc-web="true"] .pc-map-style-slot .style-switch { display: grid; grid-template-columns: 1fr 1fr; width: 220px; height: auto; }
+body[data-pc-web="true"] .pc-view-switch { display: grid; grid-template-columns: 1fr 1fr; width: 110px; height: auto; }
+
+/* Shared button: equal size, transparent → hover → active (sky tint, not a lime fill) → disabled */
+body[data-pc-web="true"] .pc-map-style-slot .style-switch button,
+body[data-pc-web="true"] .pc-view-switch button {
+  display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
+  height: var(--pc-ctrl-btn-h); padding: 0 8px;
+  border: 1px solid transparent; border-radius: var(--pc-ctrl-btn-radius);
+  background: transparent; color: var(--pc-ctrl-text);
+  font: 600 12px 'Inter', 'Noto Sans KR', sans-serif; white-space: nowrap; cursor: pointer;
+  transition: background-color .15s, color .15s, border-color .15s;
+}
+body[data-pc-web="true"] .pc-map-style-slot .style-switch button:hover:not(.active):not(:disabled),
+body[data-pc-web="true"] .pc-view-switch button:hover:not(.active):not(:disabled) { background: var(--pc-ctrl-hover); color: var(--pc-ctrl-hover-text); }
+body[data-pc-web="true"] .pc-map-style-slot .style-switch button.active,
+body[data-pc-web="true"] .pc-view-switch button.active {
+  border-color: var(--pc-ctrl-active-border); background: var(--pc-ctrl-active-bg); color: var(--pc-ctrl-active-text); font-weight: 700;
+}
+body[data-pc-web="true"] .pc-map-style-slot .style-switch button:disabled,
+body[data-pc-web="true"] .pc-view-switch button:disabled { opacity: .4; cursor: not-allowed; }
+body[data-pc-web="true"] .pc-map-style-slot .style-switch button:focus-visible,
+body[data-pc-web="true"] .pc-view-switch button:focus-visible,
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group button:focus-visible { outline: 2px solid rgba(56, 189, 248, .7); outline-offset: 1px; }
+/* Icons (Material Symbols, same names as the Android style button) — added in CSS so i18n text updates keep them */
+body[data-pc-web="true"] .pc-map-style-slot #satelliteBtn::before,
+body[data-pc-web="true"] .pc-map-style-slot #topoBtn::before {
+  font-family: 'Material Symbols Outlined'; font-weight: normal; font-style: normal; font-size: 17px; line-height: 1;
+  letter-spacing: normal; text-transform: none; -webkit-font-feature-settings: 'liga'; font-feature-settings: 'liga';
+}
+body[data-pc-web="true"] .pc-map-style-slot #satelliteBtn::before { content: 'satellite_alt'; }
+body[data-pc-web="true"] .pc-map-style-slot #topoBtn::before { content: 'terrain'; }
+
+/* Mapbox locate / zoom / compass: same card + button design, order and vertical stack unchanged */
+body[data-pc-web="true"] .pc-map-nav-slot { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl { float: none; margin: 0; }
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group { display: flex; flex-direction: column; }
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group button {
+  width: var(--pc-ctrl-btn-h); height: var(--pc-ctrl-btn-h);
+  border: 1px solid transparent; border-radius: var(--pc-ctrl-btn-radius); background-color: transparent;
+  transition: background-color .15s, border-color .15s;
+}
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group button + button { border-top: 1px solid transparent; }
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group button:not(:disabled):hover { background-color: var(--pc-ctrl-hover); }
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group button:disabled { opacity: .4; cursor: not-allowed; }
+/* Mapbox icons are dark SVGs: turn them light (hue kept) for the dark card */
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-icon { filter: invert(.82) hue-rotate(180deg); }
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-geolocate.mapboxgl-ctrl-geolocate-active,
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-geolocate.mapboxgl-ctrl-geolocate-background {
+  border-color: var(--pc-ctrl-active-border); background-color: var(--pc-ctrl-active-bg);
+}
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-geolocate-active .mapboxgl-ctrl-icon,
+body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-geolocate-background .mapboxgl-ctrl-icon { filter: none; } /* Mapbox's own blue tracking icon */
+
+@media (max-height: 720px) {
+  body[data-pc-web="true"] .pc-map-controls { top: 64px; gap: 6px; --pc-ctrl-btn-h: 28px; }
+  body[data-pc-web="true"] .pc-map-nav-slot { gap: 6px; }
+}
+
+/* PC 구간 자르기: the elevation graph picks A/B (crosshair while waiting for a pick) */
+body[data-pc-web="true"] #profileChart.gap-cut-pick { cursor: crosshair; }
+
+/* PC header keeps only logo/language + admin/account: the (now empty) header controls slot takes no space */
+body[data-pc-web="true"] .pc-header-controls:empty { display: none; }
+
+/* PC: duplicate mobile slope-graph drawer is hidden (the dark 경로 고도·경사도 분석 panel is the PC graph). Element kept: JS still renders into it. */
+body[data-pc-web="true"] .mobile-map-profile-drawer { display: none !important; }
+
+/* PC region course modal: sidebar shows region + count only; rows scroll inside the modal */
+body[data-pc-web="true"] .pc-saved-region { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px; color: var(--ink); font-size: 12px; font-weight: 700; text-align: left; cursor: pointer; }
+body[data-pc-web="true"] .pc-saved-region:hover { background: var(--pc-hover); border-color: var(--accent); }
+body[data-pc-web="true"] .pc-saved-region .material-symbols-outlined { color: var(--accent); font-size: 18px; }
+body[data-pc-web="true"] .pc-region-courses-dialog { width: min(520px, 92vw); max-height: 78vh; }
+body[data-pc-web="true"] .pc-region-courses-dialog .pc-modal-body { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; max-height: none; }
+
+/* PC account modal: dark cards (Android surface tokens). Cause of the unreadable text: the global light rules
+   .signed-in (#f4f7ee card) and .status-badge-* (pastel !important) were never covered by the PC dark tokens,
+   so light --ink text landed on a light card. */
+body[data-pc-web="true"] .pc-modal-body .signed-in {
+  align-items: center; gap: 12px; padding: 14px 16px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--pc-card);
+}
+body[data-pc-web="true"] .pc-modal-body .signed-in-info { gap: 5px; }
+body[data-pc-web="true"] .pc-modal-body .signed-in strong { font-size: 14px; color: var(--ink); }
+body[data-pc-web="true"] .pc-modal-body .signed-in-nickname { color: var(--pc-sub); font-size: 12px; }
+body[data-pc-web="true"] .pc-modal-body .user-status-row { flex-wrap: wrap; }
+body[data-pc-web="true"] .pc-modal-body .signed-in-badge { border-radius: 999px !important; padding: 2px 9px !important; font-size: 11px; font-weight: 700; }
+body[data-pc-web="true"] .pc-modal-body .status-badge-approved { color: #4edea3 !important; background: rgba(78, 222, 163, .16) !important; border: 1px solid rgba(78, 222, 163, .45) !important; }
+body[data-pc-web="true"] .pc-modal-body .status-badge-pending { color: #facc15 !important; background: rgba(250, 204, 21, .16) !important; border: 1px solid rgba(250, 204, 21, .45) !important; }
+body[data-pc-web="true"] .pc-modal-body .status-badge-rejected { color: #ffb4ab !important; background: rgba(255, 180, 171, .16) !important; border: 1px solid rgba(255, 180, 171, .45) !important; }
+body[data-pc-web="true"] .pc-modal-body .role-badge { background: rgba(56, 189, 248, .16); color: #8ed5ff; border: 1px solid rgba(56, 189, 248, .4); border-radius: 999px; padding: 2px 9px; font-size: 11px; }
+body[data-pc-web="true"] .pc-modal-body .signed-in button { height: 34px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--ink); font-weight: 600; }
+body[data-pc-web="true"] .pc-modal-body .signed-in button:hover { background: var(--pc-hover); }
+body[data-pc-web="true"] .pc-modal-body .auth-panel small { color: var(--pc-sub); }
+body[data-pc-web="true"] .pc-modal-dialog { max-height: min(86vh, 100dvh - 24px); }
+body[data-pc-web="true"] .pc-account-dialog .pc-modal-body { min-height: 0; }
+
+/* 회원탈퇴 entry (bottom of the account modal) and confirmation dialog */
+body[data-pc-web="true"] .pc-withdraw-row { flex: 0 0 auto; padding: 10px 20px 14px; border-top: 1px solid var(--line); text-align: right; }
+body[data-pc-web="true"] .pc-withdraw-row[hidden] { display: none; }
+body[data-pc-web="true"] .pc-withdraw-link { padding: 4px 2px; border: 0; background: transparent; color: var(--pc-sub); font-size: 12px; text-decoration: underline; cursor: pointer; }
+body[data-pc-web="true"] .pc-withdraw-link:hover { color: #ffb4ab; }
+body[data-pc-web="true"] #pcWithdrawModal { z-index: 950; }
+body[data-pc-web="true"] .pc-withdraw-dialog { width: min(520px, 92vw); }
+body[data-pc-web="true"] .pc-withdraw-info { color: var(--ink); font-size: 13px; line-height: 1.55; }
+body[data-pc-web="true"] .pc-withdraw-info p { margin: 0 0 8px; }
+body[data-pc-web="true"] .pc-withdraw-info strong { color: #ffb4ab; }
+body[data-pc-web="true"] .pc-withdraw-info ul { margin: 0 0 8px; padding-left: 20px; color: var(--pc-sub); }
+body[data-pc-web="true"] .pc-withdraw-field { display: flex; flex-direction: column; gap: 6px; color: var(--pc-sub); font-size: 12px; }
+body[data-pc-web="true"] .pc-withdraw-check { display: flex; align-items: flex-start; gap: 8px; color: var(--ink); font-size: 12px; line-height: 1.45; cursor: pointer; }
+body[data-pc-web="true"] .pc-withdraw-error { margin: 0; padding: 9px 11px; border: 1px solid rgba(255, 180, 171, .5); border-radius: 8px; background: rgba(255, 180, 171, .12); color: #ffb4ab; font-size: 12px; line-height: 1.45; }
+body[data-pc-web="true"] .pc-withdraw-error[hidden] { display: none; }
+body[data-pc-web="true"] .pc-withdraw-actions { display: flex; justify-content: flex-end; gap: 8px; }
+body[data-pc-web="true"] .pc-withdraw-actions button { min-height: 34px; padding: 0 14px; border-radius: 9px; font-weight: 600; cursor: pointer; }
+body[data-pc-web="true"] .pc-withdraw-danger { border: 1px solid #ffb4ab; background: rgba(255, 180, 171, .18); color: #ffdad6; }
+body[data-pc-web="true"] .pc-withdraw-danger:hover:not(:disabled) { background: rgba(255, 180, 171, .3); }
+body[data-pc-web="true"] .pc-withdraw-danger:disabled { opacity: .4; cursor: not-allowed; }
+
+/* PC account modal, single dark card layout.
+   Cause of the white outer card: the global `.auth-panel { background: #fff; border; border-radius; padding }` was only
+   partly reset for the PC modal (margin/padding-top/border-top), so a white box wrapped the dark .signed-in card and the
+   grey --muted captions sat on white. */
+body[data-pc-web="true"] .pc-account-dialog .pc-modal-body { gap: 12px; padding: 16px 20px; }
+body[data-pc-web="true"] .pc-modal-body .auth-panel { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+body[data-pc-web="true"] .pc-modal-body .auth-panel .section-title { align-items: center; margin-bottom: 8px; color: var(--pc-sub); font-size: 11px; }
+body[data-pc-web="true"] .pc-modal-body #authStatusBadge { padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--pc-card); color: var(--pc-sub); font-size: 10px; letter-spacing: .04em; }
+body[data-pc-web="true"] .pc-modal-body .auth-panel small { margin-top: 8px; color: var(--pc-sub); font-size: 11px; }
+body[data-pc-web="true"] .pc-modal-body #authStatus[hidden] { display: none; }
+body[data-pc-web="true"] .pc-modal-body .signed-in { padding: 12px 14px; }
+body[data-pc-web="true"] .pc-modal-body .signed-in button { flex: 0 0 auto; height: 36px; padding: 0 16px; }
+body[data-pc-web="true"] .pc-modal-body .settings { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--pc-card); color: var(--pc-sub); font-size: 12px; }
+body[data-pc-web="true"] .pc-modal-body .settings summary { color: var(--ink); font-size: 11px; }
+body[data-pc-web="true"] .pc-modal-body .settings p,
+body[data-pc-web="true"] .pc-modal-body .settings small { color: var(--pc-sub); }
+body[data-pc-web="true"] .pc-withdraw-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px 14px; border-top: 1px solid var(--line); text-align: left; }
+body[data-pc-web="true"] .pc-withdraw-row[hidden] { display: none; }
+body[data-pc-web="true"] .pc-withdraw-label { color: var(--pc-sub); font-size: 11px; letter-spacing: .04em; }
+body[data-pc-web="true"] .pc-withdraw-link { padding: 6px 12px; border: 1px solid rgba(255, 180, 171, .55); border-radius: 9px; background: transparent; color: #ffb4ab; font-size: 12px; font-weight: 600; text-decoration: none; }
+body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 171, .14); color: #ffdad6; }
