@@ -17,6 +17,7 @@
         var b = document.body, c = window.Capacitor, p = c && c.getPlatform ? c.getPlatform() : '';
         var native = !!(c && ((c.isNativePlatform && c.isNativePlatform()) || p === 'android' || p === 'ios'));
         var wide = !window.matchMedia('(max-width: 768px)').matches;
+        if (p === 'android') b.dataset.nativeAndroid = '1'; // Android-app-only styling hook (home screen fit)
         if (!native && wide) b.dataset.authScope = 'pc';
         if (native && wide) delete b.dataset.mobileAuth;
       })();
@@ -1053,6 +1054,14 @@
                 // WebView draws a grey placeholder + big play icon for a <video> without a poster: use an invisible poster, no controls.
                 v.controls = false; v.removeAttribute('controls'); v.disablePictureInPicture = true;
                 v.poster = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+                if (native) {
+                  // Android app: white logo splash first; the video only preloads here and is started by app.js once ready.
+                  b.dataset.introSplash = '1';
+                  v.autoplay = false; v.removeAttribute('autoplay'); v.preload = 'auto';
+                  var s = document.createElement('div'); s.id = 'appIntroSplash'; s.className = 'app-intro-splash'; s.setAttribute('aria-hidden', 'true');
+                  s.innerHTML = '<div class="app-intro-splash-logo"></div>';
+                  v.parentNode.insertBefore(s, v.nextSibling);
+                }
                 v.src = './assets/powderline-app-intro.mp4';
               }
               else return;

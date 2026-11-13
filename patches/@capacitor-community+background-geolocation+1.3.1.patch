@@ -1,0 +1,38 @@
+diff --git a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
+index 2c5de94..45a763b 100644
+--- a/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
++++ b/node_modules/@capacitor-community/background-geolocation/android/src/main/java/com/equimaps/capacitor_background_geolocation/BackgroundGeolocationService.java
+@@ -100,13 +100,26 @@ public class BackgroundGeolocationService extends Service {
+             LocationCallback callback = new LocationCallback(){
+                 @Override
+                 public void onLocationResult(LocationResult locationResult) {
+-                    Location location = locationResult.getLastLocation();
+-                    Intent intent = new Intent(ACTION_BROADCAST);
+-                    intent.putExtra("location", location);
+-                    intent.putExtra("id", id);
+-                    LocalBroadcastManager.getInstance(
+-                            getApplicationContext()
+-                    ).sendBroadcast(intent);
++                    // Batched results (screen off / Doze) carry several fixes: forward every one, oldest first.
++                    java.util.List<Location> locations = new java.util.ArrayList<Location>(locationResult.getLocations());
++                    if (locations.isEmpty() && locationResult.getLastLocation() != null) {
++                        locations.add(locationResult.getLastLocation());
++                    }
++                    java.util.Collections.sort(locations, new java.util.Comparator<Location>() {
++                        @Override
++                        public int compare(Location a, Location b) {
++                            return Long.compare(a.getTime(), b.getTime());
++                        }
++                    });
++                    for (Location location : locations) {
++                        if (location == null) continue;
++                        Intent intent = new Intent(ACTION_BROADCAST);
++                        intent.putExtra("location", location);
++                        intent.putExtra("id", id);
++                        LocalBroadcastManager.getInstance(
++                                getApplicationContext()
++                        ).sendBroadcast(intent);
++                    }
+                 }
+                 @Override
+                 public void onLocationAvailability(LocationAvailability availability) {

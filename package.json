@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "data:ski": "node scripts/extract-openskidata.mjs",
+    "postinstall": "patch-package",
+    "data:ski":"node scripts/extract-openskidata.mjs",
     "cap:sync": "cap sync",
     "cap:sync:android": "cap sync android",
     "android:add": "cap add android",
@@ -20,6 +21,7 @@
     "@capacitor/core": "8.6.0",
     "@capacitor/ios": "8.6.0",
     "@capacitor/local-notifications": "8.3.1",
+    "patch-package": "^8.0.1",
     "stream-json": "^1.9.1"
   }
 }

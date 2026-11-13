@@ -621,7 +621,15 @@ function followMyLocation(lng, lat, force = false) {
   if (!Number.isFinite(lng) || !Number.isFinite(lat) || myLocationFollow.dragging) return;
   const canvas = map.getCanvas();
   const w = canvas.clientWidth, h = canvas.clientHeight;
-  if (!force && w > 0 && h > 0) {
+  if (window.Capacitor?.isNativePlatform?.()) {
+    // Android app: follow once the position moved >= 3 m from the last followed fix (replaces the safe-area gate).
+    const last = myLocationFollow.lastFollow;
+    if (!force && last) {
+      const dLat = (lat - last.lat) * 111320, dLng = (lng - last.lng) * 111320 * Math.cos(lat * Math.PI / 180);
+      if (Math.hypot(dLat, dLng) < 3) return;
+    }
+    myLocationFollow.lastFollow = { lat, lng };
+  } else if (!force && w > 0 && h > 0) {
     const pt = map.project([lng, lat]);
     if (pt.x >= w * 0.25 && pt.x <= w * 0.75 && pt.y >= h * 0.45 && pt.y <= h * 0.75) return;
   }
@@ -3025,18 +3033,38 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     updateGpsRecordingUi();
   }
 
+  // Display only: split the recorded line where consecutive measurement times are >= 30 s apart, so a GPS gap is
+  // not drawn as a straight move. Stored points / GPX are untouched; nothing is interpolated. Single-point pieces are dropped.
+  function gpsRecordingLineSegments(points) {
+    const GPS_RECORDING_GAP_SPLIT_MS = 30000; // local: no TDZ risk if rendering runs before this line during init
+    const segments = [];
+    let current = [];
+    let prevMs = NaN;
+    for (const point of points) {
+      const ms = new Date(point.time).getTime();
+      if (current.length && Number.isFinite(ms) && Number.isFinite(prevMs) && ms - prevMs >= GPS_RECORDING_GAP_SPLIT_MS) {
+        if (current.length > 1) segments.push(current);
+        current = [];
+      }
+      current.push([point.lng, point.lat]);
+      prevMs = ms;
+    }
+    if (current.length > 1) segments.push(current);
+    return segments;
+  }
+
   function renderGpsRecordingRoute() {
     const startedAt = performance.now();
     gpsRecordingLastMapRenderAt = startedAt;
-    const coordinates = gpsRecording.points.map(point => [point.lng, point.lat]);
+    const segments = gpsRecordingLineSegments(gpsRecording.points);
     // Offline (Native) map: same recorded points, same look (#38bdf8 line + glow). Sent before the web-source check,
     // because offline the web style may never load and then the web source does not exist.
-    pushNativeGpsRoute(coordinates);
+    pushNativeGpsRoute(segments);
     const source = typeof map?.getSource === 'function' ? map.getSource('gps-recording-route') : null;
     if (!source) return;
-    source.setData(coordinates.length > 1 ? {
+    source.setData(segments.length ? {
       type: 'FeatureCollection',
-      features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } }]
+      features: [{ type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: segments } }]
     } : emptyCollection);
     logGpsPerformance('route setData', startedAt);
   }
@@ -3644,10 +3672,103 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   }
 
+  // ---- Android only: battery saver check before a NEW recording starts (pause/resume/finish are not checked). ----
+  const powerSaveGate = { checking: false, awaitingSettingsReturn: false, sawHidden: false };
+  function nativePowerCall(method, timeoutMs = 4000) {
+    const plugin = getOfflineMapTestPlugin();
+    if (typeof plugin?.[method] !== 'function') return Promise.reject(new Error(`${method} unavailable`));
+    return Promise.race([
+      plugin[method](),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${method} timeout`)), timeoutMs))
+    ]);
+  }
+  function ensurePowerSaveModal() {
+    let modal = $('#gpsPowerSaveModal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'gpsPowerSaveModal';
+    modal.className = 'modal-backdrop';
+    modal.hidden = true;
+    modal.innerHTML = '<div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="gpsPowerSaveTitle">'
+      + '<h3 id="gpsPowerSaveTitle"></h3><p id="gpsPowerSaveMessage" style="white-space:pre-line"></p>'
+      + '<div class="modal-actions"><button id="gpsPowerSaveCancelBtn" type="button" class="ghost">취소</button>'
+      + '<button id="gpsPowerSavePrimaryBtn" type="button" class="primary"></button></div></div>';
+    document.body.appendChild(modal);
+    $('#gpsPowerSaveCancelBtn').addEventListener('click', () => {
+      powerSaveGate.awaitingSettingsReturn = false;
+      modal.hidden = true;
+    });
+    $('#gpsPowerSavePrimaryBtn').addEventListener('click', async () => {
+      const btn = $('#gpsPowerSavePrimaryBtn');
+      if (btn.disabled) return;
+      if (modal.dataset.mode === 'error') { modal.hidden = true; void requestGpsRecordingStart(); return; }
+      btn.disabled = true;
+      try {
+        const result = await nativePowerCall('openBatterySaverSettings');
+        if (result?.opened) {
+          powerSaveGate.awaitingSettingsReturn = true;
+          powerSaveGate.sawHidden = false;
+          modal.hidden = true;
+        } else toast('배터리 설정 화면을 열 수 없습니다. 휴대폰 설정에서 절전 모드를 해제해 주세요.');
+      } catch {
+        toast('배터리 설정 화면을 열 수 없습니다. 휴대폰 설정에서 절전 모드를 해제해 주세요.');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    return modal;
+  }
+  function showPowerSaveModal(mode) {
+    const modal = ensurePowerSaveModal();
+    modal.dataset.mode = mode;
+    if (mode === 'error') {
+      $('#gpsPowerSaveTitle').textContent = '절전 모드를 확인하지 못했습니다';
+      $('#gpsPowerSaveMessage').textContent = '휴대폰의 절전 모드 상태를 확인하지 못했습니다.\n\n절전 모드가 켜져 있으면 화면을 끈 상태에서 이동 경로가 누락될 수 있습니다. 다시 확인하거나 취소해 주세요.';
+      $('#gpsPowerSavePrimaryBtn').textContent = '다시 확인';
+    } else {
+      $('#gpsPowerSaveTitle').textContent = '절전 모드가 켜져 있습니다';
+      $('#gpsPowerSaveMessage').textContent = '절전 모드에서는 화면을 끈 상태에서 GPS 위치 기록이 제한되어 이동 경로가 누락될 수 있습니다.\n\n정확한 경로 기록을 위해 절전 모드를 해제해 주세요.';
+      $('#gpsPowerSavePrimaryBtn').textContent = '절전 모드 설정';
+    }
+    modal.hidden = false;
+  }
+  // Start button entry point: web/PC go straight to startGpsRecording(); Android checks battery saver first.
+  async function requestGpsRecordingStart() {
+    if (gpsRecording.status !== 'idle') return;
+    // Not Android, or a start is already in progress: existing path (its own guards/toasts) unchanged.
+    if (window.Capacitor?.getPlatform?.() !== 'android' || gpsRecordingAction) return void startGpsRecording();
+    const openModal = $('#gpsPowerSaveModal');
+    if (powerSaveGate.checking || (openModal && !openModal.hidden)) return; // double tap: one check / one modal
+    powerSaveGate.checking = true;
+    let powerSaveMode;
+    try {
+      const result = await nativePowerCall('getPowerSaveMode');
+      if (typeof result?.powerSaveMode !== 'boolean') throw new Error('invalid power save result');
+      powerSaveMode = result.powerSaveMode;
+    } catch (error) {
+      console.warn('Power save check failed:', error);
+      powerSaveMode = null;
+    } finally {
+      powerSaveGate.checking = false;
+    }
+    if (gpsRecording.status !== 'idle' || gpsRecordingAction) return;
+    if (powerSaveMode === false) return void startGpsRecording();
+    showPowerSaveModal(powerSaveMode === null ? 'error' : 'on');
+  }
+  // Re-check only when returning from the settings screen this modal opened (other resumes never auto-start).
+  document.addEventListener('visibilitychange', () => {
+    if (!powerSaveGate.awaitingSettingsReturn) return;
+    if (document.visibilityState === 'hidden') { powerSaveGate.sawHidden = true; return; }
+    if (!powerSaveGate.sawHidden) return;
+    powerSaveGate.awaitingSettingsReturn = false;
+    powerSaveGate.sawHidden = false;
+    void requestGpsRecordingStart();
+  });
+
   function initGpsRecordingInteractions() {
     ensureGpsProcessingIndicators();
     $('#rideShareBtn')?.addEventListener('click', () => {
-      if (gpsRecording.status === 'idle') void startGpsRecording();
+      if (gpsRecording.status === 'idle') void requestGpsRecordingStart();
       else $('#gpsRecordingPanel')?.scrollIntoView?.({ block: 'nearest' });
     });
     $('#gpsRecordPauseBtn')?.addEventListener('click', () => {
@@ -5481,6 +5602,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const summaryEl = $('#pcAdminUsersSummary');
     if (!listEl) return;
 
+    if (state.adminUsersError) {
+      if (summaryEl) summaryEl.innerHTML = '';
+      listEl.innerHTML = `<div class="pending-error-notice" style="padding:12px;border-radius:8px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;font-size:13px;"><strong>회원 목록 조회 오류</strong>: ${escapeHtml(state.adminUsersError)}<br><small>새로고침으로 다시 시도해 주세요. 계속되면 관리자 조회 권한(RLS)을 확인해야 합니다.</small></div>`;
+      return;
+    }
+
     const query = ($('#pcAdminUserSearch')?.value || '').trim().toLowerCase();
     const statusFilter = $('#pcAdminUserStatusFilter')?.value || 'all';
 
@@ -5840,13 +5967,38 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         const armStall = () => { clearTimeout(introStalled); introStalled = setTimeout(guard, 30000); };
         armStall();
         ['loadstart', 'progress', 'waiting', 'stalled'].forEach(ev => introVideo.addEventListener(ev, () => { if (!introVideo.currentTime) armStall(); }));
+      } else if (document.body.dataset.introSplash === '1') {
+        // Android app splash: logo animates ~2s while the (non-autoplay) video preloads. Play only when BOTH the logo is
+        // done and the video has data; the splash stays until playback really advances, then fades (.25s, CSS).
+        const splash = $('#appIntroSplash');
+        let logoDone = false, playRequested = false;
+        const revealVideo = () => {
+          if (!(introVideo.currentTime > 0) || introVideo.paused) return;
+          clearTimeout(introStalled);
+          introVideo.classList.add('intro-video-ready');
+          if (splash && !splash.classList.contains('is-hidden')) {
+            splash.classList.add('is-hidden');
+            setTimeout(() => splash.remove(), 400);
+          }
+        };
+        const tryStart = () => {
+          if (playRequested || !logoDone || introPlaybackComplete || introVideo.readyState < 3) return;
+          playRequested = true;
+          introVideo.play().catch(e => { if (e?.name !== 'AbortError') finishIntro(); });
+        };
+        setTimeout(() => { logoDone = true; tryStart(); }, 2000);
+        ['loadeddata', 'canplay', 'canplaythrough'].forEach(ev => introVideo.addEventListener(ev, tryStart));
+        ['playing', 'timeupdate'].forEach(ev => introVideo.addEventListener(ev, revealVideo));
+        // Never wait forever: no real playback within 12s (load failure / stuck) -> existing auth-screen transition.
+        introStalled = setTimeout(() => { if (!(introVideo.currentTime > 0)) finishIntro(); }, 12000);
       } else {
         introStalled = setTimeout(guard, 8000); // Android app (local asset)
       }
     }
     // play() may reject with AbortError when the element reloads (autoplay keeps going) — that is not a failure.
+    // Android app splash starts playback itself (tryStart above), so it is not started here.
     if ((pcIntro && !introVideo) || introVideo?.ended || introVideo?.error) finishIntro();
-    else introVideo?.play().catch(e => { if (!(pcIntro || appIntro) || e?.name !== 'AbortError') finishIntro(); });
+    else if (document.body.dataset.introSplash !== '1') introVideo?.play().catch(e => { if (!(pcIntro || appIntro) || e?.name !== 'AbortError') finishIntro(); });
 
     const rememberedEmailKey = 'powderline.mobileLoginEmail';
     const rememberEmail = $('#mobileRememberEmail');
@@ -6850,13 +7002,17 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
       if (error) {
         console.warn('loadAdminUsersList error:', error);
+        state.adminUsersError = error.message || '회원 목록을 조회하지 못했습니다.'; // shown by the PC member tab (never mistaken for an empty list)
         return;
       }
+      state.adminUsersError = null;
       adminUsersCache = data || [];
-      renderAdminUsersList();
     } catch (err) {
       console.error('loadAdminUsersList error:', err);
+      state.adminUsersError = err?.message || '회원 목록을 조회하지 못했습니다.';
+      return;
     }
+    renderAdminUsersList(); // Android lists; outside the query try so a render problem can't be reported as a query failure
   }
 
   function renderAdminUsersList() {
@@ -7944,11 +8100,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (!nm.gpsLine) return nm.route;
     return { type: 'FeatureCollection', features: [...(nm.route?.features || []), nm.gpsLine] };
   }
-  function pushNativeGpsRoute(coordinates) {
+  function pushNativeGpsRoute(segments) {
     const nm = state.nativeMap;
     const had = Boolean(nm.gpsLine);
-    nm.gpsLine = coordinates.length > 1
-      ? { type: 'Feature', properties: { color: '#38bdf8', glowColor: '#38bdf8', selected: true, gpsRecording: true }, geometry: { type: 'LineString', coordinates } }
+    nm.gpsLine = segments.length
+      ? { type: 'Feature', properties: { color: '#38bdf8', glowColor: '#38bdf8', selected: true, gpsRecording: true }, geometry: { type: 'MultiLineString', coordinates: segments } }
       : null;
     if (nm.gpsLine || had) pushNativeRoute(null); // kept while the Native map is hidden; sent again by showNativeRegion
   }
@@ -10284,6 +10440,7 @@ async function startPartyMemberRideOn() {
 
     const modalCloseControls = [
       ['#confirmModal', '#modalCancelBtn'],
+      ['#gpsPowerSaveModal', '#gpsPowerSaveCancelBtn'],
       ['#signupModal', '#closeSignupModalBtn'],
       ['#partyCreateCourseModal', '#partyCreateCourseCloseBtn'],
       ['#partyJoinedLeaveModal', '#partyJoinedLeaveCloseBtn'],
@@ -10336,7 +10493,8 @@ async function startPartyMemberRideOn() {
       return true;
     }
     if (mobileView === 'ride') {
-      $('#rideExitBtn')?.click();
+      // Return to the screen that opened ride (home when started from home region/course selection); exit button only as fallback.
+      if (!goBackInAppHistory(mobileView)) $('#rideExitBtn')?.click();
       return true;
     }
     // Previous menu from the view history (no repeated ping-pong between the same screens).

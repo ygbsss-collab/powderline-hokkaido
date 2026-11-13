@@ -3,7 +3,8 @@
   "appName": "POWDERLINE",
   "webDir": "dist",
   "android": {
-    "useLegacyBridge": true
+    "useLegacyBridge": true,
+    "backgroundColor": "#ffffff"
   },
   "server": {
     "androidScheme": "https"

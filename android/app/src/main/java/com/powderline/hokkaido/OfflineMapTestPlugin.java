@@ -230,6 +230,7 @@ public class OfflineMapTestPlugin extends Plugin {
     private LocationListener locationListener;
     private Location lastKnownGpsFix;
     // GPS auto-follow: on after [내 위치(GPS)], off when the user moves/rotates/tilts the map by hand.
+    private Location lastFollowFix = null;        // last fix the camera followed (3 m movement gate)
     private boolean gpsFollowActive = false;
     private boolean gpsGesturesHooked = false;
     private boolean gpsDragging = false;          // a drag/pinch is in progress: follow is suspended, not ended
@@ -431,6 +432,51 @@ public class OfflineMapTestPlugin extends Plugin {
             ret.put("shown", ok);
             call.resolve(ret);
         });
+    }
+
+    /** Battery saver state for the GPS recording start check (read only; the app never changes it). */
+    @PluginMethod
+    public void getPowerSaveMode(PluginCall call) {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            if (pm == null) { call.reject("PowerManager unavailable"); return; }
+            JSObject ret = new JSObject();
+            ret.put("powerSaveMode", pm.isPowerSaveMode());
+            call.resolve(ret);
+        } catch (Throwable e) {
+            call.reject("Power save check failed: " + e.getMessage());
+        }
+    }
+
+    /** Opens the battery saver settings; falls back to the general battery screen, then to Settings. */
+    @PluginMethod
+    public void openBatterySaverSettings(PluginCall call) {
+        String[] actions = {
+            android.provider.Settings.ACTION_BATTERY_SAVER_SETTINGS,
+            android.content.Intent.ACTION_POWER_USAGE_SUMMARY,
+            android.provider.Settings.ACTION_SETTINGS
+        };
+        for (String action : actions) {
+            try {
+                // No resolveActivity(): package visibility (Android 11+) can hide Settings; ActivityNotFoundException falls through.
+                android.content.Intent intent = new android.content.Intent(action);
+                if (getActivity() != null) getActivity().startActivity(intent);
+                else {
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    getContext().startActivity(intent);
+                }
+                JSObject ret = new JSObject();
+                ret.put("opened", true);
+                ret.put("action", action);
+                call.resolve(ret);
+                return;
+            } catch (Throwable e) {
+                Log.w(TAG, "openBatterySaverSettings(" + action + ") failed: " + e.getMessage());
+            }
+        }
+        JSObject ret = new JSObject();
+        ret.put("opened", false);
+        call.resolve(ret);
     }
 
     /** Web "my location" button while the Native map is shown: show my position, recenter, (re)activate follow. */
@@ -2634,10 +2680,9 @@ public class OfflineMapTestPlugin extends Plugin {
             int h = mapView.getHeight();
             if (w <= 0 || h <= 0) return;
             Point p = Point.fromLngLat(loc.getLongitude(), loc.getLatitude());
-            if (!force) {
-                ScreenCoordinate sc = mapView.getMapboxMap().pixelForCoordinate(p);
-                if (sc.getX() >= w * 0.25 && sc.getX() <= w * 0.75 && sc.getY() >= h * 0.45 && sc.getY() <= h * 0.75) return;
-            }
+            // Follow once the position moved >= 3 m from the last followed fix (replaces the safe-area gate).
+            if (!force && lastFollowFix != null && lastFollowFix.distanceTo(loc) < 3f) return;
+            lastFollowFix = new Location(loc);
             CameraOptions target = new CameraOptions.Builder()
                 .center(p)
                 .padding(new EdgeInsets(h * 0.2, 0.0, 0.0, 0.0))

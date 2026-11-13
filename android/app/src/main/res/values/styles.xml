@@ -17,6 +17,8 @@
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <!-- Plain white launch screen (no Capacitor placeholder image); Android 12+ system splash also white. Launcher icon unchanged. -->
+        <item name="android:background">@android:color/white</item>
+        <item name="windowSplashScreenBackground">@android:color/white</item>
     </style>
 </resources>
