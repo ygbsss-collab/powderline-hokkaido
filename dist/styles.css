@@ -7159,10 +7159,25 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
 .mobile-ride-hud .ride-bottom-deck #gpsRecordToggleIconBtn .rec-icon-play { display: none; }
 .mobile-ride-hud .ride-bottom-deck #gpsRecordToggleIconBtn.is-paused .rec-icon-pause { display: none; }
 .mobile-ride-hud .ride-bottom-deck #gpsRecordToggleIconBtn.is-paused .rec-icon-play { display: block; color: #4ade80; }
-/* Slope drawer open on the ride map: the map and the ride HUD end above the drawer body (layout space, no overlay),
+/* Slope drawer open on the ride map: the map and the ride HUD end exactly at the drawer's top edge (measured inset, no overlay),
    so the map buttons / record / route-follow / 라이딩 종료 controls move up with the map. */
 @media (max-width: 768px) {
-  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded #map { bottom: var(--profile-body-h, 0px); }
-  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .mobile-ride-hud { bottom: var(--profile-body-h, 0px); }
-  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .ride-bottom-deck { display: flex; }
+  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded #map { bottom: var(--ride-profile-inset, 0px); }
+  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .mobile-ride-hud { bottom: var(--ride-profile-inset, 0px); }
+  /* Deck = bottom of the shortened map (10px gap): its usual 128px clearance (nav + drawer header) is not needed here. */
+  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .ride-bottom-deck { display: flex; bottom: 10px; }
+}
+
+/* Ride map: expanded slope drawer ≈120px in total, most of it for the chart: header 34 + chart 70 + gap 2 +
+   one-line stats ≈14 ("거리 3.87 km | 평균 경사 10.6° | 최대 경사 40.7°") + bottom padding 2. Collapsed header unchanged. */
+@media (max-width: 768px) {
+  body[data-mobile-view="ride"] #mobileMapProfileToggle[aria-expanded="true"] { min-height: 34px; }
+  body[data-mobile-view="ride"] #mobileMapProfileBody { padding-bottom: 2px; }
+  body[data-mobile-view="ride"] #mobileMapProfileBody .course-profile-chart { height: 70px; }
+  body[data-mobile-view="ride"] #mobileMapProfileBody .course-profile-stats { margin-top: 2px; padding: 0; gap: 0; }
+  body[data-mobile-view="ride"] #mobileMapProfileBody .course-profile-stats > div {
+    flex-direction: row; align-items: baseline; justify-content: center; gap: 3px; min-width: 0; padding: 0 2px;
+  }
+  body[data-mobile-view="ride"] #mobileMapProfileBody .course-profile-stats small { font-size: 8.5px; line-height: 1; white-space: nowrap; }
+  body[data-mobile-view="ride"] #mobileMapProfileBody .course-profile-stats strong { font-size: 10.5px; line-height: 1; white-space: nowrap; }
 }

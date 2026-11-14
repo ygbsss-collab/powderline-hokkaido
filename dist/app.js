@@ -908,21 +908,33 @@ function completeRouteFollow() {
   vibrateRideAlert('complete');
 }
 function hasRideRoute() { return Array.isArray(state.points) && state.points.length >= 2; }
-// Slope drawer open (ride view): the map and the ride HUD get shorter by the drawer body height (CSS var) instead of
-// being covered; map.resize() keeps center / zoom / bearing / pitch. A resize event also re-syncs the native map rect.
+// Slope drawer open (ride view): the map AND the whole ride HUD end exactly at the drawer's top edge
+// (--ride-profile-inset = map-panel bottom − drawer top, measured), so nothing of the map / its controls sits under
+// the graph. map.resize() keeps center / zoom / bearing / pitch; the resize event also re-syncs the native map rect.
 function syncRideProfileLayout() {
   const panel = document.querySelector('.map-panel'), body = document.getElementById('mobileMapProfileBody');
-  if (!panel || !body) return;
-  const height = body.hidden === false ? Math.ceil(body.getBoundingClientRect().height) : 0;
-  const next = height + 'px';
-  if (panel.style.getPropertyValue('--profile-body-h') === next) return;
-  panel.style.setProperty('--profile-body-h', next);
+  const drawer = document.getElementById('mobileMapProfileDrawer');
+  if (!panel || !body || !drawer) return;
+  const open = body.hidden === false && drawer.offsetParent !== null; // expanded and actually displayed
+  const inset = open ? Math.max(0, Math.ceil(panel.getBoundingClientRect().bottom - drawer.getBoundingClientRect().top)) : 0;
+  const next = inset + 'px';
+  if (panel.style.getPropertyValue('--ride-profile-inset') === next) return;
+  panel.style.setProperty('--ride-profile-inset', next);
   requestAnimationFrame(() => {
     try { map.resize(); } catch {}
     window.dispatchEvent(new Event('resize'));
+    if (open && document.body.dataset.mobileView === 'ride') { // layout check: map bottom should meet the graph top
+      const mapBottom = document.getElementById('map')?.getBoundingClientRect().bottom;
+      const graphTop = drawer.getBoundingClientRect().top;
+      console.debug('[ride-profile-layout]', { mapBottom, graphTop, diff: Math.round((mapBottom - graphTop) * 10) / 10 });
+    }
   });
 }
 window.addEventListener('resize', () => syncRideProfileLayout());
+if (typeof ResizeObserver === 'function') {
+  const drawerEl = document.getElementById('mobileMapProfileDrawer');
+  if (drawerEl) new ResizeObserver(() => syncRideProfileLayout()).observe(drawerEl);
+}
 // Floating control: 일시정지/재개 + 종료 while following, "따라가기 시작" when stopped with a route selected.
 function renderRouteFollowControls() {
   renderRideRemaining();
