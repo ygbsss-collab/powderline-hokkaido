@@ -613,6 +613,91 @@ const geolocateControl = new mapboxgl.GeolocateControl({
   showUserLocation: true
 });
 map.addControl(geolocateControl, 'bottom-right');
+// Heading arrow: mapbox-gl uses the sensor value as-is (device-natural axes). Add the screen rotation angle so
+// landscape matches the phone's real facing; relative (non-absolute) events stay ignored by the original handler.
+// Manual compass calibration (-180..180 deg, shared with the Android native puck): added to the final display heading only.
+const HEADING_OFFSET_STORAGE = 'powderline.headingOffset';
+function clampHeadingOffset(value) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.max(-180, Math.min(180, n)) : 0;
+}
+const compassHeading = { offset: 0, lastHeading: null, render: null };
+try { compassHeading.offset = clampHeadingOffset(localStorage.getItem(HEADING_OFFSET_STORAGE) ?? 0); } catch {}
+if (typeof geolocateControl._onDeviceOrientation === 'function') {
+  const mapboxOnDeviceOrientation = geolocateControl._onDeviceOrientation;
+  compassHeading.render = () => {
+    if (compassHeading.lastHeading === null) return; // no sensor value yet: the sector stays hidden
+    const shown = (((compassHeading.lastHeading + compassHeading.offset) % 360) + 360) % 360 || 360; // mapbox treats 0 as "no heading"
+    mapboxOnDeviceOrientation.call(geolocateControl, { webkitCompassHeading: shown });
+  };
+  geolocateControl._onDeviceOrientation = (e) => {
+    const screenAngle = Number(window.screen?.orientation?.angle ?? window.orientation ?? 0) || 0;
+    const compass = Number(e.webkitCompassHeading);
+    let heading = null;
+    if (Number.isFinite(compass)) heading = compass + screenAngle;
+    else if (e.absolute === true && Number.isFinite(e.alpha)) heading = -e.alpha + screenAngle;
+    if (heading === null) return; // no absolute heading received: keep the previous arrow state
+    compassHeading.lastHeading = heading; // screen-rotation corrected, before the manual offset
+    compassHeading.render();
+  };
+}
+// My-location marker 2D → 3D by pitch: the marker is screen-aligned (mapbox only translates it, still at the GPS point on
+// terrain) and the app tilts the dot + sector itself: tilt = pitch·(1 − smoothstep(30°, 60°, pitch)), so ≤30° matches the old
+// ground-flat look and ≥60° faces the screen. The sector's screen direction comes from map.project() of the heading 5 m
+// ahead, so map bearing/pitch are applied exactly once. The accuracy circle marker stays ground-aligned (untouched).
+const userLocationTilt = { prepared: null };
+function updateUserLocationTilt() {
+  const marker = geolocateControl._userLocationDotMarker;
+  if (!marker) return;
+  if (userLocationTilt.prepared !== marker) {
+    userLocationTilt.prepared = marker;
+    marker.setPitchAlignment('viewport').setRotationAlignment('viewport').setRotation(0);
+    if (typeof marker.setOccludedOpacity === 'function') marker.setOccludedOpacity(0.8);
+  }
+  const el = marker.getElement();
+  const dot = el?.querySelector('.mapboxgl-user-location-dot');
+  const sector = el?.querySelector('.mapboxgl-user-location-heading');
+  if (!dot || !sector) return;
+  const pitch = map.getPitch();
+  const x = Math.max(0, Math.min(1, (pitch - 30) / 30));
+  const tilt = pitch * (1 - x * x * (3 - 2 * x)); // smoothstep
+  dot.style.transform = tilt ? `rotateX(${tilt}deg)` : '';
+  const heading = geolocateControl._heading; // compass + screen rotation + manual offset (set by the wrapper above)
+  const lngLat = marker.getLngLat();
+  if (typeof heading !== 'number' || !lngLat) { sector.style.transform = ''; return; }
+  const rad = heading * Math.PI / 180;
+  const ahead = [
+    lngLat.lng + (5 * Math.sin(rad)) / (111320 * Math.cos(lngLat.lat * Math.PI / 180)),
+    lngLat.lat + (5 * Math.cos(rad)) / 111320
+  ];
+  const a = map.project(lngLat), b = map.project(ahead);
+  const dx = b.x - a.x, dy = b.y - a.y;
+  // Screen angle S of the heading (clockwise from screen-up); fallback when the 5 m step projects to ~0 px.
+  const screenAngle = Math.hypot(dx, dy) > 0.01 ? Math.atan2(dx, -dy) : (heading - map.getBearing()) * Math.PI / 180;
+  // In a plane tilted by rotateX(t), angle φ shows on screen as atan2(sin φ, cos φ·cos t); solve for S.
+  const tiltRad = tilt * Math.PI / 180;
+  const phi = Math.atan2(Math.sin(screenAngle) * Math.cos(tiltRad), Math.cos(screenAngle)) * 180 / Math.PI;
+  sector.style.transform = `${tilt ? `rotateX(${tilt}deg) ` : ''}rotateZ(${phi}deg)`;
+}
+// Replace mapbox's own marker rotation (which would rotate the whole marker by the heading) on this instance only.
+// The throttled copy was bound in the constructor, so both are replaced. The show-heading class logic is unchanged.
+geolocateControl._updateMarkerRotation = function () {
+  const marker = this._userLocationDotMarker;
+  if (!marker) return;
+  if (typeof this._heading === 'number') marker.addClassName('mapboxgl-user-location-show-heading');
+  else marker.removeClassName('mapboxgl-user-location-show-heading');
+  updateUserLocationTilt();
+};
+{
+  let rotationQueued = false;
+  geolocateControl._updateMarkerRotationThrottled = () => {
+    if (rotationQueued) return;
+    rotationQueued = true;
+    requestAnimationFrame(() => { rotationQueued = false; geolocateControl._updateMarkerRotation(); });
+  };
+}
+map.on('move', updateUserLocationTilt);
+geolocateControl.on('geolocate', updateUserLocationTilt);
 let pendingLocateToast = true;
 // My-location follow: keeps zoom/pitch/bearing, moves only the center (marker ~10% below screen center)
 // once the marker leaves the safe area. Stops on manual pan/rotate/tilt; re-armed by the locate button.
@@ -5976,9 +6061,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
           if (!(introVideo.currentTime > 0) || introVideo.paused) return;
           clearTimeout(introStalled);
           introVideo.classList.add('intro-video-ready');
-          if (splash && !splash.classList.contains('is-hidden')) {
+          $('#mobileIntroSkipBtn')?.classList.add('intro-skip-visible'); // skip appears together with the crossfade
+          if (splash &&!splash.classList.contains('is-hidden')) {
             splash.classList.add('is-hidden');
-            setTimeout(() => splash.remove(), 400);
+            setTimeout(() => splash.remove(), 750); // after the .7s crossfade
           }
         };
         const tryStart = () => {
@@ -5986,7 +6072,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
           playRequested = true;
           introVideo.play().catch(e => { if (e?.name !== 'AbortError') finishIntro(); });
         };
-        setTimeout(() => { logoDone = true; tryStart(); }, 2000);
+        setTimeout(() => { logoDone = true; tryStart(); }, 500); // minimum logo time; then play as soon as readyState >= 3
         ['loadeddata', 'canplay', 'canplaythrough'].forEach(ev => introVideo.addEventListener(ev, tryStart));
         ['playing', 'timeupdate'].forEach(ev => introVideo.addEventListener(ev, revealVideo));
         // Never wait forever: no real playback within 12s (load failure / stuck) -> existing auth-screen transition.
@@ -10444,7 +10530,8 @@ async function startPartyMemberRideOn() {
       ['#signupModal', '#closeSignupModalBtn'],
       ['#partyCreateCourseModal', '#partyCreateCourseCloseBtn'],
       ['#partyJoinedLeaveModal', '#partyJoinedLeaveCloseBtn'],
-      ['#partyLeaderDisbandModal', '#partyLeaderDisbandCloseBtn']
+      ['#partyLeaderDisbandModal', '#partyLeaderDisbandCloseBtn'],
+      ['#compassCalibrationModal', '#compassCalibCancelBtn']
     ];
     for (const [modalId, closeId] of modalCloseControls) {
       if (clickVisibleControl(modalId, closeId)) return true;
@@ -10538,6 +10625,93 @@ async function startPartyMemberRideOn() {
     });
   }
 
+  // Compass calibration: 1 s long-press on a mobile "my location" button. A short tap keeps the GPS action.
+  function initCompassCalibration() {
+    const LOCATE_SELECTORS = ['#mobileLocateBtn', '#rideLocateBtn', '#mobileRoutesLocateBtn', '#mobileEditorLocateBtn'];
+    const LONG_PRESS_MS = 1000, MOVE_TOLERANCE_PX = 10;
+    const modal = $('#compassCalibrationModal'), range = $('#compassCalibRange'), valueEl = $('#compassCalibValue');
+    if (!modal || !range || !valueEl) return;
+    let savedOffset = compassHeading.offset;
+    let suppressClick = null; // button whose click right after a long-press must not run the GPS action
+    const nativePlugin = () => getOfflineMapTestPlugin();
+    const sendNative = (offset, persist) => {
+      const plugin = nativePlugin();
+      if (!plugin?.setHeadingOffset) return;
+      try { plugin.setHeadingOffset({ offset, persist }).catch(error => console.warn('setHeadingOffset failed:', error)); } catch {}
+    };
+    // Both maps show the given offset (preview, cancel restore and save all go through here).
+    const applyOffset = (offset, persist) => {
+      compassHeading.offset = clampHeadingOffset(offset);
+      compassHeading.render?.();
+      sendNative(compassHeading.offset, persist);
+    };
+    const showValue = (offset) => {
+      range.value = String(offset);
+      valueEl.textContent = (offset > 0 ? '+' : '') + offset + '°';
+    };
+    const preview = (offset) => { const v = clampHeadingOffset(offset); showValue(v); applyOffset(v, false); };
+    const open = () => {
+      savedOffset = compassHeading.offset;
+      showValue(savedOffset);
+      modal.hidden = false;
+    };
+    const close = () => { modal.hidden = true; };
+
+    range.addEventListener('input', () => preview(range.value));
+    $('#compassCalibMinusBtn')?.addEventListener('click', () => preview(Number(range.value) - 1));
+    $('#compassCalibPlusBtn')?.addEventListener('click', () => preview(Number(range.value) + 1));
+    $('#compassCalibResetBtn')?.addEventListener('click', () => preview(0)); // preview only; 저장 to keep it
+    $('#compassCalibCancelBtn')?.addEventListener('click', () => { applyOffset(savedOffset, false); close(); });
+    $('#compassCalibSaveBtn')?.addEventListener('click', () => {
+      const offset = clampHeadingOffset(range.value);
+      try { localStorage.setItem(HEADING_OFFSET_STORAGE, String(offset)); } catch {}
+      savedOffset = offset;
+      applyOffset(offset, true);
+      close();
+      toast('나침반 보정값을 저장했습니다 (' + (offset > 0 ? '+' : '') + offset + '°)');
+    });
+    modal.addEventListener('click', (event) => { if (event.target === modal) $('#compassCalibCancelBtn')?.click(); });
+
+    // Capture phase on document: runs before the buttons' own click listeners.
+    document.addEventListener('click', (event) => {
+      if (!suppressClick || !suppressClick.contains(event.target)) return;
+      suppressClick = null;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+
+    LOCATE_SELECTORS.forEach((selector) => {
+      const btn = $(selector);
+      if (!btn) return;
+      btn.classList.add('compass-longpress-target');
+      let timer = null, startX = 0, startY = 0;
+      const cancel = () => { clearTimeout(timer); timer = null; };
+      btn.addEventListener('contextmenu', event => event.preventDefault());
+      btn.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        cancel();
+        startX = event.clientX; startY = event.clientY;
+        timer = setTimeout(() => {
+          timer = null;
+          suppressClick = btn;
+          try { navigator.vibrate?.(15); } catch {}
+          open();
+        }, LONG_PRESS_MS);
+      });
+      btn.addEventListener('pointermove', (event) => {
+        if (timer && Math.hypot(event.clientX - startX, event.clientY - startY) > MOVE_TOLERANCE_PX) cancel();
+      });
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => btn.addEventListener(type, cancel));
+      // After the long-press finger lifts, the follow-up click arrives right away; drop the guard if it never comes.
+      ['pointerup', 'pointercancel'].forEach(type => btn.addEventListener(type, () => {
+        if (suppressClick === btn) setTimeout(() => { if (suppressClick === btn) suppressClick = null; }, 400);
+      }));
+    });
+
+    // Start-up: the native puck uses the same saved value as the online map.
+    sendNative(compassHeading.offset, true);
+  }
+
   function initAndroidBackButton() {
     const capacitor = window.Capacitor;
     const appPlugin = capacitor?.Plugins?.App;
@@ -10579,6 +10753,7 @@ async function startPartyMemberRideOn() {
   initMobileStandaloneInteractions();
   initGpsRecordingInteractions();
   initAndroidBackButton();
+  initCompassCalibration();
   initBrowserBackGuard();
   initAuthConnectivityRevalidation();
 

@@ -1,6 +1,7 @@
 package com.powderline.hokkaido;
 
 import android.Manifest;
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
@@ -10,7 +11,9 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
+import android.graphics.RadialGradient;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
@@ -60,6 +63,7 @@ import com.mapbox.bindgen.DataRef;
 import com.mapbox.bindgen.Expected;
 import com.mapbox.bindgen.Value;
 import com.mapbox.common.Cancelable;
+import com.mapbox.common.location.LocationError;
 import com.mapbox.common.MapboxOptions;
 import com.mapbox.common.OfflineSwitch;
 import com.mapbox.common.TileRegion;
@@ -100,8 +104,11 @@ import com.mapbox.maps.plugin.gestures.GesturesUtils;
 import com.mapbox.maps.plugin.gestures.OnMoveListener;
 import com.mapbox.maps.plugin.gestures.OnRotateListener;
 import com.mapbox.maps.plugin.gestures.OnShoveListener;
+import com.mapbox.maps.plugin.locationcomponent.DefaultLocationProvider;
 import com.mapbox.maps.plugin.locationcomponent.LocationComponentPlugin;
 import com.mapbox.maps.plugin.locationcomponent.LocationComponentUtils;
+import com.mapbox.maps.plugin.locationcomponent.LocationConsumer;
+import com.mapbox.maps.plugin.locationcomponent.LocationProvider;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -122,11 +129,16 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import kotlin.Unit;
+import kotlin.jvm.functions.Function1;
 
 @CapacitorPlugin(
     name = "OfflineMapTest",
@@ -146,6 +158,7 @@ public class OfflineMapTestPlugin extends Plugin {
     private static final String PREFS_NAME = "PowderlineOfflineTestPrefs";
     private static final String PREF_MAPBOX_TOKEN = "mapbox_public_token";
     private static final String PREF_DONGTAN_BBOX = "dongtan_bbox_json";
+    private static final String PREF_HEADING_OFFSET = "heading_offset_deg";
     private static final String PREF_DONGTAN_SOURCE = "dongtan_bbox_source";
 
     // Ski lift/run GeoJSON: Supabase Storage (ski-data bucket) -> app internal storage -> Mapbox line layers.
@@ -229,6 +242,7 @@ public class OfflineMapTestPlugin extends Plugin {
     private LocationManager locationManager;
     private LocationListener locationListener;
     private Location lastKnownGpsFix;
+    @Nullable private HeadingOffsetLocationProvider headingOffsetProvider; // created once, reused across re-enables
     // GPS auto-follow: on after [내 위치(GPS)], off when the user moves/rotates/tilts the map by hand.
     private Location lastFollowFix = null;        // last fix the camera followed (3 m movement gate)
     private boolean gpsFollowActive = false;
@@ -2755,26 +2769,155 @@ public class OfflineMapTestPlugin extends Plugin {
             p.setColor(Color.parseColor("#1DA1F2"));
             tc.drawCircle(c, c, 7.5f * d, p);
 
-            final int bearingSize = Math.round(48f * d);
+            // Heading sector (same as web CSS): r=44dp, +-30deg around "up", #FF3B30 78% fading to 0 at the rim (dot stays #1DA1F2).
+            // The bitmap centre is the puck centre, so the SDK rotates it about the dot.
+            final float sectorR = 44f * d;
+            final int bearingSize = Math.round(sectorR * 2f);
             Bitmap bearing = Bitmap.createBitmap(bearingSize, bearingSize, Bitmap.Config.ARGB_8888);
             Canvas bc = new Canvas(bearing);
             float bcx = bearingSize / 2f;
-            Path arrow = new Path();
-            arrow.moveTo(bcx, bcx - 21.9f * d);
-            arrow.lineTo(bcx + 7.5f * d, bcx - 11.6f * d);
-            arrow.lineTo(bcx, bcx - 14.4f * d);
-            arrow.lineTo(bcx - 7.5f * d, bcx - 11.6f * d);
-            arrow.close();
             Paint ap = new Paint(Paint.ANTI_ALIAS_FLAG);
             ap.setStyle(Paint.Style.FILL);
-            ap.setColor(Color.parseColor("#4AA1EB"));
-            bc.drawPath(arrow, ap);
+            ap.setShader(new RadialGradient(bcx, bcx, sectorR,
+                Color.argb(0xC7, 0xFF, 0x3B, 0x30), Color.argb(0x00, 0xFF, 0x3B, 0x30), Shader.TileMode.CLAMP));
+            bc.drawArc(new RectF(0f, 0f, bearingSize, bearingSize), -120f, 60f, true, ap);
 
             return new LocationPuck2D(ImageHolder.from(top), ImageHolder.from(bearing), null, null, 1.0f);
         } catch (Throwable e) {
             Log.w(TAG, "web-style puck failed, using default: " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Wraps the SDK DefaultLocationProvider and adds the manual compass offset to onBearingUpdated only.
+     * Location, accuracy, animator options and errors are forwarded unchanged; one proxy per original consumer.
+     */
+    private static final class HeadingOffsetLocationProvider implements LocationProvider {
+        final DefaultLocationProvider inner;
+        private final Map<LocationConsumer, LocationConsumer> proxies = new HashMap<>();
+        private volatile double offsetDeg;
+        private double lastRawBearing = Double.NaN;
+
+        HeadingOffsetLocationProvider(@NonNull Context context, double offsetDeg) {
+            this.inner = new DefaultLocationProvider(context);
+            this.offsetDeg = offsetDeg;
+        }
+
+        static double normalize(double deg) {
+            double v = deg % 360.0;
+            return v < 0 ? v + 360.0 : v;
+        }
+
+        /** Applies a new offset immediately (re-emits the last raw heading); no provider re-creation. Main thread. */
+        void setOffset(double deg) {
+            offsetDeg = deg;
+            if (Double.isNaN(lastRawBearing)) return; // no compass value received yet: nothing to redraw
+            double[] value = new double[] { normalize(lastRawBearing + deg) };
+            for (LocationConsumer consumer : new ArrayList<>(proxies.keySet())) {
+                consumer.onBearingUpdated(value, animator -> kotlin.Unit.INSTANCE);
+            }
+        }
+
+        @Override
+        public void registerLocationConsumer(@NonNull LocationConsumer consumer) {
+            LocationConsumer proxy = proxies.get(consumer);
+            if (proxy == null) {
+                proxy = new LocationConsumer() {
+                    @Override
+                    public void onLocationUpdated(@NonNull Point[] location, Function1<? super ValueAnimator, Unit> options) {
+                        consumer.onLocationUpdated(location, options);
+                    }
+
+                    @Override
+                    public void onBearingUpdated(@NonNull double[] bearing, Function1<? super ValueAnimator, Unit> options) {
+                        if (bearing.length == 0) { consumer.onBearingUpdated(bearing, options); return; }
+                        lastRawBearing = bearing[bearing.length - 1];
+                        double offset = offsetDeg;
+                        double[] corrected = new double[bearing.length];
+                        for (int i = 0; i < bearing.length; i++) corrected[i] = normalize(bearing[i] + offset);
+                        consumer.onBearingUpdated(corrected, options);
+                    }
+
+                    @Override
+                    public void onPuckLocationAnimatorDefaultOptionsUpdated(@NonNull Function1<? super ValueAnimator, Unit> options) {
+                        consumer.onPuckLocationAnimatorDefaultOptionsUpdated(options);
+                    }
+
+                    @Override
+                    public void onPuckBearingAnimatorDefaultOptionsUpdated(@NonNull Function1<? super ValueAnimator, Unit> options) {
+                        consumer.onPuckBearingAnimatorDefaultOptionsUpdated(options);
+                    }
+
+                    @Override
+                    public void onHorizontalAccuracyRadiusUpdated(@NonNull double[] radius, Function1<? super ValueAnimator, Unit> options) {
+                        consumer.onHorizontalAccuracyRadiusUpdated(radius, options);
+                    }
+
+                    @Override
+                    public void onPuckAccuracyRadiusAnimatorDefaultOptionsUpdated(@NonNull Function1<? super ValueAnimator, Unit> options) {
+                        consumer.onPuckAccuracyRadiusAnimatorDefaultOptionsUpdated(options);
+                    }
+
+                    @Override
+                    public void onError(@NonNull LocationError error) {
+                        consumer.onError(error);
+                    }
+                };
+                proxies.put(consumer, proxy);
+            }
+            inner.registerLocationConsumer(proxy); // same proxy again: the inner provider replaces its job (no duplicate)
+        }
+
+        @Override
+        public void unRegisterLocationConsumer(@NonNull LocationConsumer consumer) {
+            LocationConsumer proxy = proxies.remove(consumer);
+            if (proxy != null) inner.unRegisterLocationConsumer(proxy);
+        }
+    }
+
+    private static double readHeadingOffset(@NonNull Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        float v = prefs.getFloat(PREF_HEADING_OFFSET, 0f);
+        return Float.isNaN(v) ? 0.0 : Math.max(-180.0, Math.min(180.0, v));
+    }
+
+    /**
+     * Installs the offset provider once and reuses it. The plugin only forwards puckBearing settings to a
+     * DefaultLocationProvider, so the inner provider's bearing mode is synced here from the plugin settings.
+     */
+    private void installHeadingOffsetProvider(@NonNull Activity activity, @NonNull LocationComponentPlugin locPlugin) {
+        try {
+            if (headingOffsetProvider == null) {
+                Context app = activity.getApplicationContext();
+                headingOffsetProvider = new HeadingOffsetLocationProvider(app, readHeadingOffset(app));
+            }
+            headingOffsetProvider.inner.updatePuckBearing(locPlugin.getPuckBearingEnabled() ? locPlugin.getPuckBearing() : null);
+            if (locPlugin.getLocationProvider() != headingOffsetProvider) {
+                locPlugin.setLocationProvider(headingOffsetProvider); // unregisters from the previous provider first
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "heading offset provider warning: " + e.getMessage());
+        }
+    }
+
+    /** Manual compass offset (-180..180 deg) from the web calibration popup; persist=false is a live preview. */
+    @PluginMethod
+    public void setHeadingOffset(PluginCall call) {
+        Double raw = call.getDouble("offset", 0.0);
+        final double offset = raw == null || raw.isNaN() || raw.isInfinite() ? 0.0 : Math.max(-180.0, Math.min(180.0, raw));
+        final boolean persist = Boolean.TRUE.equals(call.getBoolean("persist", true));
+        Activity activity = getActivity();
+        if (persist && activity != null) {
+            activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putFloat(PREF_HEADING_OFFSET, (float) offset).apply();
+        }
+        mainHandler.post(() -> {
+            if (headingOffsetProvider != null) headingOffsetProvider.setOffset(offset);
+            JSObject ret = new JSObject();
+            ret.put("offset", offset);
+            ret.put("persisted", persist);
+            call.resolve(ret);
+        });
     }
 
     private void enableLocationComponentIfPermitted() {
@@ -2798,6 +2941,7 @@ public class OfflineMapTestPlugin extends Plugin {
                 // Phone compass heading (sensor only, works offline); never replaced by GPS course.
                 locPlugin.setPuckBearingEnabled(true);
                 locPlugin.setPuckBearing(PuckBearing.HEADING);
+                installHeadingOffsetProvider(activity, locPlugin);
                 hookGpsFollowGestures();
             } catch (Throwable e) {
                 Log.w(TAG, "LocationComponentPlugin enable warning: " + e.getMessage());

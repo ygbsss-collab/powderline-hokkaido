@@ -6516,19 +6516,19 @@ body[data-app-intro="1"] .mobile-intro-player { background: #050b16; }
 /* Android app only: the clip's first frame (same cover/center fit as the video) shows while the video loads, so there is
    no dark/black gap; the video then fades in over the identical frame. Mobile web keeps the plain dark backdrop. */
 body[data-app-intro="1"]:not([data-intro-web]) .mobile-intro-player { background: #050b16 url('./assets/powderline-app-intro-first.jpg') center / cover no-repeat; }
-/* Android app only (data-intro-splash): white splash, the approved app icon (full artwork) grows small → full over ~2s.
+/* Android app only (data-intro-splash): white splash, the approved app icon (full artwork) grows small → full over ~0.55s (about the 500ms minimum logo time).
    Covers the (paused, preloading) video until playback really starts, then fades out in .25s. */
 body[data-app-intro="1"][data-intro-splash="1"]:not([data-intro-web]) .mobile-intro-player { background: #fff; } /* no still first frame */
 body[data-intro-splash="1"] .app-intro-splash {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: #fff; pointer-events: none; opacity: 1; transition: opacity .25s ease;
+  background: #fff; pointer-events: none; opacity: 1; transition: opacity .7s ease-in-out;
 }
 body[data-intro-splash="1"] .app-intro-splash.is-hidden { opacity: 0; }
 body[data-intro-splash="1"] .app-intro-splash-logo {
   width: 56vw; max-width: 300px; aspect-ratio: 1 / 1;
   background: url('./assets/powderline-icon-splash.png') center / contain no-repeat; /* approved app icon, original colours/ratio */
   border-radius: 22%; box-shadow: 0 10px 30px rgba(5, 11, 22, .18);
-  animation: appIntroSplashLogo 2s cubic-bezier(.2, .7, .2, 1) both;
+  animation: appIntroSplashLogo .55s cubic-bezier(.2, .7, .2, 1) both;
 }
 @keyframes appIntroSplashLogo {
   0% { opacity: 0; transform: scale(.55); }
@@ -6537,6 +6537,11 @@ body[data-intro-splash="1"] .app-intro-splash-logo {
 }
 body[data-app-intro="1"] .mobile-intro-video { opacity: 0; background: transparent; transition: opacity .2s ease; }
 body[data-app-intro="1"] .mobile-intro-video.intro-video-ready { opacity: 1; }
+/* Android app splash only: logo → video crossfade, same duration/easing as .app-intro-splash (mobile web keeps .2s). */
+body[data-app-intro="1"][data-intro-splash="1"] .mobile-intro-video { transition: opacity .7s ease-in-out; }
+/* Android app splash only: skip button hidden over the logo; revealed by revealVideo() (.intro-skip-visible) with the crossfade. */
+body[data-intro-splash="1"] .mobile-intro-skip { opacity: 0; pointer-events: none; transition: opacity .7s ease-in-out; }
+body[data-intro-splash="1"] .mobile-intro-skip.intro-skip-visible { opacity: 1; pointer-events: auto; }
 body[data-app-intro="1"] .mobile-intro-video::-webkit-media-controls,
 body[data-app-intro="1"] .mobile-intro-video::-webkit-media-controls-panel,
 body[data-app-intro="1"] .mobile-intro-video::-webkit-media-controls-start-playback-button,
@@ -6960,9 +6965,10 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
   }
   body[data-native-android="1"] .home-filter-grid { margin-top: 0; gap: 8px; flex: 0 0 auto; }
   body[data-native-android="1"] .home-field-label { margin-bottom: 4px; font-size: 12.5px; } /* was 10px (+25%) */
-  /* Big card: 38dvh (was max 46dvh, about -17%). Shrinks first on short screens; spare height becomes the gap above RIDE ON. */
+  /* Big card absorbs ALL spare height (the old fixed 38dvh + margin-top:auto on RIDE ON left that spare height as an empty
+     band between them). Extra height goes to the image; the mode panel keeps its own height. Shrinks first on short screens. */
   body[data-native-android="1"] .home-map-card {
-    flex: 0 1 auto; height: 38dvh; max-height: none; min-height: 200px; margin-top: 0;
+    flex: 1 1 0; height: auto; max-height: none; min-height: 200px; margin-top: 0;
   }
   /* Image fills the whole card (cover, no distortion); the opaque mode panel sits over its lower part, so no empty strip. */
   body[data-native-android="1"] .home-map-image { height: 100%; }
@@ -6970,7 +6976,7 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
   body[data-native-android="1"] .home-offline-regions-panel { flex: 0 1 auto; min-height: 0; max-height: 30dvh; display: flex; flex-direction: column; }
   body[data-native-android="1"] .home-offline-regions-panel[hidden] { display: none !important; }
   body[data-native-android="1"] .home-offline-region-list { flex: 1 1 auto; min-height: 0; max-height: none; }
-  body[data-native-android="1"] .home-cta { flex: 0 0 auto; margin-top: auto; padding: 0; } /* auto: leftover height goes between card and RIDE ON */
+  body[data-native-android="1"] .home-cta { flex: 0 0 auto; margin-top: 8px; padding: 0; } /* 12px gap + 8px = 20px between card and RIDE ON */
   body[data-native-android="1"] .home-credit { flex: 0 0 auto; padding-bottom: 0; }
 }
 /* Smaller phones: tighter controls so nothing is cut off (content kept, only spacing/size shrink). */
@@ -6997,3 +7003,57 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
   body[data-native-android="1"] .home-map-top { display: none; }
   body[data-native-android="1"] .home-map-card { min-height: 0; height: auto; flex: 0 0 auto; }
 }
+
+/* My-location heading: translucent red sector (dot stays blue) (Google Maps style) instead of mapbox's arrowhead.
+   Shown only while mapbox adds .mapboxgl-user-location-show-heading (valid compass heading). The marker is
+   screen-aligned; app.js (updateUserLocationTilt) tilts the dot and rotates/tilts this sector from map pitch/bearing.
+   Keep in sync with the Android puck sector. */
+/* Dot above the sector: the sector's transform makes it its own stacking context, so the old z-index:-1 alone no longer
+   puts it behind the dot. Relative to the marker origin (0,0) = same place, so the ring/pulse pseudo-elements do not move. */
+.mapboxgl-user-location .mapboxgl-user-location-dot { position: relative; z-index: 1; }
+.mapboxgl-user-location-show-heading .mapboxgl-user-location-heading {
+  position: absolute;
+  left: 7.5px;
+  top: 7.5px;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.mapboxgl-user-location-show-heading .mapboxgl-user-location-heading:after { display: none; }
+.mapboxgl-user-location-show-heading .mapboxgl-user-location-heading:before {
+  content: "";
+  position: absolute;
+  left: -44px;
+  top: -44px;
+  width: 88px;
+  height: 88px;
+  border: 0;
+  transform: none;
+  z-index: -1;
+  background: radial-gradient(circle closest-side at 50% 50%, rgba(255, 59, 48, 0.78) 0%, rgba(255, 59, 48, 0) 100%);
+  clip-path: polygon(50% 50%, 21.1% 0%, 78.9% 0%);
+}
+
+/* Compass calibration: long-press targets must not open the text/selection menu; popup reuses .modal-dialog. */
+.compass-longpress-target { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* Bottom sheet: no dimming/blur over the map, the map stays visible and usable above the sheet. */
+.modal-backdrop.compass-calib-modal { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; place-items: end center; padding: 0; pointer-events: none; }
+.compass-calib-modal .compass-calib-sheet {
+  pointer-events: auto;
+  max-width: 480px;
+  border-radius: 16px 16px 0 0;
+  border-bottom: 0;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: rgba(255, 255, 255, 0.9);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.18);
+}
+.compass-calib-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.compass-calib-modal .compass-calib-sheet h3 { margin: 0; }
+.compass-calib-modal .compass-calib-sheet p { margin: 2px 0 8px; }
+.compass-calib-modal .compass-calib-sheet .modal-actions { margin-top: 8px; }
+.compass-calib-value { font-size: 20px; font-weight: 700; color: #FF3B30; font-variant-numeric: tabular-nums; }
+.compass-calib-row { display: flex; align-items: center; gap: 10px; }
+.compass-calib-row input[type="range"] { flex: 1; min-width: 0; accent-color: #FF3B30; }
+.compass-calib-row button { flex: 0 0 auto; min-width: 48px; height: 40px; border-radius: 4px; cursor: pointer; font-size: 13px; }
