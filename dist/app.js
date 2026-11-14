@@ -410,9 +410,86 @@
   let introPlaybackComplete = false;
   let mobileAuthActiveView = 'login';
   let setMobileAppView = () => { };
+  // Ride On session (memory only: an app restart means the session ended). Independent of GPS recording (gpsRecording).
+  const rideOnSession = {
+    active: false, routePrompted: false, routePromptDeclined: false,
+    routeFollowActive: false, routeFollowPaused: false, followPaused: false, startedAt: null, source: null,
+    routeFollowStartedOnce: false, routeFollowRouteKey: null, // route follow really started once (for this route) → restart allowed
+    routeFollowCompleted: false // reached the route end: route follow ended automatically, no off-route checks after it
+  };
+  // routeFollowPaused = the user paused route follow itself (button); followPaused = camera-only pause (map gesture).
+  function startRideOnSession(source) {
+    if (rideOnSession.active) return; // same session: keep its state (re-entering the ride screen does not reset it)
+    if (!window.matchMedia('(max-width: 768px)').matches) return; // PC / wide screens have no ride screen: no session
+    Object.assign(rideOnSession, {
+      active: true, routePrompted: false, routePromptDeclined: false,
+      routeFollowActive: false, routeFollowPaused: false, followPaused: false, startedAt: Date.now(), source: source || null,
+      routeFollowStartedOnce: false, routeFollowRouteKey: null, routeFollowCompleted: false
+    });
+    resetRideApproach();
+    resetRideProgress();
+    renderRouteFollowControls();
+    unlockRideAlertAudio(); // Ride On tap = user gesture: the approach sound may play before any other tap
+    // Position tracking for the 30 m approach check (blue dot only: no camera move, no GPS recording). center:false
+    // keeps the camera as is; triggerMyLocationGps itself does nothing when a watch is already running.
+    if (geolocateControl?._geolocationWatchID == null) {
+      try { triggerMyLocationGps({ center: false }); } catch (error) { console.warn('Ride On location start failed:', error); }
+    }
+  }
+  // Selected route of the session: a different route resets the prompt/follow state (session itself continues).
+  let rideRouteKey = null;
+  // Shape signature of a point list (count + first / ¼ / ½ / ¾ / last, 6 decimals): same route → same text,
+  // a different drawn route → different text. Nothing is stored.
+  function ridePointsSignature(points) {
+    const pts = Array.isArray(points) ? points : [];
+    const n = pts.length;
+    if (!n) return '0';
+    const idx = [...new Set([0, Math.floor(n / 4), Math.floor(n / 2), Math.floor(3 * n / 4), n - 1])];
+    return n + ':' + idx.map(i => `${Number(pts[i]?.lng).toFixed(6)},${Number(pts[i]?.lat).toFixed(6)}`).join(':');
+  }
+  // Applied saved route (stable id) and the shape it had when applied; a later different shape is a drawn route.
+  let rideAppliedRoute = { key: null, signature: null };
+  function rideRouteKeyOf(item) {
+    if (!item) return null;
+    if (item.id != null && item.id !== '') return 'id:' + item.id; // stable id first
+    return 'drawn:' + ridePointsSignature(state.points);
+  }
+  // Key of the route currently on the map: the saved route's id while its shape is unchanged, else 'drawn:<shape>'.
+  function currentRideRouteKey() {
+    const signature = ridePointsSignature(state.points);
+    if (rideAppliedRoute.key && rideAppliedRoute.signature === signature) return rideAppliedRoute.key;
+    return 'drawn:' + signature;
+  }
+  function noteRideRouteSelected(item) {
+    const key = rideRouteKeyOf(item);
+    rideAppliedRoute = { key: key && key.startsWith('id:') ? key : null, signature: ridePointsSignature(state.points) };
+    if (key === rideRouteKey) return; // same route applied again: keep the prompt state
+    rideRouteKey = key;
+    if (!rideOnSession.active) return;
+    Object.assign(rideOnSession, { routePrompted: false, routePromptDeclined: false, routeFollowActive: false, routeFollowPaused: false, followPaused: false, routeFollowStartedOnce: false, routeFollowRouteKey: null, routeFollowCompleted: false });
+    resetRideProgress();
+    resetRideApproach();
+    hideRouteFollowPrompt();
+    resetRideOffRoute();
+    syncNativeRideFollow(); // route follow is off for the new route: native plain GPS follow again
+    renderRouteFollowControls();
+  }
+  function endRideOnSession() {
+    Object.assign(rideOnSession, {
+      active: false, routePrompted: false, routePromptDeclined: false,
+      routeFollowActive: false, routeFollowPaused: false, followPaused: false, startedAt: null, source: null,
+      routeFollowStartedOnce: false, routeFollowRouteKey: null, routeFollowCompleted: false
+    });
+    resetRideApproach();
+    resetRideProgress();
+    hideRouteFollowPrompt(); // a prompt left open must not survive the session
+    resetRideOffRoute(); // stops beep/vibration and closes the off-route banner
+    syncNativeRideFollow(); // native map: camera back to the plain GPS follow
+    renderRouteFollowControls();
+  }
   const MAPBOX_TOKEN_KEY = 'powderline.mapboxCompareToken';
   const MAPBOX_TOKEN_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/mapbox-public-token`;
-  const MAPBOX_STYLES = { satellite: 'mapbox://styles/mapbox/standard-satellite', topo: 'mapbox://styles/mapbox/outdoors-v12' };
+  const MAPBOX_STYLES = { satellite: 'mapbox://styles/mapbox/standard-satellite', topo: 'mapbox://styles/mapbox/outdoors-v12', winter: 'mapbox://styles/ygbsss/cmwgizmmb009k01sm3cza0nv5' };
 
   const SUPABASE_AUTH_STORAGE = 'powderline.supabase.auth';
   const OFFLINE_ACCESS_STORAGE = 'powderline.offlineAccess.v1';
@@ -698,6 +775,623 @@ geolocateControl._updateMarkerRotation = function () {
 }
 map.on('move', updateUserLocationTilt);
 geolocateControl.on('geolocate', updateUserLocationTilt);
+
+// ---- Ride On: nearest distance to the selected route and the one-time 30 m "follow route?" prompt (no camera/alerts yet).
+// Local planar (equirectangular) projection around the fix; no network, no per-point allocation.
+// Optional fromSeg/toSeg (inclusive segment indices) limit the search to a window of the route (progress tracking).
+function nearestPointOnRoute(points, lng, lat, fromSeg = 0, toSeg = Infinity) {
+  if (!Array.isArray(points) || points.length < 2 || !Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+  const R = 6371008.8, D2R = Math.PI / 180;
+  const kx = Math.cos(lat * D2R) * D2R * R, ky = D2R * R; // metres per degree at the fix latitude
+  let best = Infinity, bestIndex = -1, bestT = 0;
+  const first = Math.max(0, Math.min(points.length - 2, Math.floor(fromSeg) || 0));
+  const last = Math.min(points.length - 2, Math.max(first, Math.floor(Math.min(toSeg, points.length - 2))));
+  let ax = (Number(points[first].lng) - lng) * kx, ay = (Number(points[first].lat) - lat) * ky;
+  for (let i = first + 1; i <= last + 1; i++) {
+    const bx = (Number(points[i].lng) - lng) * kx, by = (Number(points[i].lat) - lat) * ky;
+    if (Number.isFinite(ax) && Number.isFinite(bx)) {
+      const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+      let t = len2 > 0 ? -(ax * dx + ay * dy) / len2 : 0; // fix is the origin (0,0)
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const px = ax + t * dx, py = ay + t * dy, d2 = px * px + py * py;
+      if (d2 < best) { best = d2; bestIndex = i - 1; bestT = t; }
+    }
+    ax = bx; ay = by;
+  }
+  if (bestIndex < 0) return null;
+  const a = points[bestIndex], b = points[bestIndex + 1];
+  return {
+    distanceMeters: Math.sqrt(best), segmentIndex: bestIndex, segmentT: bestT,
+    lng: Number(a.lng) + (Number(b.lng) - Number(a.lng)) * bestT, lat: Number(a.lat) + (Number(b.lat) - Number(a.lat)) * bestT
+  };
+}
+const RIDE_APPROACH_METERS = 30, RIDE_APPROACH_MAX_ACCURACY = 50, RIDE_APPROACH_CONFIRM_FIXES = 2;
+const rideApproach = { streak: 0, lastFixTime: 0 };
+function resetRideApproach() { rideApproach.streak = 0; rideApproach.lastFixTime = 0; }
+function hideRouteFollowPrompt() { const modal = document.getElementById('routeFollowPromptModal'); if (modal) modal.hidden = true; }
+function checkRideRouteApproach(coords, timestamp) {
+  const s = rideOnSession;
+  if (!s.active || s.routePrompted || s.routePromptDeclined || s.routeFollowActive) { rideApproach.streak = 0; return; }
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const accuracy = Number(coords.accuracy);
+  const hasAccuracy = coords.accuracy != null && Number.isFinite(accuracy);
+  if (hasAccuracy && accuracy > RIDE_APPROACH_MAX_ACCURACY) return; // too inaccurate: hold (streak unchanged)
+  // The same fix can arrive twice (own watch + recording/party feed): only a newer fix counts toward the streak.
+  const time = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+  if (time <= rideApproach.lastFixTime) return;
+  rideApproach.lastFixTime = time;
+  const nearest = nearestPointOnRoute(state.points, lng, lat);
+  if (!nearest) { rideApproach.streak = 0; return; }
+  const effective = Math.max(0, nearest.distanceMeters - (hasAccuracy ? accuracy : 0));
+  rideApproach.streak = effective <= RIDE_APPROACH_METERS ? rideApproach.streak + 1 : 0;
+  if (rideApproach.streak < RIDE_APPROACH_CONFIRM_FIXES) return;
+  rideApproach.streak = 0;
+  const modal = document.getElementById('routeFollowPromptModal');
+  if (!modal) return;
+  s.routePrompted = true; // once per Ride On session
+  modal.hidden = false;
+  playRideAlertSound('approach'); // one short sound + strong vibration with the prompt (never per fix)
+  vibrateRideAlert('approach');
+}
+// Start route follow: from the 30 m prompt's 시작 and from the floating "따라가기 시작" (manual restart).
+function beginRouteFollow() {
+  rideOnSession.routeFollowActive = true;
+  rideOnSession.routeFollowPaused = false;
+  rideOnSession.routePrompted = true; // a manual start / restart never brings the 30 m prompt back for this route
+  rideOnSession.routePromptDeclined = false;
+  rideOnSession.followPaused = false;
+  rideOnSession.routeFollowStartedOnce = true; // restart button allowed for this route after 종료
+  rideOnSession.routeFollowCompleted = false;
+  resetRideProgress(); // progress starts again from the latest fix
+  rideOnSession.routeFollowRouteKey = currentRideRouteKey();
+  hideRouteFollowPrompt();
+  console.info('Route follow requested');
+  resetRideOffRoute();
+  unlockRideAlertAudio(); // user gesture: lets the off-route beep play later (WebView autoplay policy)
+  startRideFollowCamera();
+  syncNativeRideFollow(); // native map: route follow takes over the camera (2D/3D pitch is kept)
+  if (state.nativeMap?.active && rideFollowCam.lastFix) sendNativeRideFollowCamera(rideFollowCam.lastFix);
+  renderRouteFollowControls();
+}
+document.getElementById('routeFollowStartBtn')?.addEventListener('click', beginRouteFollow);
+document.getElementById('routeFollowLaterBtn')?.addEventListener('click', () => {
+  rideOnSession.routePromptDeclined = true;
+  rideOnSession.routeFollowActive = false;
+  hideRouteFollowPrompt();
+  renderRouteFollowControls(); // "따라가기 시작" stays available for a manual start later
+});
+// Explicit pause: the whole route follow stops (camera, off-route checks, alerts); GPS, session and route stay.
+function pauseRouteFollow() {
+  if (!rideOnSession.routeFollowActive) return;
+  rideOnSession.routeFollowPaused = true; // followPaused (camera gesture pause) is left as it is
+  resetRideOffRoute(); // alert off, banner closed, off-route state cleared (a new episode after resume)
+  renderRouteFollowControls();
+}
+function resumeRouteFollow() {
+  if (!rideOnSession.routeFollowActive) return;
+  rideOnSession.routeFollowPaused = false;
+  resetRideOffRoute(); // judged afresh from the next fix
+  if (!rideOnSession.followPaused) { // a camera pause from a map gesture is kept until the locate button
+    const fix = rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords;
+    rideFollowCam.ownEaseUntil = 0;
+    applyRideFollowCamera(fix);
+    if (state.nativeMap?.active && fix) sendNativeRideFollowCamera(fix);
+  }
+  renderRouteFollowControls();
+}
+// Locate button during an explicit pause: move the camera to the latest fix once (same 25% offset, bearing kept).
+// routeFollowPaused / followPaused are not touched, so no automatic follow starts again.
+function centerOnceDuringRoutePause() {
+  const fix = rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords;
+  const lng = Number(fix?.longitude), lat = Number(fix?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  if (state.nativeMap?.active) { sendNativeRideFollowCamera(fix, { withBearing: false }); return; }
+  const h = map.getCanvas().clientHeight;
+  map.easeTo({ center: [lng, lat], offset: [0, h * RIDE_FOLLOW_OFFSET], duration: RIDE_FOLLOW_DURATION, essential: true });
+}
+// End route follow only (Ride On session, GPS and the selected route stay).
+function endRouteFollow() {
+  Object.assign(rideOnSession, { routeFollowActive: false, routeFollowPaused: false, followPaused: false, routePrompted: true });
+  resetRideOffRoute();
+  syncNativeRideFollow(); // native: active=false → plain GPS follow again
+  renderRouteFollowControls();
+}
+// Route end reached: route follow ends by itself (Ride On session stays; same-route restart stays possible).
+function completeRouteFollow() {
+  if (rideOnSession.routeFollowCompleted) return; // completion alert only once
+  rideOnSession.routeFollowCompleted = true;
+  rideProgress.remaining = 0;
+  endRouteFollow(); // routeFollowActive/Paused/followPaused false, alerts off, banner closed, native camera active=false
+  toast('코스가 종료되었습니다.');
+  playRideAlertSound('complete'); // after endRouteFollow (which cancels the off-route vibration)
+  vibrateRideAlert('complete');
+}
+function hasRideRoute() { return Array.isArray(state.points) && state.points.length >= 2; }
+// Slope drawer open (ride view): the map and the ride HUD get shorter by the drawer body height (CSS var) instead of
+// being covered; map.resize() keeps center / zoom / bearing / pitch. A resize event also re-syncs the native map rect.
+function syncRideProfileLayout() {
+  const panel = document.querySelector('.map-panel'), body = document.getElementById('mobileMapProfileBody');
+  if (!panel || !body) return;
+  const height = body.hidden === false ? Math.ceil(body.getBoundingClientRect().height) : 0;
+  const next = height + 'px';
+  if (panel.style.getPropertyValue('--profile-body-h') === next) return;
+  panel.style.setProperty('--profile-body-h', next);
+  requestAnimationFrame(() => {
+    try { map.resize(); } catch {}
+    window.dispatchEvent(new Event('resize'));
+  });
+}
+window.addEventListener('resize', () => syncRideProfileLayout());
+// Floating control: 일시정지/재개 + 종료 while following, "따라가기 시작" when stopped with a route selected.
+function renderRouteFollowControls() {
+  renderRideRemaining();
+  const rideEnd = document.getElementById('rideEndBtn');
+  if (rideEnd) rideEnd.hidden = !rideOnSession.active; // 라이딩 종료 only while a Ride On session exists
+  const box = document.getElementById('routeFollowControls');
+  if (!box) return;
+  const s = rideOnSession;
+  const following = s.active && s.routeFollowActive;
+  // Restart only: the first start always goes through the 30 m prompt (never from far away via this button).
+  const sameRoute = s.routeFollowRouteKey === currentRideRouteKey();
+  // A different drawn route (no applySavedRoute) also ends the restart right of the previous one.
+  if (s.routeFollowStartedOnce && !s.routeFollowActive && !sameRoute) { s.routeFollowStartedOnce = false; s.routeFollowRouteKey = null; }
+  const canStart = s.active && !s.routeFollowActive && s.routeFollowStartedOnce && sameRoute && hasRideRoute();
+  // The slope drawer now takes layout space (map shrinks), so the control stays visible above it.
+  box.hidden = !(following || canStart);
+  const toggle = document.getElementById('routeFollowToggleBtn');
+  const end = document.getElementById('routeFollowEndBtn');
+  const start = document.getElementById('routeFollowBeginBtn');
+  if (toggle) { toggle.hidden = !following; toggle.textContent = s.routeFollowPaused ? '재개' : '일시정지'; }
+  if (end) end.hidden = !following;
+  if (start) start.hidden = !canStart;
+  box.classList.toggle('is-paused', following && s.routeFollowPaused);
+}
+document.getElementById('routeFollowToggleBtn')?.addEventListener('click', () => {
+  if (rideOnSession.routeFollowPaused) resumeRouteFollow(); else pauseRouteFollow();
+});
+document.getElementById('routeFollowEndBtn')?.addEventListener('click', endRouteFollow);
+{ // slope drawer opened/closed (#rideInfoBtn / its own toggle) → show/hide the floating control again
+  const profileBody = document.getElementById('mobileMapProfileBody');
+  if (profileBody && typeof MutationObserver === 'function') {
+    new MutationObserver(() => { renderRouteFollowControls(); syncRideProfileLayout(); }).observe(profileBody, { attributes: true, attributeFilter: ['hidden'] });
+  }
+}
+document.getElementById('routeFollowBeginBtn')?.addEventListener('click', () => {
+  const s = rideOnSession;
+  if (s.active && !s.routeFollowActive && s.routeFollowStartedOnce && s.routeFollowRouteKey === currentRideRouteKey() && hasRideRoute()) beginRouteFollow();
+});
+
+// ---- Ride On route follow camera (online map only; the native offline map is not driven from here).
+// Map bearing = travel direction (GPS course, else bearing over >= 12 m); the red sector keeps the compass heading.
+const RIDE_FOLLOW_PITCH = 54, RIDE_FOLLOW_OFFSET = 0.25, RIDE_FOLLOW_DURATION = 600;
+const RIDE_COURSE_MIN_SPEED = 2, RIDE_COURSE_MIN_MOVE = 12, RIDE_COURSE_MAX_ACCURACY = 30;
+const RIDE_BEARING_DEADBAND = 5, RIDE_BEARING_GAIN = 0.3;
+const rideFollowCam = { bearing: null, anchor: null, lastFix: null, ownEaseUntil: 0 };
+function isRideRouteFollowing() { return rideOnSession.active && rideOnSession.routeFollowActive; }
+function rideFollowCameraAllowed() { return isRideRouteFollowing() && !rideOnSession.routeFollowPaused && !rideOnSession.followPaused && !state.nativeMap?.active; }
+function normalizeBearing(deg) { return ((deg % 360) + 360) % 360; }
+function shortestAngleDelta(from, to) { return ((((to - from) % 360) + 540) % 360) - 180; } // 359→1 = +2, 1→359 = -2
+function rideFixMeters(a, b) {
+  const kx = Math.cos(a.lat * Math.PI / 180) * 111320;
+  return Math.hypot((b.lng - a.lng) * kx, (b.lat - a.lat) * 111320);
+}
+function rideFixBearing(a, b) {
+  const kx = Math.cos(a.lat * Math.PI / 180);
+  return normalizeBearing(Math.atan2((b.lng - a.lng) * kx, b.lat - a.lat) * 180 / Math.PI);
+}
+function updateRideFollowBearing(coords) {
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const accuracy = Number(coords.accuracy);
+  if (coords.accuracy != null && Number.isFinite(accuracy) && accuracy > RIDE_COURSE_MAX_ACCURACY) return; // not for direction
+  const fix = { lng, lat };
+  const speed = Number(coords.speed), heading = Number(coords.heading);
+  let candidate = null;
+  if (coords.speed != null && coords.heading != null && Number.isFinite(speed) && speed >= RIDE_COURSE_MIN_SPEED && Number.isFinite(heading)) {
+    candidate = heading; // 1. GPS course while moving
+    rideFollowCam.anchor = fix;
+  } else if (!rideFollowCam.anchor) {
+    rideFollowCam.anchor = fix;
+  } else if (rideFixMeters(rideFollowCam.anchor, fix) >= RIDE_COURSE_MIN_MOVE) {
+    candidate = rideFixBearing(rideFollowCam.anchor, fix); // 2. direction over >= 12 m of travel
+    rideFollowCam.anchor = fix;
+  }
+  if (candidate === null) return; // 3. slow / stopped: keep the last good bearing
+  if (rideFollowCam.bearing === null) { rideFollowCam.bearing = normalizeBearing(candidate); return; }
+  const delta = shortestAngleDelta(rideFollowCam.bearing, candidate);
+  if (Math.abs(delta) < RIDE_BEARING_DEADBAND) return; // GPS jitter
+  rideFollowCam.bearing = normalizeBearing(rideFollowCam.bearing + delta * RIDE_BEARING_GAIN);
+}
+// One easeTo for center (+ bearing, + pitch only when asked). Never cuts another animation (e.g. the 2D/3D button).
+function applyRideFollowCamera(coords, { pitch = null } = {}) {
+  if (!rideFollowCameraAllowed()) return;
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  if (map.isEasing() && Date.now() > rideFollowCam.ownEaseUntil) return;
+  const h = map.getCanvas().clientHeight;
+  const options = { center: [lng, lat], offset: [0, h * RIDE_FOLLOW_OFFSET], duration: RIDE_FOLLOW_DURATION, essential: true };
+  if (rideFollowCam.bearing !== null) options.bearing = rideFollowCam.bearing;
+  if (pitch !== null) options.pitch = pitch;
+  rideFollowCam.ownEaseUntil = Date.now() + RIDE_FOLLOW_DURATION + 50;
+  map.easeTo(options);
+}
+function startRideFollowCamera() {
+  rideFollowCam.bearing = null;
+  rideFollowCam.anchor = null;
+  const coords = rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords;
+  if (coords) updateRideFollowBearing(coords);
+  rideFollowCam.ownEaseUntil = 0;
+  // 3D at start → the route-follow pitch once; a 2D map stays 2D. Afterwards the 2D/3D button decides.
+  applyRideFollowCamera(coords, { pitch: map.getPitch() > 20 ? RIDE_FOLLOW_PITCH : null });
+}
+function resumeRideFollowCamera() {
+  rideOnSession.followPaused = false;
+  rideFollowCam.ownEaseUntil = 0;
+  applyRideFollowCamera(rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords);
+}
+// A real user gesture (originalEvent) pauses only the camera; route follow, GPS and session state continue.
+['dragstart', 'zoomstart', 'rotatestart', 'pitchstart'].forEach(type => map.on(type, (e) => {
+  if (e?.originalEvent && isRideRouteFollowing()) rideOnSession.followPaused = true;
+}));
+
+// ---- Ride On off-route state machine (route follow only): >= 20 m confirmed → alert; <= 15 m anywhere on the route →
+// back on route. 15–20 m keeps the current state. Camera follow is not touched here.
+const RIDE_OFFROUTE_METERS = 20, RIDE_ONROUTE_METERS = 15, RIDE_OFFROUTE_MAX_ACCURACY = 30;
+// 3 consecutive >= 20 m fixes spanning >= 2 s (= 3 fixes at ~1 s; a burst of fast fixes alone cannot confirm).
+const RIDE_OFFROUTE_CONFIRM_FIXES = 3, RIDE_OFFROUTE_CONFIRM_MS = 2000, RIDE_ALERT_INTERVAL_MS = 1500;
+const rideOffRoute = {
+  offRoute: false, offRouteMuted: false, offRouteConfirmCount: 0,
+  lastNearestSegmentIndex: null, lastRouteDistanceMeters: null,
+  confirmStartedAt: 0, lastFixTime: 0
+};
+const rideAlert = { audio: null, timer: null, tick: 0 };
+// Any tap during a Ride On session keeps the Web Audio context usable (WebView autoplay policy; e.g. offline-map start).
+document.addEventListener('pointerdown', () => { if (rideOnSession.active) unlockRideAlertAudio(); }, { capture: true, passive: true });
+function unlockRideAlertAudio() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!rideAlert.audio) rideAlert.audio = new Ctx();
+    if (rideAlert.audio.state === 'suspended') rideAlert.audio.resume().catch(() => {});
+  } catch {}
+}
+function playRideBeep() {
+  const ctx = rideAlert.audio;
+  if (!ctx) return;
+  try {
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const now = ctx.currentTime;
+    for (const start of [0, 0.32]) { // two short beeps (local Web Audio, no file / network)
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, now + start);
+      gain.gain.exponentialRampToValueAtTime(0.25, now + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + 0.22);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + start);
+      osc.stop(now + start + 0.25);
+    }
+  } catch {}
+}
+// Short tones for the other two Ride alerts (same Web Audio context, no files): approach = two light high beeps,
+// complete = two rising tones. The off-route alert keeps playRideBeep (square 880 Hz, repeated).
+function playRideTones(tones) {
+  const ctx = rideAlert.audio;
+  if (!ctx) return;
+  try {
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const now = ctx.currentTime;
+    for (const [start, freq, dur, peak] of tones) {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now + start);
+      gain.gain.exponentialRampToValueAtTime(peak, now + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + start);
+      osc.stop(now + start + dur + 0.03);
+    }
+  } catch {}
+}
+function playRideAlertSound(type) {
+  if (type === 'approach') playRideTones([[0, 1175, 0.14, 0.18], [0.2, 1175, 0.14, 0.18]]);
+  else if (type === 'complete') playRideTones([[0, 784, 0.22, 0.22], [0.26, 1175, 0.34, 0.22]]);
+  else playRideBeep();
+}
+// Vibration per alert: Android app → native waveform (max amplitude 255 where supported); web → navigator.vibrate
+// pattern; unsupported → silently nothing. Never repeating on its own (the off-route timer calls it again).
+const RIDE_VIBRATION = {
+  approach: { timings: [0, 300, 120, 300], amplitudes: [0, 255, 0, 255] },
+  offroute: { timings: [0, 450, 150, 450], amplitudes: [0, 255, 0, 255] },
+  complete: { timings: [0, 500, 150, 500], amplitudes: [0, 255, 0, 255] }
+};
+function nativeRideVibrationPlugin() {
+  const plugin = window.Capacitor?.getPlatform?.() === 'android' ? getOfflineMapTestPlugin() : null;
+  return plugin?.vibrateRideAlert ? plugin : null;
+}
+function vibrateRideAlert(type) {
+  const spec = RIDE_VIBRATION[type];
+  if (!spec) return;
+  try {
+    const plugin = nativeRideVibrationPlugin();
+    if (plugin) {
+      plugin.vibrateRideAlert({ timings: spec.timings, amplitudes: spec.amplitudes }).catch(error => console.warn('vibrateRideAlert failed:', error));
+      return;
+    }
+    if (typeof navigator.vibrate === 'function') navigator.vibrate(spec.timings.slice(1)); // web pattern starts with "on"
+  } catch {}
+}
+function cancelRideVibration() {
+  try {
+    const plugin = nativeRideVibrationPlugin();
+    if (plugin?.cancelRideVibration) plugin.cancelRideVibration().catch(() => {});
+    if (typeof navigator.vibrate === 'function') navigator.vibrate(0);
+  } catch {}
+}
+function rideAlertTick() {
+  playRideAlertSound('offroute');
+  // Vibration every second beep (about every 3 s), as before; now the strong off-route pattern.
+  if (rideAlert.tick++ % 2 === 0) vibrateRideAlert('offroute');
+}
+function startRideAlert() {
+  if (rideAlert.timer) return;
+  rideAlert.tick = 0;
+  rideAlertTick();
+  rideAlert.timer = setInterval(rideAlertTick, RIDE_ALERT_INTERVAL_MS);
+}
+// Off-route alert off (경고 끔 / back on route / pause / route change / 라이딩 종료): timer cleared, vibration cancelled.
+function stopRideAlert() {
+  const wasRunning = Boolean(rideAlert.timer);
+  if (rideAlert.timer) { clearInterval(rideAlert.timer); rideAlert.timer = null; }
+  if (wasRunning) cancelRideVibration(); // only an off-route vibration may still be running here
+}
+function renderOffRouteBanner() {
+  const banner = document.getElementById('offRouteBanner');
+  if (!banner) return;
+  banner.hidden = !rideOffRoute.offRoute;
+  if (!rideOffRoute.offRoute) return;
+  const title = document.getElementById('offRouteTitle'), detail = document.getElementById('offRouteDetail');
+  const muteBtn = document.getElementById('offRouteMuteBtn');
+  const meters = Math.round(rideOffRoute.lastRouteDistanceMeters ?? 0);
+  banner.classList.toggle('is-muted', rideOffRoute.offRouteMuted);
+  if (title) title.textContent = rideOffRoute.offRouteMuted ? '경로 이탈 중 · 경고 꺼짐' : '경로를 이탈했습니다';
+  if (detail) detail.textContent = `경로에서 ${meters}m 벗어남`;
+  if (muteBtn) muteBtn.hidden = rideOffRoute.offRouteMuted;
+}
+function resetRideOffRoute() {
+  stopRideAlert();
+  Object.assign(rideOffRoute, {
+    offRoute: false, offRouteMuted: false, offRouteConfirmCount: 0,
+    lastNearestSegmentIndex: null, lastRouteDistanceMeters: null, confirmStartedAt: 0, lastFixTime: 0
+  });
+  renderOffRouteBanner();
+}
+function checkRideOffRoute(coords, timestamp) {
+  if (!isRideRouteFollowing() || rideOnSession.routeFollowPaused || rideOnSession.routeFollowCompleted) return false; // runs during a camera pause, not an explicit pause / after the end
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const accuracy = Number(coords.accuracy);
+  if (coords.accuracy != null && Number.isFinite(accuracy) && accuracy > RIDE_OFFROUTE_MAX_ACCURACY) return false; // not trusted
+  const time = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+  if (time <= rideOffRoute.lastFixTime) return false; // same fix delivered twice
+  rideOffRoute.lastFixTime = time;
+  const nearest = nearestPointOnRoute(state.points, lng, lat); // whole polyline: any point of the route counts
+  if (!nearest) return false;
+  const d = nearest.distanceMeters; // raw distance (no accuracy discount for off-route)
+  rideOffRoute.lastRouteDistanceMeters = d;
+  rideOffRoute.lastNearestSegmentIndex = nearest.segmentIndex;
+  if (!rideOffRoute.offRoute) {
+    if (d < RIDE_OFFROUTE_METERS) { rideOffRoute.offRouteConfirmCount = 0; rideOffRoute.confirmStartedAt = 0; return false; } // incl. 15–20 m
+    if (rideOffRoute.offRouteConfirmCount === 0) rideOffRoute.confirmStartedAt = time;
+    rideOffRoute.offRouteConfirmCount += 1;
+    if (rideOffRoute.offRouteConfirmCount < RIDE_OFFROUTE_CONFIRM_FIXES || time - rideOffRoute.confirmStartedAt < RIDE_OFFROUTE_CONFIRM_MS) return false;
+    // New off-route episode: alerts on, previous mute is not carried over. Progress / remaining distance freeze.
+    Object.assign(rideOffRoute, { offRoute: true, offRouteMuted: false, offRouteConfirmCount: 0, confirmStartedAt: 0 });
+    rideProgress.reacquire = true; // after the return, progress restarts from the point actually rejoined
+    startRideAlert();
+    renderOffRouteBanner();
+    return false;
+  }
+  if (d <= RIDE_ONROUTE_METERS) { // back on the route (anywhere on it); 15–20 m keeps off-route
+    stopRideAlert();
+    Object.assign(rideOffRoute, { offRoute: false, offRouteMuted: false, offRouteConfirmCount: 0, confirmStartedAt: 0 });
+    renderOffRouteBanner();
+    return true; // returned this fix
+  }
+  renderOffRouteBanner();
+  return false;
+}
+
+// ---- Ride On route progress along the ordered route (state.points[0] = start, last = end). Cumulative distances
+// are computed once per route shape; each fix searches a window around the last good progress first, so loops /
+// out-and-back courses do not jump to another pass. Frozen while off-route; after the return it re-acquires.
+const RIDE_PROGRESS_BACK_M = 100, RIDE_PROGRESS_AHEAD_M = 400, RIDE_PROGRESS_WINDOW_MAX_D = 20, RIDE_PROGRESS_JUMP_MAX_D = 15;
+const RIDE_COMPLETE_END_M = 15, RIDE_COMPLETE_REMAIN_M = 30, RIDE_COMPLETE_MIN_SHARE = 0.7, RIDE_COMPLETE_FIXES = 2;
+var rideProgress = { signature: null, cum: [], total: 0, segIndex: null, t: 0, along: 0, remaining: null, lastGood: null, reacquire: false, completeStreak: 0 };
+function resetRideProgress() {
+  if (!rideProgress) return; // var: called by session/route resets that may run before this block
+  Object.assign(rideProgress, { segIndex: null, t: 0, along: 0, remaining: null, lastGood: null, reacquire: false, completeStreak: 0 });
+  renderRideRemaining();
+}
+function ensureRideRouteMetrics() {
+  const pts = state.points;
+  const signature = ridePointsSignature(pts);
+  if (signature === rideProgress.signature) return pts.length >= 2;
+  rideProgress.signature = signature;
+  const cum = new Array(pts.length);
+  let total = 0;
+  if (pts.length) cum[0] = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const kx = Math.cos(Number(a.lat) * Math.PI / 180) * 111320;
+    const seg = Math.hypot((Number(b.lng) - Number(a.lng)) * kx, (Number(b.lat) - Number(a.lat)) * 111320);
+    total += Number.isFinite(seg) ? seg : 0;
+    cum[i] = total;
+  }
+  rideProgress.cum = cum;
+  rideProgress.total = total;
+  resetRideProgress();
+  return pts.length >= 2;
+}
+function rideSegmentAt(distance) { // first segment whose end is beyond the given distance along the route
+  const cum = rideProgress.cum;
+  let lo = 0, hi = cum.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid + 1] !== undefined && cum[mid + 1] < distance) lo = mid + 1; else hi = mid; }
+  return Math.max(0, Math.min(cum.length - 2, lo));
+}
+function updateRideProgress(coords) {
+  const s = rideOnSession;
+  if (!isRideRouteFollowing() || s.routeFollowPaused || s.routeFollowCompleted) return;
+  if (!ensureRideRouteMetrics()) return;
+  if (rideOffRoute.offRoute) { renderRideRemaining(); return; } // keep the last good remaining distance
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const accuracy = Number(coords.accuracy);
+  if (coords.accuracy != null && Number.isFinite(accuracy) && accuracy > RIDE_OFFROUTE_MAX_ACCURACY) return;
+  const pts = state.points, cum = rideProgress.cum;
+  let hit = null;
+  if (rideProgress.lastGood && !rideProgress.reacquire) {
+    const from = rideSegmentAt(rideProgress.lastGood.along - RIDE_PROGRESS_BACK_M);
+    const to = rideSegmentAt(rideProgress.lastGood.along + RIDE_PROGRESS_AHEAD_M);
+    const near = nearestPointOnRoute(pts, lng, lat, from, to);
+    if (near && near.distanceMeters <= RIDE_PROGRESS_WINDOW_MAX_D) hit = near;
+    else {
+      const global = nearestPointOnRoute(pts, lng, lat);
+      if (global && global.distanceMeters <= RIDE_PROGRESS_JUMP_MAX_D) hit = global; // clearly on another part of the route
+    }
+  } else {
+    const global = nearestPointOnRoute(pts, lng, lat); // start / re-entry after off-route: wherever it was rejoined
+    if (global && global.distanceMeters <= RIDE_OFFROUTE_METERS) hit = global;
+  }
+  if (!hit) { renderRideRemaining(); return; } // no reliable progress this fix: keep the last good one
+  const segLen = cum[hit.segmentIndex + 1] - cum[hit.segmentIndex];
+  const along = cum[hit.segmentIndex] + segLen * hit.segmentT;
+  Object.assign(rideProgress, { segIndex: hit.segmentIndex, t: hit.segmentT, along, remaining: Math.max(0, rideProgress.total - along), reacquire: false });
+  rideProgress.lastGood = { segIndex: hit.segmentIndex, t: hit.segmentT, along, remaining: rideProgress.remaining };
+  rideOffRoute.lastNearestSegmentIndex = hit.segmentIndex;
+  // Course complete: late part of the route + almost nothing left + really at the end point, twice in a row.
+  const end = pts[pts.length - 1];
+  const kx = Math.cos(lat * Math.PI / 180) * 111320;
+  const toEnd = Math.hypot((Number(end.lng) - lng) * kx, (Number(end.lat) - lat) * 111320);
+  const late = along >= rideProgress.total * RIDE_COMPLETE_MIN_SHARE;
+  if (late && rideProgress.remaining <= RIDE_COMPLETE_REMAIN_M && toEnd <= RIDE_COMPLETE_END_M) {
+    rideProgress.completeStreak += 1;
+    if (rideProgress.completeStreak >= RIDE_COMPLETE_FIXES) { completeRouteFollow(); return; }
+  } else rideProgress.completeStreak = 0;
+  renderRideRemaining();
+}
+// Share of the route done for the slope-graph marker: last good progress (frozen while off-route / paused), 1 at the end.
+function rideProgressShare() {
+  if (!rideProgress || !rideOnSession.active) return null;
+  if (rideOnSession.routeFollowCompleted) return 1;
+  if (!rideOnSession.routeFollowActive || !rideProgress.lastGood || !(rideProgress.total > 0)) return null;
+  return Math.max(0, Math.min(1, rideProgress.lastGood.along / rideProgress.total));
+}
+function redrawRideProgressOnProfile() {
+  const body = document.getElementById('mobileMapProfileBody');
+  if (!body || body.hidden) return;
+  try { drawProfileChart(document.getElementById('mobileMapProfileChart')); } catch {}
+}
+function formatRideRemaining(meters) {
+  return meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${Math.round(meters)} m`;
+}
+// "남은 1.3 km" to the right of the course name while route follow is on; off-route keeps the last good value.
+function renderRideRemaining() {
+  const el = document.getElementById('rideRemaining');
+  if (!el || !rideProgress) return;
+  const show = rideOnSession.active && rideOnSession.routeFollowActive && rideProgress.remaining != null;
+  el.hidden = !show;
+  if (!show) { redrawRideProgressOnProfile(); return; }
+  const text = '남은 ' + formatRideRemaining(rideProgress.remaining);
+  redrawRideProgressOnProfile();
+  el.textContent = rideOffRoute.offRoute ? '⚠ 경로 이탈 · ' + text : text;
+  el.classList.toggle('is-off-route', rideOffRoute.offRoute);
+}
+
+// ---- Common Ride On fix entry: web (GeolocateControl 'geolocate', incl. recording-fed fixes) and native
+// ('embeddedLocation' from the offline map's LocationManager) go through here, so each fix is counted once.
+// Preferred source: native while the native offline map is active, web otherwise; the other source is used only
+// when the preferred one has delivered nothing for 5 s.
+const RIDE_SOURCE_FALLBACK_MS = 5000;
+const rideFixSource = { last: null, lastNativeAt: 0, lastWebAt: 0 };
+function handleRideLocationFix(coords, timestamp, source) {
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const now = Date.now();
+  const time = Number.isFinite(Number(timestamp)) && Number(timestamp) > 0 ? Number(timestamp) : now;
+  if (source === 'native') rideFixSource.lastNativeAt = now; else rideFixSource.lastWebAt = now;
+  const preferred = state.nativeMap?.active ? 'native' : 'web';
+  if (source !== preferred) {
+    const preferredAt = preferred === 'native' ? rideFixSource.lastNativeAt : rideFixSource.lastWebAt;
+    if (now - preferredAt < RIDE_SOURCE_FALLBACK_MS) return; // preferred source is alive: ignore the other one
+  }
+  const last = rideFixSource.last;
+  if (last && (time <= last.time || (time - last.time < 500 && Math.abs(lat - last.lat) < 1e-6 && Math.abs(lng - last.lng) < 1e-6))) return;
+  rideFixSource.last = { time, lat, lng };
+  rideFollowCam.lastFix = coords;
+  checkRideRouteApproach(coords, time); // 30 m approach prompt
+  if (isRideRouteFollowing()) {
+    updateRideFollowBearing(coords); // tracked while paused too, so resume uses the latest direction
+    applyRideFollowCamera(coords); // online map only (no-op while the native map is active)
+    if (state.nativeMap?.active) {
+      syncNativeRideFollow();
+      if (!rideOnSession.followPaused && !rideOnSession.routeFollowPaused) sendNativeRideFollowCamera(coords); // native map: same bearing, native camera
+    }
+  }
+  const returned = checkRideOffRoute(coords, time); // 20 m off-route / 15 m back
+  updateRideProgress(coords); // progress / remaining distance (frozen while off-route)
+  // Back on the route after an off-route episode: camera follow resumes by itself (not during an explicit pause).
+  if (returned && isRideRouteFollowing() && !rideOnSession.routeFollowPaused && rideOnSession.followPaused) {
+    rideOnSession.followPaused = false;
+    rideFollowCam.ownEaseUntil = 0;
+    applyRideFollowCamera(coords);
+    if (state.nativeMap?.active) sendNativeRideFollowCamera(coords);
+  }
+}
+// Native offline map route-follow camera: JS sends position + the stabilised bearing above (no Java copy of the
+// bearing logic). While route follow is on, the native plain GPS follow is switched off (also during a pause).
+let nativeRideFollowSent = null;
+function syncNativeRideFollow(force = false) {
+  const desired = Boolean(state.nativeMap?.active && isRideRouteFollowing());
+  if (!force && desired === nativeRideFollowSent) return;
+  const plugin = state.nativeMap?.active || nativeRideFollowSent ? nativeMapPlugin() : null;
+  if (!plugin?.setRideFollowCamera) return;
+  nativeRideFollowSent = desired;
+  try { plugin.setRideFollowCamera({ active: desired }).catch(error => console.warn('setRideFollowCamera failed:', error)); } catch {}
+}
+function sendNativeRideFollowCamera(coords, { withBearing = true } = {}) {
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const plugin = state.nativeMap?.active ? nativeMapPlugin() : null;
+  if (!plugin?.setRideFollowCamera) return;
+  const payload = { active: true, latitude: lat, longitude: lng };
+  if (withBearing && rideFollowCam.bearing !== null) payload.bearing = rideFollowCam.bearing; // pitch is never sent: 2D/3D stays the user's
+  nativeRideFollowSent = true;
+  try { plugin.setRideFollowCamera(payload).catch(error => console.warn('setRideFollowCamera failed:', error)); } catch {}
+}
+function handleEmbeddedCameraGesture() {
+  if (isRideRouteFollowing()) rideOnSession.followPaused = true; // camera only; route follow / alerts continue
+}
+geolocateControl.on('geolocate', (e) => { if (e?.coords) handleRideLocationFix(e.coords, e.timestamp, 'web'); });
+// Native payload → the same coords shape. Missing speed/bearing stay undefined (never 0); bearing = GPS course.
+function handleEmbeddedLocation(event) {
+  try {
+    if (!event) return;
+    handleRideLocationFix({
+      latitude: event.latitude, longitude: event.longitude, accuracy: event.accuracy,
+      speed: event.speed, heading: event.bearing
+    }, event.timestamp, 'native');
+  } catch (error) { console.warn('embeddedLocation handling failed:', error); }
+}
+document.getElementById('offRouteMuteBtn')?.addEventListener('click', () => {
+  if (!rideOffRoute.offRoute) return;
+  rideOffRoute.offRouteMuted = true; // this episode only; off-route, route follow and camera stay as they are
+  stopRideAlert();
+  renderOffRouteBanner();
+});
 let pendingLocateToast = true;
 // My-location follow: keeps zoom/pitch/bearing, moves only the center (marker ~10% below screen center)
 // once the marker leaves the safe area. Stops on manual pan/rotate/tilt; re-armed by the locate button.
@@ -741,10 +1435,14 @@ map.on('dragend', () => {
   if (!myLocationFollow.dragging) return;
   myLocationFollow.dragging = false;
   const pinch = myLocationTouch.maxTouches > 1 || Math.abs(map.getZoom() - myLocationTouch.zoomAtDragStart) > 0.01;
-  if (!pinch) myLocationFollow.active = false;
+  if (!pinch) {
+    if (isRideRouteFollowing()) rideOnSession.followPaused = true; // route follow: pause only, never switch it off
+    else myLocationFollow.active = false;
+  }
 });
 // GeolocateControl's default camera fit changes zoom; replace with the follow behavior (same control, no extra watch).
 geolocateControl._updateCamera = (pos) => {
+  if (isRideRouteFollowing() && !state.nativeMap?.active) return; // route follow owns the online camera (also while paused)
   const force = !myLocationFollow.active || myLocationFollow.recenterNext;
   myLocationFollow.active = true;
   myLocationFollow.recenterNext = false;
@@ -844,6 +1542,22 @@ function syncMyLocationBlueDotFromFix(coords, timestamp = Date.now()) {
   syncLocateButtonsActiveState();
 }
 function triggerMyLocationGps({ center = true } = {}) {
+  if (center && isRideRouteFollowing() && rideOnSession.routeFollowPaused) {
+    centerOnceDuringRoutePause(); // explicit pause: one-shot centre only; stays paused (재개 button resumes)
+    return;
+  }
+  if (center && isRideRouteFollowing() && state.nativeMap?.active) {
+    // Native map + route follow: resume the native ride camera at the latest fix (no new session, no prompt).
+    rideOnSession.followPaused = false;
+    syncNativeRideFollow(true);
+    if (rideFollowCam.lastFix) sendNativeRideFollowCamera(rideFollowCam.lastFix);
+    return;
+  }
+  if (center && isRideRouteFollowing() && !state.nativeMap?.active) {
+    resumeRideFollowCamera(); // route follow: resume the camera (no new session, no prompt); 2D/3D is kept
+    triggerMyLocationGps({ center: false }); // keep/restart the position watch only
+    return;
+  }
   if (center && window.powderlineNativeLocate?.()) return; // Native offline map is showing: it handles position/follow itself
   if (!geolocateControl) return;
   ensureGeolocateControlReady();
@@ -979,6 +1693,7 @@ geolocateControl.on('error', (e) => {
       if (pc) el.title = t(key); else el.removeAttribute?.('title');
     }
     if (state.editorMode && state.tool === 'edit' && $('#editorStatus')) $('#editorStatus').textContent = t(pc ? 'statusEditTipPc' : 'statusEditTip');
+    syncMapStyleButtons(); // i18n rewrote the style button text: show the current style again
   }
 
   function isNativeMobileApp() {
@@ -1876,6 +2591,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const previousUserId = state.session?.user?.id;
     state.session=nextSession||null;
     if (!nextSession) {
+      endRideOnSession(); // signed out (any logout path) ends the Ride On session
       await stopGpsRecordingWatcher();
       resetGpsRecordingState();
       gpsRecording.initialized=false;
@@ -2113,8 +2829,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
   function addRouteLayers() {
     map.addSource('route', { type: 'geojson', data: emptyCollection });
-    map.addLayer({ id: 'route-glow', type: 'line', source: 'route', paint: { 'line-color': ['coalesce', ['get', 'glowColor'], '#14211f'], 'line-width': ['case', ['==', ['get', 'selected'], true], 8, 6], 'line-opacity': 0.35, 'line-blur': 2 } });
-    map.addLayer({ id: 'route-line', type: 'line', source: 'route', paint: { 'line-color': ['coalesce', ['get', 'color'], '#ff0000'], 'line-width': ['case', ['==', ['get', 'selected'], true], 4, 3], 'line-opacity': 1 } });
+    map.addLayer({ id: 'route-glow', type: 'line', source: 'route', paint: { 'line-color': ['coalesce', ['get', 'glowColor'], '#14211f'], 'line-width': ['case', ['==', ['get', 'selected'], true], 8, 6], 'line-opacity': 0.35, 'line-blur': 2, 'line-emissive-strength': 1 } });
+    // line-emissive-strength 1: Standard-style 3D lighting / terrain shading must not darken the course on slopes.
+    map.addLayer({ id: 'route-line', type: 'line', source: 'route', paint: { 'line-color': ['coalesce', ['get', 'color'], '#ff0000'], 'line-width': ['case', ['==', ['get', 'selected'], true], 4, 3], 'line-opacity': 1, 'line-emissive-strength': 1 } });
     map.addSource('route-midpoints', { type: 'geojson', data: emptyCollection });
     map.addLayer({ id: 'route-midpoints', type: 'circle', source: 'route-midpoints', paint: { 'circle-radius': 4, 'circle-color': '#f5f6f1', 'circle-stroke-color': '#789012', 'circle-stroke-width': 2 } });
     map.addSource('route-points', { type: 'geojson', data: emptyCollection });
@@ -2127,8 +2844,150 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   map.on('style.load', () => { if (!hasMapboxToken) { $('#mapStatus').textContent = t('mapStatusNeedToken'); return } $('#mapStatus').textContent = t('mapStatusLoading'); setTerrain(); addSkiLayers(); addRouteLayers(); loadSkiData($('#region').value); render(); restoreLayerVisibility() });
   map.on('sourcedata', e => { if (e.sourceId === 'mapbox-dem' && e.isSourceLoaded) { $('#mapStatus').textContent = t('mapStatusReady'); if (profile.pending) scheduleProfile(80) } });
   map.on('idle', () => { if (profile.pending) scheduleProfile(0) });
+  // Ride On 3D check (console only): route source/layers/data after a tilt, to confirm the 3D-route cause on a device.
+  map.on('pitchend', () => {
+    try {
+      const layers = map.getStyle()?.layers || [];
+      const idx = id => layers.findIndex(l => l.id === id);
+      console.info('[route-3d]', { pitch: Math.round(map.getPitch()), source: Boolean(map.getSource('route')), line: idx('route-line'), glow: idx('route-glow'), layerCount: layers.length,
+        visibility: map.getLayer('route-line') ? map.getLayoutProperty('route-line', 'visibility') || 'visible' : 'missing', points: state.points.length, terrain: Boolean(map.getTerrain?.()) });
+    } catch (error) { console.warn('[route-3d] check failed', error); }
+  });
   map.on('error', e => { if (e.sourceId === 'mapbox-dem') $('#mapStatus').textContent = t('mapStatusDemUnavailable') });
-  function setMapStyle(style) { if (!hasMapboxToken) return toast(t('toastNeedToken')); state.mapStyle = style; const topo = style === 'topo'; $('#satelliteBtn').classList.toggle('active', !topo); $('#topoBtn').classList.toggle('active', topo); $('#satelliteBtn').setAttribute('aria-pressed', String(!topo)); $('#topoBtn').setAttribute('aria-pressed', String(topo)); map.setStyle(MAPBOX_STYLES[style]); toast(topo ? t('toastStyleTopo') : t('toastStyleSatellite')) }
+  // Online map style: one state (state.mapStyle = 'satellite' | 'topo' | 'winter') for PC / mobile web / Android WebView.
+  // setStyle on the same map object; the existing style.load handler rebuilds terrain / ski / route layers.
+  // Function (hoisted), not a const: the i18n pass can call syncMapStyleButtons before this line has run.
+  function mapStyleLabel(key) { return ({ satellite: '위성', topo: '지형도', winter: 'WINTER' })[key] || '위성'; }
+  // state.mapStyle = the style actually shown (confirmed on style.load); mapStyleRequest = the one being loaded.
+  let mapStyleRequest = null, mapStyleLoadTimer = null;
+  function setMapStyle(style) {
+    if (!hasMapboxToken) return toast(t('toastNeedToken'));
+    if (!MAPBOX_STYLES[style]) return;
+    if (mapStyleRequest) return; // a style is still loading: ignore rapid extra picks
+    if (style === state.mapStyle) { syncMapStyleButtons(); return; } // same style: no reload
+    const previous = state.mapStyle;
+    const camera = { center: map.getCenter(), zoom: map.getZoom(), bearing: map.getBearing(), pitch: map.getPitch() };
+    const request = { style, previous };
+    mapStyleRequest = request;
+    const finish = () => {
+      if (mapStyleRequest !== request) return false;
+      mapStyleRequest = null;
+      clearTimeout(mapStyleLoadTimer);
+      map.off('style.load', onLoad);
+      map.off('error', onError);
+      return true;
+    };
+    const onLoad = () => {
+      if (!finish()) return;
+      state.mapStyle = style; // confirmed only after a real load
+      // Keep the view: only if the new style moved the camera (and nothing is animating it right now).
+      const c = map.getCenter();
+      const moved = Math.abs(map.getZoom() - camera.zoom) > 0.01 || Math.abs(map.getBearing() - camera.bearing) > 0.1
+        || Math.abs(map.getPitch() - camera.pitch) > 0.1 || Math.abs(c.lng - camera.center.lng) > 1e-6 || Math.abs(c.lat - camera.center.lat) > 1e-6;
+      if (moved && !map.isMoving()) map.jumpTo(camera);
+      syncMapStyleButtons();
+      toast(style === 'topo' ? t('toastStyleTopo') : style === 'winter' ? 'WINTER 지도로 전환했습니다.' : t('toastStyleSatellite'));
+    };
+    // Failed load (e.g. 404 for the style JSON): unlock at once, keep / restore the previous style and label.
+    const fail = (reason) => {
+      if (!finish()) return;
+      console.error('Map style load failed: ' + style, reason);
+      state.mapStyle = previous;
+      // A failed style fetch keeps the previous style on the map (diff load); reload it only if the map lost it.
+      let keepsPrevious = false;
+      try { keepsPrevious = (map.getStyle()?.layers || []).length > 0; } catch { keepsPrevious = false; }
+      if (!keepsPrevious && MAPBOX_STYLES[previous]) map.setStyle(MAPBOX_STYLES[previous]);
+      syncMapStyleButtons();
+      toast(mapStyleLabel(style) + ' 지도를 불러오지 못했습니다. ' + mapStyleLabel(previous) + ' 지도를 유지합니다.');
+    };
+    const onError = (e) => {
+      if (e?.sourceId || e?.tile) return; // tile / source errors are not a style failure
+      const url = String(e?.error?.url || '');
+      if (url && (!url.includes('/styles/v1/') || url.includes('/sprite'))) return; // another request (sprite, glyphs, ...)
+      if (!url && map.isStyleLoaded()) return; // unrelated runtime error while the map is fine
+      fail(e?.error || e);
+    };
+    map.on('style.load', onLoad);
+    map.on('error', onError);
+    clearTimeout(mapStyleLoadTimer);
+    mapStyleLoadTimer = setTimeout(() => { if (mapStyleRequest === request) fail(new Error('style load timeout (15 s)')); }, 15000);
+    try { map.setStyle(MAPBOX_STYLES[style]); } catch (error) { fail(error); return; }
+    syncMapStyleButtons(); // still the confirmed (previous) style until style.load
+  }
+  // Button labels ("위성 ▾") on every style trigger; PC's 2-button switch becomes one popover trigger.
+  function syncMapStyleButtons() {
+    const label = mapStyleLabel(state.mapStyle);
+    const pcBtn = $('#satelliteBtn'), topoBtn = $('#topoBtn');
+    if (pcBtn) {
+      pcBtn.textContent = label + ' ▾';
+      pcBtn.classList.add('active');
+      pcBtn.setAttribute('aria-haspopup', 'menu');
+      pcBtn.setAttribute('aria-pressed', 'true');
+      pcBtn.closest('.style-switch')?.classList.add('style-switch-single');
+    }
+    if (topoBtn) topoBtn.hidden = true;
+    for (const id of ['#mobileStyleLabel', '#rideStyleLabel']) { const el = $(id); if (el) el.textContent = label + ' ▾'; }
+    const icon = $('#mobileStyleIcon');
+    if (icon) icon.textContent = state.mapStyle === 'topo' ? 'terrain' : state.mapStyle === 'winter' ? 'ac_unit' : 'satellite_alt';
+    const pop = document.getElementById('mapStylePopover');
+    pop?.querySelectorAll('[data-map-style]').forEach(item => {
+      const on = item.dataset.mapStyle === state.mapStyle;
+      item.classList.toggle('is-current', on);
+      item.setAttribute('aria-checked', String(on));
+    });
+  }
+  // Small vertical popover next to the button that opened it (no modal / sheet).
+  let mapStylePopoverAnchor = null;
+  function closeMapStylePopover() {
+    const pop = document.getElementById('mapStylePopover');
+    if (pop) pop.hidden = true;
+    mapStylePopoverAnchor?.setAttribute('aria-expanded', 'false');
+    mapStylePopoverAnchor = null;
+  }
+  function ensureMapStylePopover() {
+    let pop = document.getElementById('mapStylePopover');
+    if (pop) return pop;
+    pop = document.createElement('div');
+    pop.id = 'mapStylePopover';
+    pop.className = 'map-style-popover';
+    pop.setAttribute('role', 'menu');
+    pop.hidden = true;
+    pop.innerHTML = ['satellite', 'topo', 'winter'].map(key =>
+      `<button type="button" role="menuitemradio" data-map-style="${key}" aria-checked="false"><span class="map-style-check" aria-hidden="true">✓</span>${mapStyleLabel(key)}</button>`).join('');
+    pop.addEventListener('click', event => {
+      const item = event.target.closest('[data-map-style]');
+      if (!item) return;
+      closeMapStylePopover();
+      setMapStyle(item.dataset.mapStyle);
+    });
+    document.body.appendChild(pop);
+    // Outside tap (map included) / ESC closes it.
+    document.addEventListener('pointerdown', event => {
+      if (pop.hidden) return;
+      if (pop.contains(event.target) || mapStylePopoverAnchor?.contains(event.target)) return;
+      closeMapStylePopover();
+    }, true);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && !pop.hidden) closeMapStylePopover(); });
+    window.addEventListener('resize', closeMapStylePopover);
+    return pop;
+  }
+  function toggleMapStylePopover(anchor) {
+    if (!anchor) return;
+    if (state.nativeMap.active && state.nativeMap.shown) { toast('다운로드한 오프라인 지도는 위성 스타일만 지원합니다.'); return; }
+    const pop = ensureMapStylePopover();
+    if (!pop.hidden && mapStylePopoverAnchor === anchor) { closeMapStylePopover(); return; }
+    syncMapStyleButtons();
+    mapStylePopoverAnchor?.setAttribute('aria-expanded', 'false');
+    mapStylePopoverAnchor = anchor;
+    anchor.setAttribute('aria-expanded', 'true');
+    pop.hidden = false;
+    const r = anchor.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight, gap = 6, margin = 8;
+    const below = r.bottom + gap + h <= window.innerHeight - margin;
+    const top = below ? r.bottom + gap : Math.max(margin, r.top - gap - h);
+    const left = Math.min(Math.max(margin, r.right - w), window.innerWidth - w - margin);
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+  }
   async function loadSkiData(region) {
     const token = ++skiLoadToken; updateFacilityStatus('loading'); try {
       const serverReady = regions[region]?.skiDataStatus === 'ready' && regions[region]?.skiDataVersion;
@@ -2930,6 +3789,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function render() {
+    renderRouteFollowControls(); // route added/cleared → floating route-follow control
     if (segPick && (segPick.n !== state.points.length || segPick.first !== state.points[0])) { segPick = null; syncSegPickUi(); } // route replaced (undo/redo/other edit)
     const routeSource = map.getSource('route'), pointSource = map.getSource('route-points');
     const lineFeatures = [];
@@ -3200,6 +4060,17 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const count = $('#gpsRecordingPointCount');
     const countText = `${gpsRecording.points.length}pt`;
     if (count && count.textContent !== countText) count.textContent = countText;
+    // Ride map: small icon buttons (⏸/▶ + ⏹) in place of 내 경로 기록; the big panel is not shown there (CSS).
+    const iconControls = $('#gpsRecordIconControls');
+    if (iconControls) iconControls.hidden = !active;
+    const iconToggle = $('#gpsRecordToggleIconBtn');
+    if (iconToggle) {
+      const paused = gpsRecording.status === 'paused';
+      iconToggle.classList.toggle('is-paused', paused);
+      iconToggle.setAttribute('aria-label', paused ? '기록 재개' : '기록 일시정지');
+      iconToggle.setAttribute('aria-busy', String(Boolean(gpsRecordingAction)));
+      iconToggle.disabled = gpsRecordingAction === 'starting';
+    }
     const pauseButton = $('#gpsRecordPauseBtn');
     if (pauseButton) {
       pauseButton.setAttribute('aria-busy', String(Boolean(gpsRecordingAction)));
@@ -3500,7 +4371,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     updateGpsRecordingUi();
     try {
       await waitForGpsUiPaint();
-      await stopGpsRecordingWatcher();
+      // The GPS watcher is NOT stopped: acceptGpsRecordingLocation already ignores fixes while status !== 'recording',
+      // so only GPX point adding pauses (blue dot, Ride follow, off-route checks keep receiving fixes).
       if (gpsRecordingAction !== 'pausing' || gpsRecording.status !== 'recording') return;
       gpsRecording.elapsedBeforePauseMs = getGpsRecordingElapsedMs();
       gpsRecording.lastResumedAt = null;
@@ -3530,7 +4402,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     updateGpsRecordingUi();
     try {
       await waitForGpsUiPaint();
-      await startGpsRecordingWatcher();
+      if (gpsRecording.watcherId == null && gpsRecording.webWatcherId == null) {
+        await startGpsRecordingWatcher(); // no watcher (restored after restart / permission error): start one
+      } else {
+        gpsFixFilter.reset(); // same watcher continues; positions from the pause are not added afterwards
+        gpsRecordingResumeAt = Date.now();
+      }
       if (gpsRecordingAction !== 'resuming' || gpsRecording.status !== 'paused') return;
       gpsRecording.status = 'recording';
       armMyLocationFollow();
@@ -3865,6 +4742,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (gpsRecordingAction === 'starting') return toast('GPS 기록 시작을 처리 중입니다. 잠시만 기다려 주세요.');
       void finishGpsRecording();
     });
+    // Icon buttons reuse the panel buttons' handlers (same pause / resume / finish flows).
+    $('#gpsRecordToggleIconBtn')?.addEventListener('click', () => $('#gpsRecordPauseBtn')?.click());
+    $('#gpsRecordStopIconBtn')?.addEventListener('click', () => $('#gpsRecordFinishBtn')?.click());
     $('#gpsRecordingFinishForm')?.addEventListener('submit', event => {
       event.preventDefault();
       void saveFinishedGpsRecording();
@@ -4027,6 +4907,27 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       ctx.stroke();
     }
     if (canvas.id === 'profileChart' && (gapCut || segPick)) drawGapCutOverlay(ctx, { xFor, yFor, width, height });
+    // Ride On progress marker (map / ride drawer only): blue line + dot at the share of the route done.
+    const share = canvas.id === 'mobileMapProfileChart' ? rideProgressShare() : null;
+    if (share !== null) {
+      const d = share * total;
+      if (d >= range.start - 1e-6 && d <= range.end + 1e-6) {
+        let elevation = samples[0].elevation;
+        for (let i = 1; i < samples.length; i++) {
+          if (samples[i].distance >= d) {
+            const a = samples[i - 1], b = samples[i], k = (d - a.distance) / Math.max(1e-6, b.distance - a.distance);
+            elevation = a.elevation + (b.elevation - a.elevation) * Math.max(0, Math.min(1, k));
+            break;
+          }
+          elevation = samples[i].elevation;
+        }
+        const px = xFor(d), py = yFor(elevation);
+        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height);
+        ctx.strokeStyle = 'rgba(29,161,242,.9)'; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.beginPath(); ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#1DA1F2'; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      }
+    }
   }
   function drawProfile() {
     const canvas = $('#profileChart');
@@ -5093,8 +5994,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   $('#liftsToggle').addEventListener('change', e => setLayerVisibility(['ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-terminals'], e.target.checked));
   $('#runsToggle').addEventListener('change', e => setLayerVisibility(['ski-runs'], e.target.checked));
   $('#gpxToggle').addEventListener('change', e => setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints'], e.target.checked));
-  $('#satelliteBtn').addEventListener('click', () => setMapStyle('satellite'));
-  $('#topoBtn').addEventListener('click', () => setMapStyle('topo'));
+  $('#satelliteBtn').addEventListener('click', event => toggleMapStylePopover(event.currentTarget)); // PC: style popover
+  $('#topoBtn').addEventListener('click', () => setMapStyle('topo')); // hidden by syncMapStyleButtons (kept for safety)
+  syncMapStyleButtons();
   $('#tiltBtn').addEventListener('click', () => map.easeTo({ pitch: map.getPitch() > 20 ? 15 : 58, duration: 700 }));
   $('#resetBtn').addEventListener('click', () => setRegion());
 
@@ -5338,18 +6240,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const mobileStyleBtn = $('#mobileStyleBtn');
     const mobileStyleIcon = $('#mobileStyleIcon');
     if (mobileStyleBtn) {
-      mobileStyleBtn.addEventListener('click', () => {
-        if (state.nativeMap.active && state.nativeMap.shown) { toast('다운로드한 오프라인 지도는 위성 스타일만 지원합니다.'); return; }
-        const nextStyle = state.mapStyle === 'topo' ? 'satellite' : 'topo';
-        setMapStyle(nextStyle);
-        if (mobileStyleIcon) {
-          mobileStyleIcon.textContent = nextStyle === 'topo' ? 'terrain' : 'satellite_alt';
-        }
-        const mobileStyleLabel = $('#mobileStyleLabel');
-        if (mobileStyleLabel) mobileStyleLabel.textContent = nextStyle === 'topo' ? '지형' : '위성';
-        const rideStyleLabel = $('#rideStyleLabel');
-        if (rideStyleLabel) rideStyleLabel.textContent = nextStyle === 'topo' ? '지형' : '위성';
-      });
+      // 위성 / 지형도 / WINTER popover (labels / icon are kept in sync by syncMapStyleButtons)
+      mobileStyleBtn.addEventListener('click', () => toggleMapStylePopover(mobileStyleBtn));
+      void mobileStyleIcon;
     }
 
     const mobileCompassBtn = $('#mobileCompassBtn');
@@ -5371,7 +6264,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     $('#mobileZoomOutBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomOut')) map.zoomOut({ duration: 300 }); });
     $('#mobileLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
     $('#mobileInfoBtn')?.addEventListener('click', () => $('#mobileMapProfileToggle')?.click());
-    $('#mobileMapRideOnBtn')?.addEventListener('click', () => mobileHomeRideOn('ride'));
+    $('#mobileMapRideOnBtn')?.addEventListener('click', () => mobileHomeRideOn('ride', 'map'));
 
     $('#mobileCreateCourseBtn')?.addEventListener('click', () => {
       openCourseEditor();
@@ -5959,6 +6852,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     // Mobile auth gating: if user is not signed in or not approved, show Stitch Auth
     if (!signedIn || !isApproved) {
+      endRideOnSession(); // logout / auth lost → back to the login screen ends the Ride On session
       document.body.dataset.mobileAuth = mobileAuthActiveView;
       if (pcScope) {
         // Nothing from the work screen may stay open behind (or over) the PC login page.
@@ -8268,7 +9162,15 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         updateProfileViewport();
         if (profile.pending) scheduleProfile(80); // DEM tiles became available
       });
+      // Native GPS fixes for Ride On (add-on: a failure here never affects the native map / puck / GPS centre).
+      try {
+        const registration = plugin.addListener('embeddedLocation', handleEmbeddedLocation);
+        if (registration && typeof registration.catch === 'function') registration.catch(error => console.warn('embeddedLocation listener failed:', error));
+        const gestureRegistration = plugin.addListener('embeddedCameraGesture', handleEmbeddedCameraGesture);
+        if (gestureRegistration && typeof gestureRegistration.catch === 'function') gestureRegistration.catch(error => console.warn('embeddedCameraGesture listener failed:', error));
+      } catch (error) { console.warn('embeddedLocation listener failed:', error); }
     }
+    syncNativeRideFollow(true); // native map (re)opened: tell it whether Ride On route follow owns the camera
     pushNativeRoute(null, true);
     pushNativeCursor(profile.selected);
   }
@@ -8323,7 +9225,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (embedded) {
         // Same downloaded region/tiles/ski data; the map is shown inside the main screen instead of the test screen.
         await withTimeout(showNativeRegion(regionId, payload), 25000, '오프라인 지도를 여는 시간이 초과되었습니다.');
-        mobileHomeRideOn('ride');
+        mobileHomeRideOn('ride', 'offline');
       } else {
         toast('이 앱 버전에서는 오프라인 지도를 열 수 없습니다. 앱을 업데이트해 주세요.');
       }
@@ -8362,10 +9264,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     meta.textContent = item ? `DIST: ${Number(item.km || 0).toFixed(1)} km` : `COURSES: ${Math.max(0, courseSel.options.length - 1)}`;
   }
 
-  function applySavedRoute(item, destinationView = 'map') {
+  function applySavedRoute(item, destinationView = 'map', rideSource = 'route') {
     if (!item) return;
+    if (destinationView === 'ride') startRideOnSession(rideSource);
     pushHistory();
     state.points = prepareEditPoints(item.points);
+    noteRideRouteSelected(item);
     state.selectedVertex = null;
     const cur = getActiveCourse();
     if (cur) {
@@ -8419,7 +9323,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   }
 
-  function mobileHomeRideOn(destinationView = 'ride') {
+  function mobileHomeRideOn(destinationView = 'ride', rideSource = 'home') {
+    if (destinationView === 'ride') startRideOnSession(rideSource);
     const regionSel = $('#homeRegionSelect');
     const courseSel = $('#homeCourseSelect');
     const srcRegion = $('#region');
@@ -8433,7 +9338,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const selectedItem = state.saved[+idx];
       if (selectedItem) {
         syncMobileHomeSelectionHud(idx);
-        applySavedRoute(selectedItem, destinationView);
+        applySavedRoute(selectedItem, destinationView, rideSource);
         return;
       }
     }
@@ -8472,7 +9377,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       else {
         void deactivateNativeMap();
         if (navigator.onLine === false) toast('인터넷에 연결되어 있지 않습니다. 이전에 본 지도 일부만 표시됩니다. 다운로드한 지도는 오프라인 3D로 이용해 주세요.');
-        mobileHomeRideOn('ride');
+        mobileHomeRideOn('ride', 'home');
       }
     });
     window.addEventListener('online', () => { void refreshMobileHomeCatalog(); });
@@ -8489,10 +9394,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         regularRegion.dispatchEvent(new Event('change'));
       });
     }
-    $('#rideExitBtn')?.addEventListener('click', () => setMobileAppView('map'));
+    $('#rideExitBtn')?.addEventListener('click', () => { endRideOnSession(); setMobileAppView('map'); });
+    // 라이딩 종료 = whole Ride On (route follow, prompts, progress, alerts, native ride camera); routes/points stay.
+    $('#rideEndBtn')?.addEventListener('click', () => { endRideOnSession(); cancelRideVibration(); setMobileAppView('map'); }); // no sound / vibration left
     $('#mobileNavMap')?.addEventListener('click', () => setMobileAppView('map'));
     $('#rideTiltBtn')?.addEventListener('click', () => $('#mobileTiltBtn')?.click());
-    $('#rideStyleBtn')?.addEventListener('click', () => $('#mobileStyleBtn')?.click());
+    $('#rideStyleBtn')?.addEventListener('click', event => toggleMapStylePopover(event.currentTarget));
     $('#rideZoomInBtn')?.addEventListener('click', () => $('#mobileZoomInBtn')?.click());
     $('#rideZoomOutBtn')?.addEventListener('click', () => $('#mobileZoomOutBtn')?.click());
     $('#rideCompassBtn')?.addEventListener('click', () => $('#mobileCompassBtn')?.click());
@@ -8743,9 +9650,14 @@ function syncPartyMemberMapMarkers() {
   }
   const intervalSec = sanitizePartyGpsInterval(party.gps_interval_seconds);
   const activeUserIds = new Set();
+  // Render filter only: my own position is the blue location marker, so my green party marker is not drawn
+  // (my upload / the party location fetch are unchanged). Unknown own id → nobody is hidden.
+  const myUserId = state.session?.user?.id || '';
+  const sameUserId = (a, b) => String(a || '') === String(b || '');
   for (const member of party.members) {
     if (!member?.user_id) continue;
     member.gpsStatus = computePartyMemberGpsStatus(member, intervalSec);
+    if (myUserId && sameUserId(member.user_id, myUserId)) continue; // not in activeUserIds → an existing own marker is removed below
     if (member.locationSharingEnabled === false || !Number.isFinite(member.lat) || !Number.isFinite(member.lng)) {
       continue;
     }
@@ -9768,14 +10680,14 @@ function renderPartyLeader() {
         homeRegionSel.value = targetRegion;
         renderMobileHome();
         homeCourseSel.value = String(savedIndex);
-        mobileHomeRideOn('ride');
+        mobileHomeRideOn('ride', 'party-leader');
       } else {
         const srcRegion = $('#region');
         if (targetRegion && srcRegion && srcRegion.value !== targetRegion && regions[targetRegion]) {
           srcRegion.value = targetRegion;
           srcRegion.dispatchEvent(new Event('change'));
         }
-        applySavedRoute(selectedCourse, 'ride');
+        applySavedRoute(selectedCourse, 'ride', 'party-leader');
       }
     } catch (error) {
       if (state.currentParty === party) {
@@ -9938,7 +10850,7 @@ async function startPartyMemberRideOn() {
       srcRegion.value = activeCourse.region;
       srcRegion.dispatchEvent(new Event('change'));
     }
-    applySavedRoute(activeCourse, 'ride');
+    applySavedRoute(activeCourse, 'ride', 'party-member');
     syncPartyGpsRuntimeForCurrentParty();
     refreshCurrentPartyMemberLocations();
   } catch (error) {
@@ -10370,12 +11282,12 @@ async function startPartyMemberRideOn() {
     $('#mobileRoutesCompassBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('north')) map.easeTo({ bearing: 0, pitch: 0, duration: 600 }); });
     $('#mobileRoutesZoomInBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomIn')) map.zoomIn({ duration: 300 }); });
     $('#mobileRoutesZoomOutBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomOut')) map.zoomOut({ duration: 300 }); });
-    $('#mobileRoutesStyleBtn')?.addEventListener('click', () => $('#mobileStyleBtn')?.click());
+    $('#mobileRoutesStyleBtn')?.addEventListener('click', event => toggleMapStylePopover(event.currentTarget));
     $('#mobileRoutesLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
     $('#mobileEditorCompassBtn')?.addEventListener('click', () => map.easeTo({ bearing: 0, pitch: 0, duration: 600 }));
     $('#mobileEditorZoomInBtn')?.addEventListener('click', () => map.zoomIn({ duration: 300 }));
     $('#mobileEditorZoomOutBtn')?.addEventListener('click', () => map.zoomOut({ duration: 300 }));
-    $('#mobileEditorStyleBtn')?.addEventListener('click', () => $('#mobileStyleBtn')?.click());
+    $('#mobileEditorStyleBtn')?.addEventListener('click', event => toggleMapStylePopover(event.currentTarget));
     $('#mobileEditorLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
 
     // Course Editor HUD tools
@@ -10531,7 +11443,8 @@ async function startPartyMemberRideOn() {
       ['#partyCreateCourseModal', '#partyCreateCourseCloseBtn'],
       ['#partyJoinedLeaveModal', '#partyJoinedLeaveCloseBtn'],
       ['#partyLeaderDisbandModal', '#partyLeaderDisbandCloseBtn'],
-      ['#compassCalibrationModal', '#compassCalibCancelBtn']
+      ['#compassCalibrationModal', '#compassCalibCancelBtn'],
+      ['#routeFollowPromptModal', '#routeFollowLaterBtn']
     ];
     for (const [modalId, closeId] of modalCloseControls) {
       if (clickVisibleControl(modalId, closeId)) return true;
@@ -10581,7 +11494,8 @@ async function startPartyMemberRideOn() {
     }
     if (mobileView === 'ride') {
       // Return to the screen that opened ride (home when started from home region/course selection); exit button only as fallback.
-      if (!goBackInAppHistory(mobileView)) $('#rideExitBtn')?.click();
+      // Back is navigation only: the Ride On session stays (only 라이딩 종료 / logout end it).
+      if (!goBackInAppHistory(mobileView)) setMobileAppView('map');
       return true;
     }
     // Previous menu from the view history (no repeated ping-pong between the same screens).
@@ -10625,14 +11539,11 @@ async function startPartyMemberRideOn() {
     });
   }
 
-  // Compass calibration: 1 s long-press on a mobile "my location" button. A short tap keeps the GPS action.
+  // Compass (heading sector) calibration panel, opened by its own button next to the my-location button.
   function initCompassCalibration() {
-    const LOCATE_SELECTORS = ['#mobileLocateBtn', '#rideLocateBtn', '#mobileRoutesLocateBtn', '#mobileEditorLocateBtn'];
-    const LONG_PRESS_MS = 1000, MOVE_TOLERANCE_PX = 10;
     const modal = $('#compassCalibrationModal'), range = $('#compassCalibRange'), valueEl = $('#compassCalibValue');
     if (!modal || !range || !valueEl) return;
     let savedOffset = compassHeading.offset;
-    let suppressClick = null; // button whose click right after a long-press must not run the GPS action
     const nativePlugin = () => getOfflineMapTestPlugin();
     const sendNative = (offset, persist) => {
       const plugin = nativePlugin();
@@ -10672,41 +11583,9 @@ async function startPartyMemberRideOn() {
     });
     modal.addEventListener('click', (event) => { if (event.target === modal) $('#compassCalibCancelBtn')?.click(); });
 
-    // Capture phase on document: runs before the buttons' own click listeners.
-    document.addEventListener('click', (event) => {
-      if (!suppressClick || !suppressClick.contains(event.target)) return;
-      suppressClick = null;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    }, true);
-
-    LOCATE_SELECTORS.forEach((selector) => {
-      const btn = $(selector);
-      if (!btn) return;
-      btn.classList.add('compass-longpress-target');
-      let timer = null, startX = 0, startY = 0;
-      const cancel = () => { clearTimeout(timer); timer = null; };
-      btn.addEventListener('contextmenu', event => event.preventDefault());
-      btn.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0) return;
-        cancel();
-        startX = event.clientX; startY = event.clientY;
-        timer = setTimeout(() => {
-          timer = null;
-          suppressClick = btn;
-          try { navigator.vibrate?.(15); } catch {}
-          open();
-        }, LONG_PRESS_MS);
-      });
-      btn.addEventListener('pointermove', (event) => {
-        if (timer && Math.hypot(event.clientX - startX, event.clientY - startY) > MOVE_TOLERANCE_PX) cancel();
-      });
-      ['pointerup', 'pointercancel', 'pointerleave'].forEach(type => btn.addEventListener(type, cancel));
-      // After the long-press finger lifts, the follow-up click arrives right away; drop the guard if it never comes.
-      ['pointerup', 'pointercancel'].forEach(type => btn.addEventListener(type, () => {
-        if (suppressClick === btn) setTimeout(() => { if (suppressClick === btn) suppressClick = null; }, 400);
-      }));
-    });
+    // Dedicated heading-calibration buttons (under the my-location buttons). The my-location buttons themselves only
+    // locate / resume follow: the former 1 s long-press entry is removed.
+    ['#rideHeadingCalibBtn', '#mobileHeadingCalibBtn'].forEach(selector => $(selector)?.addEventListener('click', open));
 
     // Start-up: the native puck uses the same saved value as the online map.
     sendNative(compassHeading.offset, true);

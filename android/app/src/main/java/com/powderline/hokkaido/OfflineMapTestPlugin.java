@@ -20,9 +20,13 @@ import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.TypedValue;
@@ -92,6 +96,7 @@ import com.mapbox.maps.TilesetDescriptorOptions;
 import com.mapbox.android.gestures.MoveGestureDetector;
 import com.mapbox.android.gestures.RotateGestureDetector;
 import com.mapbox.android.gestures.ShoveGestureDetector;
+import com.mapbox.android.gestures.StandardScaleGestureDetector;
 import com.mapbox.maps.EdgeInsets;
 import com.mapbox.maps.ScreenCoordinate;
 import com.mapbox.maps.ImageHolder;
@@ -103,6 +108,7 @@ import com.mapbox.maps.plugin.gestures.GesturesPlugin;
 import com.mapbox.maps.plugin.gestures.GesturesUtils;
 import com.mapbox.maps.plugin.gestures.OnMoveListener;
 import com.mapbox.maps.plugin.gestures.OnRotateListener;
+import com.mapbox.maps.plugin.gestures.OnScaleListener;
 import com.mapbox.maps.plugin.gestures.OnShoveListener;
 import com.mapbox.maps.plugin.locationcomponent.DefaultLocationProvider;
 import com.mapbox.maps.plugin.locationcomponent.LocationComponentPlugin;
@@ -247,6 +253,9 @@ public class OfflineMapTestPlugin extends Plugin {
     private Location lastFollowFix = null;        // last fix the camera followed (3 m movement gate)
     private boolean gpsFollowActive = false;
     private boolean gpsGesturesHooked = false;
+    // Ride On route follow owns the camera (set from JS): the plain GPS centre follow stays out of the way.
+    private volatile boolean rideFollowCamera = false;
+    private long cameraCommandUntil = 0L; // a 2D/3D / north / zoom animation is running until then: do not cut it
     private boolean gpsDragging = false;          // a drag/pinch is in progress: follow is suspended, not ended
     private float gpsDragZoom = 0f;
     private int gpsDragMaxPointers = 0;
@@ -595,6 +604,7 @@ public class OfflineMapTestPlugin extends Plugin {
                     stopGpsFollow(); // the user asked to look at a course: do not snap back to the GPS position
                     duration = 900L;
                 } else { ret.put("ok", false); call.resolve(ret); return; }
+                cameraCommandUntil = System.currentTimeMillis() + duration;
                 CameraAnimationsUtils.getCamera(mapView).easeTo(b.build(), new MapAnimationOptions.Builder().duration(duration).build(), null);
                 ret.put("ok", true);
             } catch (Throwable e) {
@@ -2401,10 +2411,10 @@ public class OfflineMapTestPlugin extends Plugin {
         + "\"line-dasharray\":[4,3],\"line-opacity\":1.0}}";
     private static final String ROUTE_GLOW_LAYER = "{\"id\":\"" + ROUTE_GLOW_LAYER_ID + "\",\"type\":\"line\",\"source\":\"" + ROUTE_SOURCE_ID + "\","
         + "\"paint\":{\"line-color\":[\"coalesce\",[\"get\",\"glowColor\"],\"#14211f\"],"
-        + "\"line-width\":[\"case\",[\"==\",[\"get\",\"selected\"],true],8,6],\"line-opacity\":0.35,\"line-blur\":2}}";
+        + "\"line-width\":[\"case\",[\"==\",[\"get\",\"selected\"],true],8,6],\"line-opacity\":0.35,\"line-blur\":2,\"line-emissive-strength\":1}}";
     private static final String ROUTE_LINE_LAYER = "{\"id\":\"" + ROUTE_LINE_LAYER_ID + "\",\"type\":\"line\",\"source\":\"" + ROUTE_SOURCE_ID + "\","
         + "\"paint\":{\"line-color\":[\"coalesce\",[\"get\",\"color\"],\"#ff0000\"],"
-        + "\"line-width\":[\"case\",[\"==\",[\"get\",\"selected\"],true],4,3],\"line-opacity\":1}}";
+        + "\"line-width\":[\"case\",[\"==\",[\"get\",\"selected\"],true],4,3],\"line-opacity\":1,\"line-emissive-strength\":1}}"; // unlit on 3D terrain
     private static final String CURSOR_LAYER = "{\"id\":\"" + CURSOR_LAYER_ID + "\",\"type\":\"symbol\",\"source\":\"" + CURSOR_SOURCE_ID + "\","
         + "\"layout\":{\"icon-image\":\"" + CURSOR_IMAGE_ID + "\",\"icon-allow-overlap\":true,\"icon-ignore-placement\":true}}";
     private static final String SKI_TERMINALS_LAYER = "{\"id\":\"powderline-ski-lift-terminals\",\"type\":\"circle\",\"source\":\"" + SKI_TERMINALS_SOURCE_ID + "\","
@@ -2686,6 +2696,7 @@ public class OfflineMapTestPlugin extends Plugin {
 
     /** Keeps zoom/pitch/bearing; moves only the center (marker ~10% below screen center) when it leaves the safe area. */
     private void followGpsIfNeeded(Location loc, boolean force) {
+        if (rideFollowCamera) return; // Ride On route follow moves the camera (or keeps it still while paused)
         if (mapView == null || loc == null || !gpsFollowActive || gpsDragging) return;
         if (gpsRecenterNext) { force = true; gpsRecenterNext = false; }
         if (!force && loc.hasAccuracy() && loc.getAccuracy() > 60f) return; // low-quality fixes never move the camera
@@ -2718,6 +2729,7 @@ public class OfflineMapTestPlugin extends Plugin {
         gestures.addOnMoveListener(new OnMoveListener() {
             @Override public void onMoveBegin(@NonNull MoveGestureDetector detector) {
                 gpsDragging = true;
+                emitCameraGesture("move"); // also reported for a pinch (2-finger move)
                 gpsDragMaxPointers = detector.getPointersCount();
                 gpsDragZoom = (float) mapView.getMapboxMap().getCameraState().getZoom();
             }
@@ -2729,19 +2741,28 @@ public class OfflineMapTestPlugin extends Plugin {
                 gpsDragging = false;
                 float zoomNow = mapView != null ? (float) mapView.getMapboxMap().getCameraState().getZoom() : gpsDragZoom;
                 boolean pinch = gpsDragMaxPointers > 1 || Math.abs(zoomNow - gpsDragZoom) > 0.01f;
-                if (!pinch) stopGpsFollow();
+                // Ride On route follow: the pan only pauses the ride camera (JS followPaused); the plain GPS follow
+                // state (gpsFollowActive) is left untouched. Without route follow: unchanged.
+                if (!pinch && !rideFollowCamera) stopGpsFollow();
             }
         });
         // Rotation and tilt (and pinch zoom) never end follow.
         gestures.addOnRotateListener(new OnRotateListener() {
-            @Override public void onRotateBegin(@NonNull RotateGestureDetector detector) {}
+            @Override public void onRotateBegin(@NonNull RotateGestureDetector detector) { emitCameraGesture("rotate"); }
             @Override public void onRotate(@NonNull RotateGestureDetector detector) {}
             @Override public void onRotateEnd(@NonNull RotateGestureDetector detector) {}
         });
         gestures.addOnShoveListener(new OnShoveListener() {
-            @Override public void onShoveBegin(@NonNull ShoveGestureDetector detector) {}
+            @Override public void onShoveBegin(@NonNull ShoveGestureDetector detector) { emitCameraGesture("pitch"); }
             @Override public void onShove(@NonNull ShoveGestureDetector detector) {}
             @Override public void onShoveEnd(@NonNull ShoveGestureDetector detector) {}
+        });
+        // User zoom gestures: pinch / quick zoom and the SDK's double-tap (and two-finger-tap) zoom animation all notify
+        // onScaleBegin (GesturesPluginImpl.handleZoomAnimation). Programmatic easeTo zoom commands never do.
+        gestures.addOnScaleListener(new OnScaleListener() {
+            @Override public void onScaleBegin(@NonNull StandardScaleGestureDetector detector) { emitCameraGesture("zoom"); }
+            @Override public void onScale(@NonNull StandardScaleGestureDetector detector) {}
+            @Override public void onScaleEnd(@NonNull StandardScaleGestureDetector detector) {}
         });
         gpsGesturesHooked = true;
     }
@@ -2920,6 +2941,143 @@ public class OfflineMapTestPlugin extends Plugin {
         });
     }
 
+    /**
+     * Forwards the fix just received by the existing LocationManager listener to JS ("embeddedLocation") so the web
+     * Ride On logic (approach / off-route) also works on the offline map and in airplane mode. Values the fix does not
+     * have are omitted (never 0). bearing is the GPS course, not the compass heading. Failures are swallowed.
+     */
+    private void emitEmbeddedLocation(@NonNull Location location) {
+        try {
+            JSObject o = new JSObject();
+            o.put("latitude", location.getLatitude());
+            o.put("longitude", location.getLongitude());
+            if (location.hasAccuracy()) o.put("accuracy", (double) location.getAccuracy());
+            o.put("timestamp", location.getTime());
+            if (location.hasSpeed()) o.put("speed", (double) location.getSpeed());
+            if (location.hasBearing()) o.put("bearing", (double) location.getBearing());
+            String provider = location.getProvider();
+            if (provider != null) o.put("provider", provider);
+            notifyListeners("embeddedLocation", o);
+        } catch (Throwable e) {
+            Log.w(TAG, "embeddedLocation warning: " + e.getMessage());
+        }
+    }
+
+    @Nullable
+    private Vibrator rideVibrator() {
+        Context ctx = getContext();
+        if (ctx == null) return null;
+        if (Build.VERSION.SDK_INT >= 31) {
+            VibratorManager vm = (VibratorManager) ctx.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            return vm != null ? vm.getDefaultVibrator() : null;
+        }
+        return (Vibrator) ctx.getSystemService(Context.VIBRATOR_SERVICE);
+    }
+
+    /**
+     * Ride On alert vibration (one-shot waveform, never repeating: repeat index -1). timings = [off, on, off, on] ms,
+     * amplitudes = 0..255 per step; with amplitude control the given (max 255) values are used, otherwise the plain
+     * waveform (device default strength).
+     */
+    @PluginMethod
+    public void vibrateRideAlert(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            JSArray t = call.getArray("timings");
+            JSArray a = call.getArray("amplitudes");
+            Vibrator vibrator = rideVibrator();
+            if (t == null || t.length() == 0 || vibrator == null || !vibrator.hasVibrator()) {
+                ret.put("ok", false);
+                call.resolve(ret);
+                return;
+            }
+            long[] timings = new long[t.length()];
+            for (int i = 0; i < timings.length; i++) timings[i] = Math.max(0L, Math.min(5000L, t.getLong(i)));
+            int[] amps = null;
+            if (a != null && a.length() == timings.length) {
+                amps = new int[timings.length];
+                for (int i = 0; i < amps.length; i++) amps[i] = Math.max(0, Math.min(255, a.getInt(i)));
+            }
+            boolean amplitude = false;
+            if (Build.VERSION.SDK_INT >= 26) {
+                if (amps != null && vibrator.hasAmplitudeControl()) {
+                    vibrator.vibrate(VibrationEffect.createWaveform(timings, amps, -1));
+                    amplitude = true;
+                } else {
+                    vibrator.vibrate(VibrationEffect.createWaveform(timings, -1));
+                }
+            } else {
+                vibrator.vibrate(timings, -1);
+            }
+            ret.put("ok", true);
+            ret.put("amplitude", amplitude);
+        } catch (Throwable e) {
+            Log.w(TAG, "vibrateRideAlert warning: " + e.getMessage());
+            ret.put("ok", false);
+        }
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void cancelRideVibration(PluginCall call) {
+        try {
+            Vibrator vibrator = rideVibrator();
+            if (vibrator != null) vibrator.cancel();
+        } catch (Throwable e) {
+            Log.w(TAG, "cancelRideVibration warning: " + e.getMessage());
+        }
+        call.resolve(new JSObject());
+    }
+
+    /** User gesture on the native map (gesture listeners only: programmatic camera animations never fire these). */
+    private void emitCameraGesture(@NonNull String type) {
+        try {
+            JSObject o = new JSObject();
+            o.put("type", type);
+            notifyListeners("embeddedCameraGesture", o);
+        } catch (Throwable e) {
+            Log.w(TAG, "embeddedCameraGesture warning: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Ride On route-follow camera, driven by JS (position + JS-stabilised travel bearing; pitch is left as it is).
+     * active=false hands the camera back to the plain GPS follow. The position sits ~25% below the screen centre
+     * (top padding = half the height). Only the camera is touched: no style / source / layer / terrain work.
+     */
+    @PluginMethod
+    public void setRideFollowCamera(PluginCall call) {
+        final boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));
+        final Double lat = call.getDouble("latitude");
+        final Double lng = call.getDouble("longitude");
+        final Double bearing = call.getDouble("bearing");
+        mainHandler.post(() -> {
+            rideFollowCamera = active;
+            JSObject ret = new JSObject();
+            boolean moved = false;
+            try {
+                if (active && mapView != null && lat != null && lng != null && !lat.isNaN() && !lng.isNaN()
+                        && System.currentTimeMillis() >= cameraCommandUntil) {
+                    int h = mapView.getHeight();
+                    if (h > 0) {
+                        CameraOptions.Builder b = new CameraOptions.Builder()
+                            .center(Point.fromLngLat(lng, lat))
+                            .padding(new EdgeInsets(h * 0.5, 0.0, 0.0, 0.0));
+                        if (bearing != null && !bearing.isNaN()) b.bearing(bearing);
+                        // ~2 s native fix interval: a 1.5 s ease keeps the motion continuous without lagging behind.
+                        CameraAnimationsUtils.getCamera(mapView).easeTo(b.build(), new MapAnimationOptions.Builder().duration(1500L).build(), null);
+                        moved = true;
+                    }
+                }
+            } catch (Throwable e) {
+                Log.w(TAG, "setRideFollowCamera warning: " + e.getMessage());
+            }
+            ret.put("active", active);
+            ret.put("moved", moved);
+            call.resolve(ret);
+        });
+    }
+
     private void enableLocationComponentIfPermitted() {
         Activity activity = getActivity();
         if (activity == null || !hasLocationPermission(activity)) return;
@@ -2965,6 +3123,7 @@ public class OfflineMapTestPlugin extends Plugin {
                             location.getLongitude(),
                             location.getAccuracy()
                         )));
+                        emitEmbeddedLocation(location); // add-on for the web Ride On logic; never affects the above
                     }
 
                     @Override

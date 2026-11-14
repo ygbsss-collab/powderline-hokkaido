@@ -157,7 +157,7 @@
           <div class="mobile-hud-flight-rail">
             <button id="mobileCompassBtn" type="button" class="mobile-rail-btn" aria-label="북쪽 정렬"><div id="mobileCompassNeedle" class="mobile-compass-needle"><div class="mobile-needle-north"></div><div class="mobile-needle-south"></div><div class="mobile-needle-pivot"></div></div></button>
             <div class="mobile-rail-zoom-group"><button id="mobileZoomInBtn" type="button" class="mobile-zoom-btn" aria-label="확대">＋</button><div class="mobile-zoom-divider"></div><button id="mobileZoomOutBtn" type="button" class="mobile-zoom-btn" aria-label="축소">−</button></div>
-            <button id="mobileLocateBtn" type="button" class="mobile-rail-btn" aria-label="현재 위치"><span class="material-symbols-outlined">my_location</span></button>
+            <button id="mobileLocateBtn" type="button" class="mobile-rail-btn" aria-label="현재 위치"><span class="material-symbols-outlined">my_location</span></button><button id="mobileHeadingCalibBtn" type="button" class="mobile-rail-btn" aria-label="방향 보정" title="방향 보정"><svg class="heading-calib-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13 L7.2 4.7 A9.6 9.6 0 0 1 16.8 4.7 Z" fill="currentColor" fill-opacity=".3"/><line x1="12" y1="13" x2="12" y2="3.4"/><path d="M6.6 18.2 A7.6 7.6 0 0 0 17.4 18.2"/><path d="M15.3 19.6 L17.4 18.2 L17.6 20.7"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/></svg></button>
           </div>
           <div class="mobile-hud-telemetry" hidden><span id="mobileDistVal">0.0</span><span id="mobileSlopeVal">0</span></div>
           <button id="mobileCreateCourseBtn" type="button" hidden>코스 만들기</button>
@@ -165,15 +165,26 @@
         </div>
         <div id="mobileRideHud" class="mobile-ride-hud" hidden>
           <div class="ride-topbar"><label class="ride-region"><span>지역</span><select id="rideRegionSelect" aria-label="라이드온 지역"></select><span class="material-symbols-outlined">expand_more</span></label><div class="ride-top-actions"><button id="rideTiltBtn" type="button"><span class="mobile-live-dot"></span><span id="rideTiltLabel">3D</span></button><button id="rideStyleBtn" type="button"><span class="material-symbols-outlined">satellite_alt</span><span id="rideStyleLabel">위성</span></button></div></div>
-          <div class="ride-course-card"><span class="material-symbols-outlined ride-course-icon">map</span><div><small>선택된 코스</small><strong id="rideCourseName">코스를 선택하세요</strong></div><button id="rideExitBtn" type="button" hidden>일반 지도</button></div>
+          <div class="ride-course-card"><span class="material-symbols-outlined ride-course-icon">map</span><div><small>선택된 코스</small><strong id="rideCourseName">코스를 선택하세요</strong></div><span id="rideRemaining" class="ride-remaining" hidden></span><button id="rideExitBtn" type="button" hidden>일반 지도</button></div>
           <div class="ride-left-controls"><button id="rideInfoBtn" type="button" aria-label="코스 정보">ⓘ</button></div>
-          <div class="ride-map-controls"><button id="rideCompassBtn" type="button" aria-label="북쪽 정렬"><span id="rideCompassNeedle" class="mobile-compass-needle"><span class="mobile-needle-north"></span><span class="mobile-needle-south"></span><span class="mobile-needle-pivot"></span></span></button><div class="ride-zoom-group"><button id="rideZoomInBtn" type="button" aria-label="확대">＋</button><button id="rideZoomOutBtn" type="button" aria-label="축소">−</button></div><button id="rideLocateBtn" type="button" aria-label="현재 위치"><span class="material-symbols-outlined">my_location</span></button></div>
+          <div class="ride-map-controls"><button id="rideCompassBtn" type="button" aria-label="북쪽 정렬"><span id="rideCompassNeedle" class="mobile-compass-needle"><span class="mobile-needle-north"></span><span class="mobile-needle-south"></span><span class="mobile-needle-pivot"></span></span></button><div class="ride-zoom-group"><button id="rideZoomInBtn" type="button" aria-label="확대">＋</button><button id="rideZoomOutBtn" type="button" aria-label="축소">−</button></div><button id="rideLocateBtn" type="button" aria-label="현재 위치"><span class="material-symbols-outlined">my_location</span></button><button id="rideHeadingCalibBtn" type="button" aria-label="방향 보정" title="방향 보정"><svg class="heading-calib-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13 L7.2 4.7 A9.6 9.6 0 0 1 16.8 4.7 Z" fill="currentColor" fill-opacity=".3"/><line x1="12" y1="13" x2="12" y2="3.4"/><path d="M6.6 18.2 A7.6 7.6 0 0 0 17.4 18.2"/><path d="M15.3 19.6 L17.4 18.2 L17.6 20.7"/><circle cx="12" cy="13" r="1.4" fill="currentColor" stroke="none"/></svg></button></div>
           <div class="ride-bottom-deck">
             <section id="gpsRecordingPanel" class="gps-recording-panel" hidden aria-live="polite">
               <div class="gps-recording-mini-status"><strong id="gpsRecordingStatus">기록 중</strong><span id="gpsRecordingSignal">GPS 대기</span><span id="gpsRecordingDistance">0.00 km</span><span id="gpsRecordingElapsed">00:00:00</span><span id="gpsRecordingPointCount">0pt</span></div>
               <div class="gps-recording-actions"><button id="gpsRecordPauseBtn" type="button">기록 일시정지</button><button id="gpsRecordFinishBtn" type="button">기록 종료</button></div>
             </section>
             <button id="rideShareBtn" type="button"><span class="material-symbols-outlined">route</span><span id="rideRecordBtnLabel">내 경로 기록</span></button>
+            <!-- While recording: small icon buttons in the record button's place (⏸/▶ = GPX point adding only, ⏹ = finish). -->
+            <div id="gpsRecordIconControls" class="gps-record-icon-controls" hidden><button id="gpsRecordToggleIconBtn" type="button" aria-label="기록 일시정지"><svg class="rec-icon rec-icon-pause" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="6.5" y="5" width="3.6" height="14" rx="1" fill="currentColor"/><rect x="13.9" y="5" width="3.6" height="14" rx="1" fill="currentColor"/></svg><svg class="rec-icon rec-icon-play" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M8 5.2v13.6a.8.8 0 0 0 1.2.7l10.6-6.8a.8.8 0 0 0 0-1.4L9.2 4.5A.8.8 0 0 0 8 5.2z" fill="currentColor"/></svg></button><button id="gpsRecordStopIconBtn" type="button" aria-label="기록 종료"><svg class="rec-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button></div>
+            <!-- Bottom row: route-follow control (left) · 라이딩 종료 = end the whole Ride On (right, the former record-button spot). -->
+            <div class="ride-bottom-row">
+              <div id="routeFollowControls" class="route-follow-controls" hidden>
+                <button id="routeFollowToggleBtn" type="button">일시정지</button>
+                <button id="routeFollowEndBtn" type="button">종료</button>
+                <button id="routeFollowBeginBtn" type="button" hidden>따라가기 시작</button>
+              </div>
+              <button id="rideEndBtn" type="button">라이딩 종료</button>
+            </div>
           </div>
         </div>
         <section id="mobileRoutesScreen" class="mobile-standalone-screen course-manage-screen" hidden aria-label="코스 관리">
@@ -1128,6 +1139,21 @@
           <button id="modalCancelBtn" type="button" class="ghost" data-i18n="btnModalCancel">취소 (편집 계속)</button>
           <button id="modalDiscardBtn" type="button" class="ghost" data-i18n="btnModalDiscard">취소하고 닫기</button>
           <button id="modalSaveBtn" type="button" class="primary" data-i18n="btnModalSave">저장 후 닫기</button>
+        </div>
+      </div>
+    </div>
+    <div id="offRouteBanner" class="off-route-banner" role="alert" hidden>
+      <span class="material-symbols-outlined off-route-icon" aria-hidden="true">warning</span>
+      <div class="off-route-text"><strong id="offRouteTitle">경로를 이탈했습니다</strong><small id="offRouteDetail"></small></div>
+      <button id="offRouteMuteBtn" type="button">경고 끔</button>
+    </div>
+    <div id="routeFollowPromptModal" class="modal-backdrop route-follow-prompt-modal" hidden>
+      <div class="modal-dialog route-follow-prompt-sheet" role="dialog" aria-modal="false" aria-labelledby="routeFollowPromptTitle">
+        <h3 id="routeFollowPromptTitle">선택한 경로에 가까워졌습니다.</h3>
+        <p>경로 따라가기를 실행하시겠습니까?</p>
+        <div class="modal-actions">
+          <button id="routeFollowLaterBtn" type="button" class="ghost">나중에</button>
+          <button id="routeFollowStartBtn" type="button" class="primary">시작</button>
         </div>
       </div>
     </div>

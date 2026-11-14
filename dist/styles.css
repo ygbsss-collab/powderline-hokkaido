@@ -7057,3 +7057,112 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
 .compass-calib-row { display: flex; align-items: center; gap: 10px; }
 .compass-calib-row input[type="range"] { flex: 1; min-width: 0; accent-color: #FF3B30; }
 .compass-calib-row button { flex: 0 0 auto; min-width: 48px; height: 40px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+
+/* Ride On: one-time "follow the selected route?" prompt. Small bottom sheet, the map (online or native) stays visible/usable. */
+.modal-backdrop.route-follow-prompt-modal { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; place-items: end center; padding: 0; pointer-events: none; }
+.route-follow-prompt-modal .route-follow-prompt-sheet {
+  pointer-events: auto;
+  max-width: 480px;
+  border-radius: 16px 16px 0 0;
+  border-bottom: 0;
+  padding: 14px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: rgba(255, 255, 255, 0.94);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.18);
+}
+.route-follow-prompt-modal .route-follow-prompt-sheet h3 { margin: 0 0 2px; }
+.route-follow-prompt-modal .route-follow-prompt-sheet p { margin: 0 0 4px; }
+.route-follow-prompt-modal .route-follow-prompt-sheet .modal-actions { margin-top: 8px; }
+
+/* Ride On off-route banner: small, top of the map, does not block map gestures outside itself. */
+.off-route-banner {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  top: calc(max(12px, env(safe-area-inset-top)) + 56px);
+  z-index: 9998; width: min(92vw, 420px);
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 12px;
+  background: rgba(214, 40, 40, 0.94); color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  font-family: 'Noto Sans KR', sans-serif;
+}
+.off-route-banner[hidden] { display: none !important; }
+.off-route-banner.is-muted { background: rgba(60, 64, 72, 0.9); }
+.off-route-banner .off-route-icon { font-size: 22px; flex: 0 0 auto; }
+.off-route-banner .off-route-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.off-route-banner .off-route-text strong { font-size: 14px; }
+.off-route-banner .off-route-text small { font-size: 12px; opacity: .9; }
+.off-route-banner button {
+  flex: 0 0 auto; height: 34px; padding: 0 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, .7); background: rgba(255, 255, 255, .15); color: #fff; font-size: 13px; font-weight: 600;
+}
+
+/* Ride On bottom row (last row of the deck): route-follow control on the left, 라이딩 종료 on the right (the former
+   record-button spot). The record button / recording panel stay above it on the right, in the deck's own flow. */
+.mobile-ride-hud .ride-bottom-deck .ride-bottom-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 38px; }
+.mobile-ride-hud .ride-bottom-deck .route-follow-controls {
+  display: flex; gap: 6px; pointer-events: auto; margin-right: auto;
+}
+.mobile-ride-hud .ride-bottom-deck .route-follow-controls[hidden] { display: none !important; }
+.mobile-ride-hud .ride-bottom-deck .route-follow-controls button {
+  height: 38px; min-height: 38px; padding: 0 14px; border-radius: 999px; font-size: 13px; font-weight: 700;
+  color: #f1f5f9; background: rgba(13, 20, 33, .84); border: 1px solid rgba(255, 255, 255, .14);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .25);
+}
+.mobile-ride-hud .ride-bottom-deck .route-follow-controls button[hidden] { display: none !important; }
+.mobile-ride-hud .ride-bottom-deck .route-follow-controls #routeFollowBeginBtn { background: rgba(255, 59, 48, .92); border-color: transparent; color: #fff; }
+.mobile-ride-hud .ride-bottom-deck .route-follow-controls.is-paused #routeFollowToggleBtn { background: rgba(255, 59, 48, .92); border-color: transparent; color: #fff; }
+
+/* Map style popover (위성 / 지형도 / WINTER): small vertical menu next to the style button, PC + mobile + Android WebView. */
+.style-switch.style-switch-single { grid-template-columns: 1fr; }
+.map-style-popover {
+  position: fixed; z-index: 10001; min-width: 128px;
+  display: flex; flex-direction: column; padding: 4px;
+  background: rgba(13, 20, 33, .94); border: 1px solid rgba(255, 255, 255, .14); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .3);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+}
+.map-style-popover[hidden] { display: none !important; }
+.map-style-popover button {
+  display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px 0 8px;
+  border: 0; border-radius: 7px; background: transparent; color: #e2e8f0;
+  font: 600 13px 'Noto Sans KR', sans-serif; text-align: left; cursor: pointer;
+}
+.map-style-popover button .map-style-check { width: 14px; visibility: hidden; color: #38bdf8; }
+.map-style-popover button.is-current { background: rgba(255, 255, 255, .1); color: #fff; }
+.map-style-popover button.is-current .map-style-check { visibility: visible; }
+
+
+/* 라이딩 종료: ends the whole Ride On (not the route-follow 종료). */
+.mobile-ride-hud .ride-bottom-deck #rideEndBtn {
+  margin-left: auto; height: 38px; min-height: 38px; padding: 0 16px; border-radius: 999px;
+  font-size: 13px; font-weight: 800; color: #fecaca; background: rgba(13, 20, 33, .86); border: 1px solid rgba(248, 113, 113, .6);
+}
+.mobile-ride-hud .ride-bottom-deck #rideEndBtn[hidden] { display: none !important; }
+/* Remaining distance along the route, on the course-name line (right-aligned). */
+.ride-course-card .ride-remaining { margin-left: auto; padding-left: 8px; white-space: nowrap; font-size: 13px; font-weight: 800; color: #f1f5f9; font-variant-numeric: tabular-nums; }
+.ride-course-card .ride-remaining[hidden] { display: none !important; }
+.ride-course-card .ride-remaining.is-off-route { color: #fca5a5; }
+/* Heading-calibration button (sector icon) right under the my-location buttons, same round button styles. */
+#rideHeadingCalibBtn .heading-calib-icon, #mobileHeadingCalibBtn .heading-calib-icon { display: block; width: 20px; height: 20px; }
+
+
+/* Ride map GPS recording: no big panel over the map; small round icon buttons instead (record logic unchanged). */
+.mobile-ride-hud #gpsRecordingPanel { display: none !important; }
+.mobile-ride-hud .ride-bottom-deck .gps-record-icon-controls { align-self: flex-end; display: flex; gap: 8px; pointer-events: auto; }
+.mobile-ride-hud .ride-bottom-deck .gps-record-icon-controls[hidden] { display: none !important; }
+.mobile-ride-hud .ride-bottom-deck .gps-record-icon-controls button {
+  width: 40px; height: 40px; min-height: 40px; padding: 0; border-radius: 50%; display: grid; place-items: center;
+  color: #f1f5f9; background: rgba(13, 20, 33, .86); border: 1px solid rgba(255, 255, 255, .14); box-shadow: 0 4px 14px rgba(0, 0, 0, .25);
+}
+.mobile-ride-hud .ride-bottom-deck #gpsRecordStopIconBtn { color: #fca5a5; }
+.mobile-ride-hud .ride-bottom-deck #gpsRecordToggleIconBtn .rec-icon-play { display: none; }
+.mobile-ride-hud .ride-bottom-deck #gpsRecordToggleIconBtn.is-paused .rec-icon-pause { display: none; }
+.mobile-ride-hud .ride-bottom-deck #gpsRecordToggleIconBtn.is-paused .rec-icon-play { display: block; color: #4ade80; }
+/* Slope drawer open on the ride map: the map and the ride HUD end above the drawer body (layout space, no overlay),
+   so the map buttons / record / route-follow / 라이딩 종료 controls move up with the map. */
+@media (max-width: 768px) {
+  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded #map { bottom: var(--profile-body-h, 0px); }
+  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .mobile-ride-hud { bottom: var(--profile-body-h, 0px); }
+  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .ride-bottom-deck { display: flex; }
+}
