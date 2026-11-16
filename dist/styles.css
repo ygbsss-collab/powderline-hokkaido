@@ -6802,8 +6802,7 @@ body[data-pc-web="true"] .pc-map-controls {
 body[data-pc-web="true"] .pc-map-controls > * { pointer-events: auto; }
 
 /* Shared card: style switch, 2D/3D and the Mapbox groups use the same background, border, radius, padding, shadow */
-body[data-pc-web="true"] .pc-map-style-slot .style-switch,
-body[data-pc-web="true"] .pc-view-switch,
+body[data-pc-web="true"] .pc-map-mode-bar,
 body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group {
   padding: 2px; gap: 2px;
   border: 1px solid var(--pc-ctrl-border); border-radius: var(--pc-ctrl-radius);
@@ -6811,12 +6810,16 @@ body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group {
   backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
   overflow: hidden;
 }
-body[data-pc-web="true"] .pc-map-style-slot .style-switch { display: grid; grid-template-columns: 1fr 1fr; width: 220px; height: auto; }
-body[data-pc-web="true"] .pc-view-switch { display: grid; grid-template-columns: 1fr 1fr; width: 110px; height: auto; }
+/* [2D/3D] | [style]: one compact card, two independent buttons, thin divider. The moved .style-switch loses its own card. */
+body[data-pc-web="true"] .pc-map-mode-bar { display: flex; align-items: center; width: auto; height: auto; }
+body[data-pc-web="true"] .pc-map-mode-bar .pc-map-style-slot { display: flex; align-items: center; padding-left: 2px; border-left: 1px solid var(--pc-ctrl-border); }
+body[data-pc-web="true"] .pc-map-style-slot .style-switch {
+  display: flex; width: auto; height: auto; margin: 0; padding: 0; gap: 0; border: 0; border-radius: 0; background: none; box-shadow: none;
+}
 
 /* Shared button: equal size, transparent → hover → active (sky tint, not a lime fill) → disabled */
 body[data-pc-web="true"] .pc-map-style-slot .style-switch button,
-body[data-pc-web="true"] .pc-view-switch button {
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn {
   display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0;
   height: var(--pc-ctrl-btn-h); padding: 0 8px;
   border: 1px solid transparent; border-radius: var(--pc-ctrl-btn-radius);
@@ -6825,15 +6828,15 @@ body[data-pc-web="true"] .pc-view-switch button {
   transition: background-color .15s, color .15s, border-color .15s;
 }
 body[data-pc-web="true"] .pc-map-style-slot .style-switch button:hover:not(.active):not(:disabled),
-body[data-pc-web="true"] .pc-view-switch button:hover:not(.active):not(:disabled) { background: var(--pc-ctrl-hover); color: var(--pc-ctrl-hover-text); }
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn:hover:not(.active):not(:disabled) { background: var(--pc-ctrl-hover); color: var(--pc-ctrl-hover-text); }
 body[data-pc-web="true"] .pc-map-style-slot .style-switch button.active,
-body[data-pc-web="true"] .pc-view-switch button.active {
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn.active {
   border-color: var(--pc-ctrl-active-border); background: var(--pc-ctrl-active-bg); color: var(--pc-ctrl-active-text); font-weight: 700;
 }
 body[data-pc-web="true"] .pc-map-style-slot .style-switch button:disabled,
-body[data-pc-web="true"] .pc-view-switch button:disabled { opacity: .4; cursor: not-allowed; }
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn:disabled { opacity: .4; cursor: not-allowed; }
 body[data-pc-web="true"] .pc-map-style-slot .style-switch button:focus-visible,
-body[data-pc-web="true"] .pc-view-switch button:focus-visible,
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn:focus-visible,
 body[data-pc-web="true"] .pc-map-nav-slot .mapboxgl-ctrl-group button:focus-visible { outline: 2px solid rgba(56, 189, 248, .7); outline-offset: 1px; }
 /* Icons (Material Symbols, same names as the Android style button) — added in CSS so i18n text updates keep them */
 body[data-pc-web="true"] .pc-map-style-slot #satelliteBtn::before,
@@ -6843,6 +6846,17 @@ body[data-pc-web="true"] .pc-map-style-slot #topoBtn::before {
 }
 body[data-pc-web="true"] .pc-map-style-slot #satelliteBtn::before { content: 'satellite_alt'; }
 body[data-pc-web="true"] .pc-map-style-slot #topoBtn::before { content: 'terrain'; }
+/* Mode bar: both halves look alike (state = their text: 2D/3D · 위성/지형도/WINTER); 2D/3D narrow, style sized to its name.
+   The style button's permanent .active sky tint and its icon are dropped here (name only). */
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn,
+body[data-pc-web="true"] .pc-map-mode-bar .style-switch button {
+  color: var(--pc-ctrl-hover-text); font-weight: 700; border-color: transparent; background: transparent;
+}
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn { width: 40px; padding: 0; }
+body[data-pc-web="true"] .pc-map-mode-bar .style-switch button { padding: 0 12px; }
+body[data-pc-web="true"] .pc-map-mode-bar .style-switch button:hover:not(:disabled),
+body[data-pc-web="true"] .pc-map-mode-bar #pcViewToggleBtn:hover:not(:disabled) { background: var(--pc-ctrl-hover); }
+body[data-pc-web="true"] .pc-map-mode-bar #satelliteBtn::before { content: none; }
 
 /* Mapbox locate / zoom / compass: same card + button design, order and vertical stack unchanged */
 body[data-pc-web="true"] .pc-map-nav-slot { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
@@ -7166,6 +7180,9 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
   body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .mobile-ride-hud { bottom: var(--ride-profile-inset, 0px); }
   /* Deck = bottom of the shortened map (10px gap): its usual 128px clearance (nav + drawer header) is not needed here. */
   body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded .ride-bottom-deck { display: flex; bottom: 10px; }
+  /* Route follow only: `.map-panel #map { height: 100% }` made the bottom inset above a no-op (map stayed full height
+     under the graph). height:auto lets top:0 + bottom:inset really end the map (and the native map rect) at the graph top. */
+  body[data-mobile-view="ride"] .map-panel.mobile-profile-expanded.ride-follow-split #map { height: auto; }
 }
 
 /* Ride map: expanded slope drawer ≈120px in total, most of it for the chart: header 34 + chart 70 + gap 2 +
@@ -7180,4 +7197,16 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
   }
   body[data-mobile-view="ride"] #mobileMapProfileBody .course-profile-stats small { font-size: 8.5px; line-height: 1; white-space: nowrap; }
   body[data-mobile-view="ride"] #mobileMapProfileBody .course-profile-stats strong { font-size: 10.5px; line-height: 1; white-space: nowrap; }
+}
+
+/* Compass bearing mode (one button, three looks): north = "N", free = the rotating needle, navigation = travel arrow.
+   The mode marks are added inside #mobileCompassBtn / #rideCompassBtn by app.js; the course screens' compasses are untouched. */
+.compass-mode-north-label, .compass-mode-nav-icon { display: none; }
+:is(#mobileCompassBtn, #rideCompassBtn).compass-mode-north .mobile-compass-needle,
+:is(#mobileCompassBtn, #rideCompassBtn).compass-mode-navigation .mobile-compass-needle { display: none !important; }
+:is(#mobileCompassBtn, #rideCompassBtn).compass-mode-north .compass-mode-north-label {
+  display: block; font-size: 15px; font-weight: 800; line-height: 1; color: #f87171; letter-spacing: 0;
+}
+:is(#mobileCompassBtn, #rideCompassBtn).compass-mode-navigation .compass-mode-nav-icon {
+  display: block; font-size: 20px; line-height: 1; color: #38bdf8;
 }

@@ -124,8 +124,8 @@
         <div id="map"></div>
         <!-- PC web only: right-top map controls. The existing style switch and Mapbox zoom/compass/locate controls are moved in here (never duplicated). -->
         <div id="pcMapControls" class="pc-map-controls" hidden>
-          <div id="pcMapStyleSlot" class="pc-map-style-slot"></div>
-          <div id="pcViewSwitch" class="pc-view-switch" role="group" aria-label="지도 시점 2D / 3D"><button id="pcView2dBtn" type="button" aria-pressed="false">2D</button><button id="pcView3dBtn" type="button" class="active" aria-pressed="true">3D</button></div>
+          <!-- One card, two independent buttons: [2D/3D toggle] | [map style cycle] (the existing style button is moved into the slot). -->
+          <div id="pcMapModeBar" class="pc-map-mode-bar" role="group" aria-label="지도 시점 · 지도 종류"><button id="pcViewToggleBtn" type="button" aria-label="2D / 3D 전환" aria-pressed="true">3D</button><div id="pcMapStyleSlot" class="pc-map-style-slot"></div></div>
           <div id="pcMapNavSlot" class="pc-map-nav-slot"></div>
         </div>
         <section id="adminRegionMapPicker" class="admin-region-map-picker" hidden aria-label="관리자 지역 지도 선택">
