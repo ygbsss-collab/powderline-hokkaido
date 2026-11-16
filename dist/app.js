@@ -698,23 +698,101 @@ function clampHeadingOffset(value) {
   const n = Math.round(Number(value));
   return Number.isFinite(n) ? Math.max(-180, Math.min(180, n)) : 0;
 }
-const compassHeading = { offset: 0, lastHeading: null, render: null };
+const compassHeading = { offset: 0, lastHeading: null, render: null, fetchDeclination: null };
 try { compassHeading.offset = clampHeadingOffset(localStorage.getItem(HEADING_OFFSET_STORAGE) ?? 0); } catch {}
+// True north (online map only): the sensor heading is magnetic; the declination comes from Android GeomagneticField
+// (native plugin, set as compassHeading.fetchDeclination) for the latest web fix. 0 until known / outside the app.
+// The native puck applies its own declination in Java, so each map applies it exactly once. GPS course is untouched.
+const compassDeclination = { value: 0, known: false, lat: null, lng: null, at: 0, pending: false, lastLogAt: 0 };
+function refreshCompassDeclination(coords) {
+  const lat = Number(coords?.latitude), lng = Number(coords?.longitude);
+  const d = compassDeclination;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || d.pending || typeof compassHeading.fetchDeclination !== 'function') return;
+  // Declination barely changes: re-ask only after ~1 km or 10 min.
+  const moved = d.lat === null ? Infinity : Math.hypot(lat - d.lat, (lng - d.lng) * Math.cos(lat * Math.PI / 180)) * 111320;
+  if (d.known && moved < 1000 && Date.now() - d.at < 600000) return;
+  const altitude = Number(coords.altitude);
+  d.pending = true;
+  Promise.resolve(compassHeading.fetchDeclination({ latitude: lat, longitude: lng, altitude: Number.isFinite(altitude) ? altitude : 0, time: Date.now() }))
+    .then(result => {
+      const value = Number(result?.declination);
+      if (!Number.isFinite(value)) return;
+      Object.assign(d, { value, known: true, lat, lng, at: Date.now() });
+      compassHeading.render?.();
+    })
+    .catch(error => console.warn('getMagneticDeclination failed:', error))
+    .finally(() => { d.pending = false; });
+}
+// Online compass tilt compensation (deviceorientationabsolute, magnetic). W3C rotation R = Rz(alpha)·Rx(beta)·Ry(gamma)
+// maps device axes (x screen-right, y screen-top, z out of screen) to earth axes (East, North, Up).
+// Heading = azimuth of the screen's vertical centre plane: forward = Up × (screen-right axis in earth frame).
+// Screen-right never tilts with pitch (beta) or with roll inside that plane, so flat, raised, upright and side-tilted
+// poses give the same azimuth. Screen rotation a picks the device axis that is screen-right: (cos a, −sin a, 0).
+// Flat phone check: heading = −alpha + a (same as the previous alpha-only value).
+function normalizeCompass(deg) { return ((deg % 360) + 360) % 360; }
+function tiltCompensatedHeading(alpha, beta, gamma, screenAngle) {
+  if (![alpha, beta, gamma, screenAngle].every(Number.isFinite)) return null;
+  const r = Math.PI / 180;
+  const cZ = Math.cos(alpha * r), sZ = Math.sin(alpha * r);
+  const cX = Math.cos(beta * r), sX = Math.sin(beta * r);
+  const cY = Math.cos(gamma * r), sY = Math.sin(gamma * r);
+  const ca = Math.cos(screenAngle * r), sa = Math.sin(screenAngle * r);
+  // Earth-frame East / North components of device x (R column 1) and device y (R column 2).
+  const xE = cZ * cY - sZ * sX * sY, xN = sZ * cY + cZ * sX * sY;
+  const yE = -sZ * cX, yN = cZ * cX;
+  const rightE = ca * xE - sa * yE, rightN = ca * xN - sa * yN; // screen-right axis, horizontal part
+  if (Math.hypot(rightE, rightN) < 0.1) return null; // screen-right ~vertical (phone on its side): azimuth undefined
+  return normalizeCompass(Math.atan2(-rightN, rightE) / r); // forward = (−rightN, rightE); clockwise from north
+}
+// Minimal smoothing: steps <= 2° (sensor jitter) move 30% along the shortest angle; real turns are taken at once.
+function smoothCompassHeading(next) {
+  const prev = compassHeading.smoothed;
+  if (!Number.isFinite(prev)) { compassHeading.smoothed = normalizeCompass(next); return compassHeading.smoothed; }
+  const delta = ((((next - prev) % 360) + 540) % 360) - 180; // shortest angle, 0/360 safe
+  compassHeading.smoothed = normalizeCompass(Math.abs(delta) <= 2 ? prev + delta * 0.3 : next);
+  return compassHeading.smoothed;
+}
 if (typeof geolocateControl._onDeviceOrientation === 'function') {
   const mapboxOnDeviceOrientation = geolocateControl._onDeviceOrientation;
   compassHeading.render = () => {
     if (compassHeading.lastHeading === null) return; // no sensor value yet: the sector stays hidden
-    const shown = (((compassHeading.lastHeading + compassHeading.offset) % 360) + 360) % 360 || 360; // mapbox treats 0 as "no heading"
+    // magnetic → + declination (true) → + manual offset → 0..360
+    const trueHeading = compassHeading.lastHeading + compassDeclination.value;
+    const shown = (((trueHeading + compassHeading.offset) % 360) + 360) % 360 || 360; // mapbox treats 0 as "no heading"
+    const now = Date.now();
+    if (now - compassDeclination.lastLogAt >= 2000) { // dev log (max every 2 s); remove after device checks
+      compassDeclination.lastLogAt = now;
+      const fix = geolocateControl._lastKnownPosition?.coords;
+      console.debug('[heading]', {
+        ...compassHeading.debug, // alpha / beta / gamma / screenAngle / magneticHeadingRaw / magneticHeadingTiltCompensated
+        magnetic: Math.round(compassHeading.lastHeading * 10) / 10, declination: compassDeclination.value, declinationKnown: compassDeclination.known,
+        true: Math.round(trueHeading * 10) / 10, offset: compassHeading.offset, final: Math.round(shown * 10) / 10,
+        gpsCourse: fix?.heading ?? null, lat: fix?.latitude ?? null, lng: fix?.longitude ?? null
+      });
+    }
     mapboxOnDeviceOrientation.call(geolocateControl, { webkitCompassHeading: shown });
   };
   geolocateControl._onDeviceOrientation = (e) => {
     const screenAngle = Number(window.screen?.orientation?.angle ?? window.orientation ?? 0) || 0;
     const compass = Number(e.webkitCompassHeading);
     let heading = null;
-    if (Number.isFinite(compass)) heading = compass + screenAngle;
-    else if (e.absolute === true && Number.isFinite(e.alpha)) heading = -e.alpha + screenAngle;
-    if (heading === null) return; // no absolute heading received: keep the previous arrow state
-    compassHeading.lastHeading = heading; // screen-rotation corrected, before the manual offset
+    if (Number.isFinite(compass)) heading = compass + screenAngle; // iOS: unchanged
+    else if (e.absolute === true && Number.isFinite(e.alpha)) {
+      const raw = -e.alpha + screenAngle; // previous alpha-only value: fallback + log only
+      const tilt = tiltCompensatedHeading(e.alpha, e.beta, e.gamma, screenAngle);
+      // Degenerate pose / missing beta·gamma: keep the last good tilt value, else the old alpha-only value.
+      const magnetic = tilt !== null ? tilt : (compassHeading.lastTiltHeading ?? raw);
+      if (tilt !== null) compassHeading.lastTiltHeading = tilt;
+      heading = smoothCompassHeading(magnetic);
+      compassHeading.debug = {
+        alpha: Math.round(e.alpha * 10) / 10, beta: Number.isFinite(e.beta) ? Math.round(e.beta * 10) / 10 : null,
+        gamma: Number.isFinite(e.gamma) ? Math.round(e.gamma * 10) / 10 : null, screenAngle,
+        magneticHeadingRaw: Math.round(normalizeCompass(raw) * 10) / 10,
+        magneticHeadingTiltCompensated: tilt === null ? null : Math.round(tilt * 10) / 10
+      };
+    }
+    if (heading === null || !Number.isFinite(heading)) return; // no absolute heading received: keep the previous arrow state
+    compassHeading.lastHeading = heading; // magnetic, screen-rotation corrected, before declination / manual offset
     compassHeading.render();
   };
 }
@@ -775,6 +853,86 @@ geolocateControl._updateMarkerRotation = function () {
 }
 map.on('move', updateUserLocationTilt);
 geolocateControl.on('geolocate', updateUserLocationTilt);
+
+// ---- Display-only location (online map). Raw fixes still go unchanged to approach / off-route / progress / recording /
+// party / bearing; only the blue dot + accuracy circle + heading sector (one marker) and the online cameras use this.
+// Each new fix: from = current display point, target = raw fix, linear over the real fix interval (300–2000 ms).
+// First fix, a gap > 10 s, or an implausible jump snaps instead of gliding across.
+const DISPLAY_LOC_MIN_MS = 300, DISPLAY_LOC_MAX_MS = 2000, DISPLAY_LOC_STALE_MS = 10000;
+const DISPLAY_LOC_JUMP_MIN_M = 50, DISPLAY_LOC_MAX_SPEED = 35, DISPLAY_LOC_POOR_ACCURACY = 50; // 35 m/s ≈ 126 km/h
+const displayLocation = { current: null, from: null, target: null, startedAt: 0, duration: 0, lastFixAt: 0, rafId: 0, accuracy: null, snapped: false, lastLogAt: 0 };
+const mapboxUpdateMarker = geolocateControl._updateMarker;
+function renderDisplayLocation() {
+  const d = displayLocation;
+  if (!d.current) return;
+  mapboxUpdateMarker.call(geolocateControl, { coords: { longitude: d.current.lng, latitude: d.current.lat, accuracy: d.accuracy } });
+  updateUserLocationTilt(); // the sector sits in the same marker: same smooth point, heading unchanged
+}
+function stepDisplayLocation() {
+  const d = displayLocation;
+  d.rafId = 0;
+  if (!d.from || !d.target) return;
+  const t = d.duration > 0 ? Math.max(0, Math.min(1, (performance.now() - d.startedAt) / d.duration)) : 1;
+  d.current = { lng: d.from.lng + (d.target.lng - d.from.lng) * t, lat: d.from.lat + (d.target.lat - d.from.lat) * t };
+  renderDisplayLocation();
+  if (t < 1) d.rafId = requestAnimationFrame(stepDisplayLocation);
+}
+function stopDisplayLocation() {
+  const d = displayLocation;
+  if (d.rafId) cancelAnimationFrame(d.rafId);
+  Object.assign(d, { current: null, from: null, target: null, rafId: 0, lastFixAt: 0 });
+}
+function setDisplayLocationTarget(coords) {
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const d = displayLocation;
+  const accuracy = Number.isFinite(Number(coords.accuracy)) ? Number(coords.accuracy) : null;
+  // The control re-draws the same fix (e.g. trigger()): not a new fix, just make sure the dot is shown.
+  if (d.target && d.target.lng === lng && d.target.lat === lat) { d.accuracy = accuracy ?? d.accuracy; if (!d.rafId) renderDisplayLocation(); return; }
+  const now = performance.now();
+  const fixInterval = d.lastFixAt ? now - d.lastFixAt : null;
+  const progress = d.duration > 0 && d.target ? Math.min(1, (now - d.startedAt) / d.duration) : 1;
+  const from = d.current;
+  const distance = from ? rideFixMeters(from, { lng, lat }) : 0;
+  let snap = !from || fixInterval === null || fixInterval > DISPLAY_LOC_STALE_MS;
+  if (!snap) { // display-only jump guard (navigation filters untouched)
+    const plausible = Math.max(DISPLAY_LOC_JUMP_MIN_M, DISPLAY_LOC_MAX_SPEED * Math.max(fixInterval, DISPLAY_LOC_MIN_MS) / 1000);
+    snap = distance > plausible || (accuracy !== null && accuracy > DISPLAY_LOC_POOR_ACCURACY && distance > DISPLAY_LOC_JUMP_MIN_M);
+  }
+  Object.assign(d, {
+    from: snap ? { lng, lat } : from, target: { lng, lat }, startedAt: now, lastFixAt: now, accuracy, snapped: snap,
+    duration: snap ? 0 : Math.max(DISPLAY_LOC_MIN_MS, Math.min(DISPLAY_LOC_MAX_MS, fixInterval))
+  });
+  if (d.rafId) { cancelAnimationFrame(d.rafId); d.rafId = 0; }
+  if (snap) { d.current = { lng, lat }; renderDisplayLocation(); } else stepDisplayLocation();
+  if (Date.now() - d.lastLogAt >= 1000) { // dev log, per fix (max 1/s); remove after device checks
+    d.lastLogAt = Date.now();
+    console.debug('[display-location]', {
+      source: myLocationFollow?.syntheticFix ? 'party' : 'web', raw: [lat, lng], display: from ? [from.lat, from.lng] : null,
+      distance: Math.round(distance * 10) / 10, fixInterval: fixInterval === null ? null : Math.round(fixInterval),
+      animationDuration: Math.round(d.duration), accuracy, previousProgress: Math.round(progress * 100) / 100, snap,
+      rideFollowActive: rideOnSession.routeFollowActive, followPaused: rideOnSession.followPaused
+    });
+  }
+}
+// Fix-driven camera move to the display target: same target and duration as the dot, linear, so the camera and the dot
+// travel together (one camera animation per fix; no per-frame camera calls, no second smoothing on top).
+// Returns null when this fix did not go through the display path (e.g. a native-source fallback fix).
+function displayCameraMove(coords) {
+  const d = displayLocation;
+  if (!d.target || Number(coords?.longitude) !== d.target.lng || Number(coords?.latitude) !== d.target.lat) return null;
+  return { center: [d.target.lng, d.target.lat], duration: d.duration, easing: t => t };
+}
+// Non-fix camera moves (resume, locate, layout change): the current display point when fresh, else the given fix.
+function freshDisplayCoords(fallback) {
+  const d = displayLocation;
+  if (!d.current || !d.lastFixAt || performance.now() - d.lastFixAt > DISPLAY_LOC_STALE_MS) return fallback;
+  return { ...(fallback || {}), longitude: d.current.lng, latitude: d.current.lat };
+}
+geolocateControl._updateMarker = function (position) {
+  if (!position?.coords) { stopDisplayLocation(); return mapboxUpdateMarker.call(this, position); } // dot removed: as before
+  setDisplayLocationTarget(position.coords);
+};
 
 // ---- Ride On: nearest distance to the selected route and the one-time 30 m "follow route?" prompt (no camera/alerts yet).
 // Local planar (equirectangular) projection around the fix; no network, no per-point allocation.
@@ -887,8 +1045,9 @@ function centerOnceDuringRoutePause() {
   const lng = Number(fix?.longitude), lat = Number(fix?.latitude);
   if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
   if (state.nativeMap?.active) { sendNativeRideFollowCamera(fix, { withBearing: false }); return; }
-  const h = map.getCanvas().clientHeight;
-  map.easeTo({ center: [lng, lat], offset: [0, h * RIDE_FOLLOW_OFFSET], duration: RIDE_FOLLOW_DURATION, essential: true });
+  const h = map.getContainer().clientHeight; // real map container height (shrinks while the route-follow graph is open)
+  const shown = freshDisplayCoords(fix); // online: the blue dot's current display point when fresh
+  map.easeTo({ center: [shown.longitude, shown.latitude], offset: [0, h * RIDE_FOLLOW_OFFSET], duration: RIDE_FOLLOW_DURATION, essential: true });
 }
 // End route follow only (Ride On session, GPS and the selected route stay).
 function endRouteFollow() {
@@ -918,17 +1077,34 @@ function syncRideProfileLayout() {
   const open = body.hidden === false && drawer.offsetParent !== null; // expanded and actually displayed
   const inset = open ? Math.max(0, Math.ceil(panel.getBoundingClientRect().bottom - drawer.getBoundingClientRect().top)) : 0;
   const next = inset + 'px';
-  if (panel.style.getPropertyValue('--ride-profile-inset') === next) return;
+  const split = isRideRouteFollowing(); // route follow only: the map container itself ends at the graph top (CSS .ride-follow-split)
+  if (panel.classList.contains('ride-follow-split') === split && panel.style.getPropertyValue('--ride-profile-inset') === next) return;
+  panel.classList.toggle('ride-follow-split', split);
   panel.style.setProperty('--ride-profile-inset', next);
   requestAnimationFrame(() => {
     try { map.resize(); } catch {}
     window.dispatchEvent(new Event('resize'));
-    if (open && document.body.dataset.mobileView === 'ride') { // layout check: map bottom should meet the graph top
+    if (split) refollowAfterRideProfileLayout();
+    if (split && open && document.body.dataset.mobileView === 'ride') { // layout check: map bottom should meet the graph top
       const mapBottom = document.getElementById('map')?.getBoundingClientRect().bottom;
       const graphTop = drawer.getBoundingClientRect().top;
       console.debug('[ride-profile-layout]', { mapBottom, graphTop, diff: Math.round((mapBottom - graphTop) * 10) / 10 });
     }
   });
+}
+// After the map height changed (graph open/close): re-apply the usual follow camera once from the latest fix.
+// Only in automatic follow; routeFollowPaused / followPaused stop at layout + resize (no forced re-center).
+// The camera uses the map's own (new) height; the graph height is never added as an extra offset.
+function refollowAfterRideProfileLayout() {
+  const s = rideOnSession;
+  if (!isRideRouteFollowing() || s.routeFollowPaused || s.followPaused) return;
+  const fix = rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords;
+  if (!fix) return;
+  if (state.nativeMap?.active) { // wait for the native MapView to take its new rect (resize → layout sync) before easing
+    setTimeout(() => { if (isRideRouteFollowing() && !s.routeFollowPaused && !s.followPaused) sendNativeRideFollowCamera(fix); }, 300);
+    return;
+  }
+  applyRideFollowCamera(fix);
 }
 window.addEventListener('resize', () => syncRideProfileLayout());
 if (typeof ResizeObserver === 'function') {
@@ -938,6 +1114,7 @@ if (typeof ResizeObserver === 'function') {
 // Floating control: 일시정지/재개 + 종료 while following, "따라가기 시작" when stopped with a route selected.
 function renderRouteFollowControls() {
   renderRideRemaining();
+  syncRideProfileLayout(); // routeFollowActive on/off → map/graph split layout on/off
   const rideEnd = document.getElementById('rideEndBtn');
   if (rideEnd) rideEnd.hidden = !rideOnSession.active; // 라이딩 종료 only while a Ride On session exists
   const box = document.getElementById('routeFollowControls');
@@ -976,10 +1153,88 @@ document.getElementById('routeFollowBeginBtn')?.addEventListener('click', () => 
 
 // ---- Ride On route follow camera (online map only; the native offline map is not driven from here).
 // Map bearing = travel direction (GPS course, else bearing over >= 12 m); the red sector keeps the compass heading.
-const RIDE_FOLLOW_PITCH = 54, RIDE_FOLLOW_OFFSET = 0.25, RIDE_FOLLOW_DURATION = 600;
+// Offset 0.14 = the rider sits ~14% of the real map height below centre (native: top padding 0.28 × height).
+const RIDE_FOLLOW_PITCH = 54, RIDE_FOLLOW_OFFSET = 0.14, RIDE_FOLLOW_DURATION = 600;
 const RIDE_COURSE_MIN_SPEED = 2, RIDE_COURSE_MIN_MOVE = 12, RIDE_COURSE_MAX_ACCURACY = 30;
 const RIDE_BEARING_DEADBAND = 5, RIDE_BEARING_GAIN = 0.3;
 const rideFollowCam = { bearing: null, anchor: null, lastFix: null, ownEaseUntil: 0 };
+// ---- Camera bearing mode (compass button): bearing only; zoom / pitch / follow / 64% position are never touched here.
+// north = 0°, free = the user's own bearing (never overwritten by follow), navigation = rideFollowCam.bearing (GPS course /
+// 12 m movement direction, unchanged maths). Session only: the app always starts in free.
+// freeNext: the next click from free — 'navigation' after north → free by the compass, 'north' after app start / a user rotate.
+// sendNativeBearing: set inside the native-map block (plugin setCameraBearing, bearing only); lastNativeBearing: last sent.
+const cameraBearingMode = { mode: 'free', freeBearing: null, freeNext: 'north', transitionUntil: 0, sendNativeBearing: null, lastNativeBearing: null };
+// Bearing the follow cameras should apply now, or null = leave the map bearing as it is.
+function cameraModeBearing() {
+  if (cameraBearingMode.mode === 'north') return 0;
+  if (cameraBearingMode.mode === 'navigation') { // route follow: route tangent (with GPS fallback); plain map: GPS / movement
+    if (isRideRouteFollowing() && Number.isFinite(rideNavBearing.value)) return rideNavBearing.value;
+    return rideFollowCam.bearing; // null until a direction is known
+  }
+  return null;
+}
+// A compass rotation animation is running: follow cameras skip that moment instead of cutting it.
+function cameraBearingTransitioning() { return Date.now() < cameraBearingMode.transitionUntil; }
+function setCameraBearingMode(next, reason) {
+  const c = cameraBearingMode, previous = c.mode;
+  if (previous === next) return;
+  c.mode = next;
+  c.lastNativeBearing = null;
+  if (next === 'navigation' && !isRideRouteFollowing()) { rideFollowCam.bearing = null; rideFollowCam.anchor = null; } // no stale direction
+  if (next !== 'free') c.freeNext = 'north';
+  for (const id of ['mobileCompassBtn', 'rideCompassBtn']) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    for (const m of ['north', 'free', 'navigation']) btn.classList.toggle('compass-mode-' + m, m === next);
+    btn.setAttribute('aria-label', next === 'north' ? '북쪽 고정' : next === 'navigation' ? '진행 방향' : '자유 회전');
+  }
+  console.debug('[camera-bearing-mode]', {
+    previousMode: previous, nextMode: next, freeBearing: c.freeBearing, mapBearing: Math.round(map.getBearing() * 10) / 10,
+    rideBearing: rideFollowCam.bearing, reason
+  });
+}
+// A user rotate gesture (online or native) switches to free; position follow is NOT paused (pan still pauses).
+function handleUserRotateGesture() {
+  cameraBearingMode.transitionUntil = 0;
+  if (cameraBearingMode.mode !== 'free') setCameraBearingMode('free', 'user-rotate');
+  cameraBearingMode.freeNext = 'north';
+}
+// Plain map (no route follow) in navigation: turn the bearing on every fix whose direction changed (rideFollowCam.bearing,
+// already deadbanded / smoothed), separately from the centre follow and its own gates. Bearing only: zoom / pitch kept.
+function applyPlainNavigationBearing() {
+  const b = rideFollowCam.bearing;
+  if (cameraBearingMode.mode !== 'navigation' || isRideRouteFollowing() || !Number.isFinite(b) || cameraBearingTransitioning()) return;
+  if (state.nativeMap?.active) {
+    const last = cameraBearingMode.lastNativeBearing;
+    if (Number.isFinite(last) && Math.abs(shortestAngleDelta(last, b)) < 0.5) return;
+    if (typeof cameraBearingMode.sendNativeBearing !== 'function') return;
+    cameraBearingMode.lastNativeBearing = b;
+    cameraBearingMode.sendNativeBearing(b, 600); // Java carries a running GPS centre follow along
+    return;
+  }
+  if (Math.abs(shortestAngleDelta(map.getBearing(), b)) < 0.5) return;
+  if (!myLocationFollow.active || myLocationTouch.maxTouches > 0) return; // user moved away / finger on the map
+  const now = Date.now(), ease = myLocationFollow.lastEase;
+  if (ease && now < ease.until) { // this fix's centre follow is running: same move to the same point, plus the bearing
+    const options = { center: ease.center, offset: ease.offset, bearing: b, duration: ease.until - now, essential: true };
+    if (ease.easing) options.easing = ease.easing;
+    map.easeTo(options);
+    return;
+  }
+  if (map.isMoving()) return; // a gesture or another animation is running
+  const dot = displayLocation.current;
+  const options = { bearing: b, duration: 500, essential: true };
+  if (dot) options.around = [dot.lng, dot.lat]; // turn around the blue dot: centre policy unchanged
+  map.easeTo(options);
+}
+// Region fly-to: keep the current mode instead of the region's default bearing.
+function regionCameraBearing(regionBearing) {
+  const b = cameraModeBearing();
+  if (b !== null) return b;
+  if (cameraBearingMode.mode === 'free' && Number.isFinite(cameraBearingMode.freeBearing)) return cameraBearingMode.freeBearing;
+  void regionBearing; // the region default never overrides the chosen mode
+  return map.getBearing(); // free without a saved value / navigation without a direction yet: keep the current bearing
+}
 function isRideRouteFollowing() { return rideOnSession.active && rideOnSession.routeFollowActive; }
 function rideFollowCameraAllowed() { return isRideRouteFollowing() && !rideOnSession.routeFollowPaused && !rideOnSession.followPaused && !state.nativeMap?.active; }
 function normalizeBearing(deg) { return ((deg % 360) + 360) % 360; }
@@ -1016,21 +1271,32 @@ function updateRideFollowBearing(coords) {
   rideFollowCam.bearing = normalizeBearing(rideFollowCam.bearing + delta * RIDE_BEARING_GAIN);
 }
 // One easeTo for center (+ bearing, + pitch only when asked). Never cuts another animation (e.g. the 2D/3D button).
-function applyRideFollowCamera(coords, { pitch = null } = {}) {
+// fromFix: called for a new GPS fix → follow the display point (same target / duration / linear timing as the dot).
+// Otherwise (start, resume, locate, layout change): the fresh display point with the usual short ease.
+function applyRideFollowCamera(coords, { pitch = null, fromFix = false } = {}) {
   if (!rideFollowCameraAllowed()) return;
+  const move = fromFix ? displayCameraMove(coords) : null;
+  if (!fromFix) coords = freshDisplayCoords(coords);
   const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
   if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
-  if (map.isEasing() && Date.now() > rideFollowCam.ownEaseUntil) return;
-  const h = map.getCanvas().clientHeight;
-  const options = { center: [lng, lat], offset: [0, h * RIDE_FOLLOW_OFFSET], duration: RIDE_FOLLOW_DURATION, essential: true };
-  if (rideFollowCam.bearing !== null) options.bearing = rideFollowCam.bearing;
+  // Never cuts another animation or a gesture in progress (pinch zoom no longer pauses follow, so it must not be fought).
+  // Own follow animations (ownEaseUntil) may be replaced; a finger on the map always wins.
+  if ((map.isEasing() || map.isMoving()) && Date.now() > rideFollowCam.ownEaseUntil) return;
+  if (myLocationTouch.maxTouches > 0 || cameraBearingTransitioning()) return;
+  const h = map.getContainer().clientHeight; // real map container height (shrinks while the route-follow graph is open)
+  const duration = move ? move.duration : RIDE_FOLLOW_DURATION;
+  const options = { center: move ? move.center : [lng, lat], offset: [0, h * RIDE_FOLLOW_OFFSET], duration, essential: true };
+  if (move) options.easing = move.easing;
+  const bearing = cameraModeBearing(); // north 0 / navigation rideFollowCam.bearing / free: untouched
+  if (bearing !== null) options.bearing = bearing;
   if (pitch !== null) options.pitch = pitch;
-  rideFollowCam.ownEaseUntil = Date.now() + RIDE_FOLLOW_DURATION + 50;
+  rideFollowCam.ownEaseUntil = Date.now() + duration + 50;
   map.easeTo(options);
 }
 function startRideFollowCamera() {
   rideFollowCam.bearing = null;
   rideFollowCam.anchor = null;
+  rideNavBearing.value = null; // navigation route tangent starts again from this follow
   const coords = rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords;
   if (coords) updateRideFollowBearing(coords);
   rideFollowCam.ownEaseUntil = 0;
@@ -1039,13 +1305,63 @@ function startRideFollowCamera() {
 }
 function resumeRideFollowCamera() {
   rideOnSession.followPaused = false;
+  rideOnSession.followPauseReason = null;
   rideFollowCam.ownEaseUntil = 0;
   applyRideFollowCamera(rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords);
 }
-// A real user gesture (originalEvent) pauses only the camera; route follow, GPS and session state continue.
-['dragstart', 'zoomstart', 'rotatestart', 'pitchstart'].forEach(type => map.on(type, (e) => {
-  if (e?.originalEvent && isRideRouteFollowing()) rideOnSession.followPaused = true;
+// Map exploration (pan / rotate) pauses only the camera, reason 'gesture' (auto-resumable). Zoom / pitch never pause.
+// Each gesture re-anchors the movement check, so a rider still looking around is not pulled back.
+const RIDE_AUTO_RESUME_SPEED = 1.5, RIDE_AUTO_RESUME_SPEED_FIXES = 2, RIDE_AUTO_RESUME_METERS = 10;
+const rideGestureResume = { anchor: null, speedStreak: 0 };
+function pauseRideFollowForGesture() {
+  if (!isRideRouteFollowing()) return;
+  rideOnSession.followPaused = true;
+  rideOnSession.followPauseReason = 'gesture';
+  const fix = rideFollowCam.lastFix;
+  const lng = Number(fix?.longitude), lat = Number(fix?.latitude);
+  rideGestureResume.anchor = Number.isFinite(lng) && Number.isFinite(lat) ? { lng, lat } : null;
+  rideGestureResume.speedStreak = 0;
+}
+// Back to automatic follow without the locate button (never during an explicit routeFollowPaused).
+function autoResumeRideFollow(coords) {
+  const s = rideOnSession;
+  if (!isRideRouteFollowing() || s.routeFollowPaused) return;
+  s.followPaused = false;
+  s.followPauseReason = null;
+  rideFollowCam.ownEaseUntil = 0;
+  applyRideFollowCamera(coords);
+  if (state.nativeMap?.active) sendNativeRideFollowCamera(coords);
+}
+// On the route after a gesture pause: resume once the rider is really moving again
+// (speed >= 1.5 m/s on 2 fixes in a row, or >= 10 m — and more than the accuracy — from the last gesture point).
+function maybeAutoResumeAfterGesture(coords) {
+  const s = rideOnSession;
+  if (!isRideRouteFollowing() || s.routeFollowPaused || !s.followPaused || s.followPauseReason !== 'gesture') return;
+  if (rideOffRoute.offRoute || !rideProgress?.lastGood) return; // off-route: the 15 m return resumes instead
+  if (!state.nativeMap?.active && map.isMoving()) return; // user is still touching / the map is still moving
+  const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  const accuracy = Number(coords.accuracy);
+  const hasAccuracy = coords.accuracy != null && Number.isFinite(accuracy);
+  if (hasAccuracy && accuracy > RIDE_COURSE_MAX_ACCURACY) return;
+  const speed = Number(coords.speed);
+  rideGestureResume.speedStreak = coords.speed != null && Number.isFinite(speed) && speed >= RIDE_AUTO_RESUME_SPEED ? rideGestureResume.speedStreak + 1 : 0;
+  if (!rideGestureResume.anchor) { rideGestureResume.anchor = { lng, lat }; return; }
+  const moved = rideFixMeters(rideGestureResume.anchor, { lng, lat });
+  const movedEnough = moved >= RIDE_AUTO_RESUME_METERS && !(hasAccuracy && moved <= accuracy);
+  if (rideGestureResume.speedStreak < RIDE_AUTO_RESUME_SPEED_FIXES && !movedEnough) return;
+  autoResumeRideFollow(coords);
+}
+// A real rotate gesture switches the bearing mode to free (position follow continues). Pan is judged at dragend
+// (a pinch also drags) and pauses follow; zoom and pitch/tilt never pause (the user's 2D/3D / tilt stays).
+['rotatestart'].forEach(type => map.on(type, (e) => {
+  if (e?.originalEvent) handleUserRotateGesture();
 }));
+// Free mode remembers the map bearing (programmatic north / navigation turns happen in the other modes, so they never
+// overwrite it). The native map reports its bearing through applyNativeCameraUi instead.
+map.on('rotate', () => {
+  if (cameraBearingMode.mode === 'free' && !state.nativeMap?.active) cameraBearingMode.freeBearing = map.getBearing();
+});
 
 // ---- Ride On off-route state machine (route follow only): >= 20 m confirmed → alert; <= 15 m anywhere on the route →
 // back on route. 15–20 m keeps the current state. Camera follow is not touched here.
@@ -1295,6 +1611,64 @@ function updateRideProgress(coords) {
   } else rideProgress.completeStreak = 0;
   renderRideRemaining();
 }
+// ---- NAVIGATION camera bearing during route follow: the course itself points up (car-navigation style).
+// On the route: bearing from the current progress point (rideProgress.lastGood.along, continuity-searched — never a
+// fresh global nearest) to the point 25 m further along state.points. A straight line therefore lines up exactly with
+// the screen's vertical axis; in a curve the 25 m chord turns smoothly and settles on the next straight.
+// Off-route / no progress: rideFollowCam.bearing (GPS course → 12 m movement → last value). Explicit pause / completed:
+// no change. Light smoothing only (shortest angle, 60 % per fix, snap within 1°) so the next straight aligns quickly.
+const RIDE_NAV_LOOKAHEAD_M = 25, RIDE_NAV_LOOKAHEAD_FAR_M = 50, RIDE_NAV_MIN_CHORD_M = 10, RIDE_NAV_GAIN = 0.6, RIDE_NAV_SNAP_DEG = 1;
+var rideNavBearing = { value: null, source: null, routeBearing: null, lookAhead: null, lastLogAt: 0 };
+function ridePointAtDistance(distance) {
+  const pts = state.points, cum = rideProgress.cum;
+  const i = rideSegmentAt(distance);
+  const a = pts[i], b = pts[i + 1];
+  const len = cum[i + 1] - cum[i];
+  const t = len > 0 ? Math.max(0, Math.min(1, (distance - cum[i]) / len)) : 0;
+  return { lng: Number(a.lng) + (Number(b.lng) - Number(a.lng)) * t, lat: Number(a.lat) + (Number(b.lat) - Number(a.lat)) * t };
+}
+function rideRouteTangentBearing() {
+  const good = rideProgress.lastGood, total = rideProgress.total;
+  if (!good || !(total > 0) || state.points.length < 2 || rideProgress.cum.length !== state.points.length) return null;
+  const along = Math.max(0, Math.min(total, good.along));
+  let from = along, to = Math.min(total, along + RIDE_NAV_LOOKAHEAD_M); // < 25 m left: towards the end point
+  if (to - from < RIDE_NAV_MIN_CHORD_M) to = Math.min(total, along + RIDE_NAV_LOOKAHEAD_FAR_M); // too short: a bit further
+  if (to - from < RIDE_NAV_MIN_CHORD_M) { from = Math.max(0, total - RIDE_NAV_LOOKAHEAD_M); to = total; } // at the very end: last 25 m
+  const a = ridePointAtDistance(from), b = ridePointAtDistance(to);
+  if (rideFixMeters(a, b) < 1) return null; // degenerate geometry (stacked points)
+  rideNavBearing.lookAhead = Math.round(to - from);
+  return rideFixBearing(a, b); // geographic bearing, clockwise from north = Mapbox bearing (same as the existing camera)
+}
+function updateRideNavigationBearing(coords) {
+  const s = rideOnSession, n = rideNavBearing;
+  if (!isRideRouteFollowing() || s.routeFollowPaused || s.routeFollowCompleted) return; // explicit pause: no automatic turn
+  const routeBearing = rideOffRoute.offRoute ? null : rideRouteTangentBearing();
+  let target = routeBearing, source = 'route';
+  if (target === null) { // off-route or no tangent: GPS course first, then the 12 m movement direction (rideFollowCam)
+    target = rideFollowCam.bearing;
+    const speed = Number(coords?.speed), heading = Number(coords?.heading);
+    source = coords?.speed != null && coords?.heading != null && Number.isFinite(speed) && speed >= RIDE_COURSE_MIN_SPEED && Number.isFinite(heading) ? 'gps' : 'movement';
+  }
+  if (Number.isFinite(target)) {
+    if (!Number.isFinite(n.value)) n.value = normalizeBearing(target);
+    else {
+      const delta = shortestAngleDelta(n.value, target);
+      n.value = normalizeBearing(Math.abs(delta) <= RIDE_NAV_SNAP_DEG ? target : n.value + delta * RIDE_NAV_GAIN);
+    }
+    n.source = source;
+  }
+  n.routeBearing = routeBearing;
+  if (cameraBearingMode.mode === 'navigation' && Date.now() - n.lastLogAt >= 1000) { // dev log (max 1/s)
+    n.lastLogAt = Date.now();
+    const r = v => Number.isFinite(v) ? Math.round(v * 10) / 10 : null;
+    console.debug('[navigation-bearing]', {
+      routeBearing: r(routeBearing), gpsCourse: r(Number(coords?.heading)), finalBearing: r(n.value),
+      along: r(rideProgress.lastGood?.along), lookAheadDistance: routeBearing === null ? null : n.lookAhead,
+      segIndex: rideProgress.lastGood?.segIndex ?? null, remaining: r(rideProgress.remaining), offRoute: rideOffRoute.offRoute,
+      source: Number.isFinite(target) ? source : 'last'
+    });
+  }
+}
 // Share of the route done for the slope-graph marker: last good progress (frozen while off-route / paused), 1 at the end.
 function rideProgressShare() {
   if (!rideProgress || !rideOnSession.active) return null;
@@ -1347,20 +1721,26 @@ function handleRideLocationFix(coords, timestamp, source) {
   checkRideRouteApproach(coords, time); // 30 m approach prompt
   if (isRideRouteFollowing()) {
     updateRideFollowBearing(coords); // tracked while paused too, so resume uses the latest direction
-    applyRideFollowCamera(coords); // online map only (no-op while the native map is active)
-    if (state.nativeMap?.active) {
-      syncNativeRideFollow();
-      if (!rideOnSession.followPaused && !rideOnSession.routeFollowPaused) sendNativeRideFollowCamera(coords); // native map: same bearing, native camera
-    }
+  } else if (cameraBearingMode.mode === 'navigation') {
+    updateRideFollowBearing(coords); // plain map in navigation mode: same direction maths (GPS course / 12 m movement)
+    applyPlainNavigationBearing(); // every fix, independent of the centre-follow gates
   }
   const returned = checkRideOffRoute(coords, time); // 20 m off-route / 15 m back
   updateRideProgress(coords); // progress / remaining distance (frozen while off-route)
+  // Camera after this fix's progress / off-route state, so navigation uses the current route tangent (no 1-fix lag).
+  if (isRideRouteFollowing()) { // false after completion: no more automatic camera turn
+    updateRideNavigationBearing(coords);
+    applyRideFollowCamera(coords, { fromFix: true }); // online map only (no-op while the native map is active); display point
+    if (state.nativeMap?.active) {
+      syncNativeRideFollow();
+      if (!rideOnSession.followPaused && !rideOnSession.routeFollowPaused && !cameraBearingTransitioning()) sendNativeRideFollowCamera(coords); // native map: same bearing, native camera
+    }
+  }
   // Back on the route after an off-route episode: camera follow resumes by itself (not during an explicit pause).
   if (returned && isRideRouteFollowing() && !rideOnSession.routeFollowPaused && rideOnSession.followPaused) {
-    rideOnSession.followPaused = false;
-    rideFollowCam.ownEaseUntil = 0;
-    applyRideFollowCamera(coords);
-    if (state.nativeMap?.active) sendNativeRideFollowCamera(coords);
+    autoResumeRideFollow(coords);
+  } else {
+    maybeAutoResumeAfterGesture(coords); // on the route: resume after a look-around once the rider moves again
   }
 }
 // Native offline map route-follow camera: JS sends position + the stabilised bearing above (no Java copy of the
@@ -1374,20 +1754,26 @@ function syncNativeRideFollow(force = false) {
   nativeRideFollowSent = desired;
   try { plugin.setRideFollowCamera({ active: desired }).catch(error => console.warn('setRideFollowCamera failed:', error)); } catch {}
 }
-function sendNativeRideFollowCamera(coords, { withBearing = true } = {}) {
+// bearing: explicit value for a compass mode change (e.g. free restore); otherwise the mode's bearing (north 0 /
+// navigation rideFollowCam.bearing / free: none → the native map keeps its bearing).
+function sendNativeRideFollowCamera(coords, { withBearing = true, bearing = null } = {}) {
   const lng = Number(coords?.longitude), lat = Number(coords?.latitude);
   if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
   const plugin = state.nativeMap?.active ? nativeMapPlugin() : null;
   if (!plugin?.setRideFollowCamera) return;
   const payload = { active: true, latitude: lat, longitude: lng };
-  if (withBearing && rideFollowCam.bearing !== null) payload.bearing = rideFollowCam.bearing; // pitch is never sent: 2D/3D stays the user's
+  const sendBearing = bearing !== null ? bearing : (withBearing ? cameraModeBearing() : null);
+  if (sendBearing !== null && Number.isFinite(sendBearing)) payload.bearing = sendBearing; // pitch is never sent: 2D/3D stays the user's
   nativeRideFollowSent = true;
   try { plugin.setRideFollowCamera(payload).catch(error => console.warn('setRideFollowCamera failed:', error)); } catch {}
 }
-function handleEmbeddedCameraGesture() {
-  if (isRideRouteFollowing()) rideOnSession.followPaused = true; // camera only; route follow / alerts continue
+function handleEmbeddedCameraGesture(event) {
+  if (event?.type === 'zoom' || event?.type === 'pitch') return; // native zoom / tilt (shove) never pauses follow
+  if (event?.type === 'rotate') { handleUserRotateGesture(); return; } // bearing mode → free; position follow continues
+  pauseRideFollowForGesture(); // move (non-pinch pan): camera only; route follow / alerts continue
 }
 geolocateControl.on('geolocate', (e) => { if (e?.coords) handleRideLocationFix(e.coords, e.timestamp, 'web'); });
+geolocateControl.on('geolocate', (e) => refreshCompassDeclination(e?.coords)); // online compass: true-north declination
 // Native payload → the same coords shape. Missing speed/bearing stay undefined (never 0); bearing = GPS course.
 function handleEmbeddedLocation(event) {
   try {
@@ -1424,7 +1810,18 @@ function followMyLocation(lng, lat, force = false) {
     const pt = map.project([lng, lat]);
     if (pt.x >= w * 0.25 && pt.x <= w * 0.75 && pt.y >= h * 0.45 && pt.y <= h * 0.75) return;
   }
-  map.easeTo({ center: [lng, lat], offset: [0, h * 0.1], duration: 700, essential: true });
+  // Same point as the blue dot: a fix-driven move uses the dot's target / duration / linear timing (dot and camera travel
+  // together); other calls (locate, screen-on, party fix) use the fresh display point. A snapped dot keeps the 700 ms ease.
+  const move = displayCameraMove({ longitude: lng, latitude: lat });
+  const shown = move ? null : freshDisplayCoords({ longitude: lng, latitude: lat });
+  if (cameraBearingTransitioning()) return; // a compass rotation is animating: the next fix follows again
+  const options = { center: move ? move.center : [shown.longitude, shown.latitude], offset: [0, h * 0.1], duration: 700, essential: true };
+  if (move && move.duration > 0) { options.duration = move.duration; options.easing = move.easing; }
+  const bearing = cameraModeBearing(); // north 0 / navigation direction / free: bearing untouched
+  if (bearing !== null) options.bearing = bearing;
+  // Remembered so a navigation bearing update on the same fix continues this move instead of cutting it.
+  myLocationFollow.lastEase = { center: options.center, offset: options.offset, easing: options.easing || null, until: Date.now() + options.duration };
+  map.easeTo(options);
 }
 // Mapbox fires 'dragstart' for a two-finger pinch as well (the touch-pan handler runs with 2+ fingers). Only a real
 // one-finger/mouse drag that does not change zoom ends follow; pinch zoom, zoom buttons, rotate and tilt keep it.
@@ -1448,7 +1845,7 @@ map.on('dragend', () => {
   myLocationFollow.dragging = false;
   const pinch = myLocationTouch.maxTouches > 1 || Math.abs(map.getZoom() - myLocationTouch.zoomAtDragStart) > 0.01;
   if (!pinch) {
-    if (isRideRouteFollowing()) rideOnSession.followPaused = true; // route follow: pause only, never switch it off
+    if (isRideRouteFollowing()) pauseRideFollowForGesture(); // route follow: pause only, never switch it off
     else myLocationFollow.active = false;
   }
 });
@@ -1561,6 +1958,7 @@ function triggerMyLocationGps({ center = true } = {}) {
   if (center && isRideRouteFollowing() && state.nativeMap?.active) {
     // Native map + route follow: resume the native ride camera at the latest fix (no new session, no prompt).
     rideOnSession.followPaused = false;
+    rideOnSession.followPauseReason = null;
     syncNativeRideFollow(true);
     if (rideFollowCam.lastFix) sendNativeRideFollowCamera(rideFollowCam.lastFix);
     return;
@@ -2848,11 +3246,21 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     map.addLayer({ id: 'route-midpoints', type: 'circle', source: 'route-midpoints', paint: { 'circle-radius': 4, 'circle-color': '#f5f6f1', 'circle-stroke-color': '#789012', 'circle-stroke-width': 2 } });
     map.addSource('route-points', { type: 'geojson', data: emptyCollection });
     map.addLayer({ id: 'route-points', type: 'circle', source: 'route-points', paint: { 'circle-radius': ['case', ['has', 'color'], 6, ['==', ['get', 'selected'], true], 7, 5], 'circle-color': ['case', ['has', 'color'], ['get', 'color'], ['==', ['get', 'selected'], true], '#ff9d2e', '#d8ff43'], 'circle-stroke-color': '#14211f', 'circle-stroke-width': 2 } });
+    // PC web only: START / END flags of the active course (state.points first / last). Same GeoJSON flow as the route:
+    // re-added here after every style load, data refreshed by render() → updateRouteEndpoints().
+    map.addSource('route-endpoints', { type: 'geojson', data: emptyCollection });
+    map.addLayer({ id: 'route-endpoints-dot', type: 'circle', source: 'route-endpoints', paint: {
+      'circle-radius': 6, 'circle-color': ['match', ['get', 'role'], 'start', '#16a34a', '#dc2626'],
+      'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2, 'circle-emissive-strength': 1 } });
+    map.addLayer({ id: 'route-endpoints-label', type: 'symbol', source: 'route-endpoints', layout: {
+      'text-field': ['get', 'label'], 'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'], 'text-size': 11,
+      'text-anchor': 'bottom', 'text-offset': [0, -0.9], 'text-allow-overlap': true, 'text-ignore-placement': true },
+      paint: { 'text-color': '#ffffff', 'text-halo-color': ['match', ['get', 'role'], 'start', '#15803d', '#b91c1c'], 'text-halo-width': 2, 'text-emissive-strength': 1 } });
     map.addSource('gps-recording-route', { type: 'geojson', data: emptyCollection });
     map.addLayer({ id: 'gps-recording-glow', type: 'line', source: 'gps-recording-route', paint: { 'line-color': '#38bdf8', 'line-width': 9, 'line-opacity': 0.25, 'line-blur': 2 } });
     map.addLayer({ id: 'gps-recording-line', type: 'line', source: 'gps-recording-route', paint: { 'line-color': '#38bdf8', 'line-width': 4, 'line-opacity': 1 } });
   }
-  function restoreLayerVisibility() { setLayerVisibility(['ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-terminals'], $('#liftsToggle').checked); setLayerVisibility(['ski-runs'], $('#runsToggle').checked); setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints'], $('#gpxToggle').checked) }
+  function restoreLayerVisibility() { setLayerVisibility(['ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-terminals'], $('#liftsToggle').checked); setLayerVisibility(['ski-runs'], $('#runsToggle').checked); setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints', 'route-endpoints-dot', 'route-endpoints-label'], $('#gpxToggle').checked) }
   map.on('style.load', () => { if (!hasMapboxToken) { $('#mapStatus').textContent = t('mapStatusNeedToken'); return } $('#mapStatus').textContent = t('mapStatusLoading'); setTerrain(); addSkiLayers(); addRouteLayers(); loadSkiData($('#region').value); render(); restoreLayerVisibility() });
   map.on('sourcedata', e => { if (e.sourceId === 'mapbox-dem' && e.isSourceLoaded) { $('#mapStatus').textContent = t('mapStatusReady'); if (profile.pending) scheduleProfile(80) } });
   map.on('idle', () => { if (profile.pending) scheduleProfile(0) });
@@ -2927,23 +3335,42 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     syncMapStyleButtons(); // still the confirmed (previous) style until style.load
   }
   // Button labels ("위성 ▾") on every style trigger; PC's 2-button switch becomes one popover trigger.
+  // The native offline map has its own base style (satellite / topo / winter, stored data only).
+  function nativeMapOnScreen() { return Boolean(state.nativeMap.active && state.nativeMap.shown); }
+  function currentMapStyleKey() { return nativeMapOnScreen() ? (state.nativeMap.style || 'satellite') : state.mapStyle; }
+  async function setNativeMapStyle(style) {
+    const plugin = getOfflineMapTestPlugin();
+    if (!plugin?.setEmbeddedStyle) { toast('이 앱 버전은 오프라인 지도 스타일 전환을 지원하지 않습니다.'); return; }
+    try {
+      const result = await plugin.setEmbeddedStyle({ style });
+      state.nativeMap.style = result?.style || style;
+      syncMapStyleButtons();
+    } catch (error) {
+      // Not downloaded for this region (or no map): the current style stays.
+      toast(error?.message || '오프라인 지도 스타일을 바꾸지 못했습니다.');
+    }
+  }
   function syncMapStyleButtons() {
-    const label = mapStyleLabel(state.mapStyle);
+    const label = mapStyleLabel(currentMapStyleKey());
     const pcBtn = $('#satelliteBtn'), topoBtn = $('#topoBtn');
     if (pcBtn) {
-      pcBtn.textContent = label + ' ▾';
+      // PC web: the button cycles styles (no menu), so only the current name; elsewhere it opens the popover (▾).
+      const pcWeb = document.body.dataset.pcWeb === 'true';
+      pcBtn.textContent = pcWeb ? label : label + ' ▾';
+      if (pcWeb) pcBtn.title = '지도 종류 전환 (위성 → 지형도 → WINTER)';
       pcBtn.classList.add('active');
-      pcBtn.setAttribute('aria-haspopup', 'menu');
+      if (pcWeb) pcBtn.removeAttribute('aria-haspopup'); else pcBtn.setAttribute('aria-haspopup', 'menu');
       pcBtn.setAttribute('aria-pressed', 'true');
       pcBtn.closest('.style-switch')?.classList.add('style-switch-single');
     }
     if (topoBtn) topoBtn.hidden = true;
     for (const id of ['#mobileStyleLabel', '#rideStyleLabel']) { const el = $(id); if (el) el.textContent = label + ' ▾'; }
     const icon = $('#mobileStyleIcon');
-    if (icon) icon.textContent = state.mapStyle === 'topo' ? 'terrain' : state.mapStyle === 'winter' ? 'ac_unit' : 'satellite_alt';
+    const styleKey = currentMapStyleKey();
+    if (icon) icon.textContent = styleKey === 'topo' ? 'terrain' : styleKey === 'winter' ? 'ac_unit' : 'satellite_alt';
     const pop = document.getElementById('mapStylePopover');
     pop?.querySelectorAll('[data-map-style]').forEach(item => {
-      const on = item.dataset.mapStyle === state.mapStyle;
+      const on = item.dataset.mapStyle === styleKey;
       item.classList.toggle('is-current', on);
       item.setAttribute('aria-checked', String(on));
     });
@@ -2970,7 +3397,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const item = event.target.closest('[data-map-style]');
       if (!item) return;
       closeMapStylePopover();
-      setMapStyle(item.dataset.mapStyle);
+      if (nativeMapOnScreen()) void setNativeMapStyle(item.dataset.mapStyle); // offline: stored styles only
+      else setMapStyle(item.dataset.mapStyle);
     });
     document.body.appendChild(pop);
     // Outside tap (map included) / ESC closes it.
@@ -2985,7 +3413,6 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
   function toggleMapStylePopover(anchor) {
     if (!anchor) return;
-    if (state.nativeMap.active && state.nativeMap.shown) { toast('다운로드한 오프라인 지도는 위성 스타일만 지원합니다.'); return; }
     const pop = ensureMapStylePopover();
     if (!pop.hidden && mapStylePopoverAnchor === anchor) { closeMapStylePopover(); return; }
     syncMapStyleButtons();
@@ -3800,8 +4227,19 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (status) status.textContent = text;
   }
 
+  // PC web only: START at state.points[0], END at the last point while the active course has >= 2 points; empty otherwise
+  // (mobile, cleared course). Called from render() (create / select / GPX / edit / cut / undo / redo / clear / style load).
+  function updateRouteEndpoints() {
+    const source = map.getSource('route-endpoints');
+    if (!source) return;
+    const pts = state.points;
+    const show = document.body.dataset.pcWeb === 'true' && Array.isArray(pts) && pts.length >= 2;
+    const point = (p, role, label) => ({ type: 'Feature', properties: { role, label }, geometry: { type: 'Point', coordinates: [p.lng ?? p[0], p.lat ?? p[1]] } });
+    source.setData(show ? { type: 'FeatureCollection', features: [point(pts[0], 'start', 'START'), point(pts[pts.length - 1], 'end', 'END')] } : emptyCollection);
+  }
   function render() {
     renderRouteFollowControls(); // route added/cleared → floating route-follow control
+    updateRouteEndpoints();
     if (segPick && (segPick.n !== state.points.length || segPick.first !== state.points[0])) { segPick = null; syncSegPickUi(); } // route replaced (undo/redo/other edit)
     const routeSource = map.getSource('route'), pointSource = map.getSource('route-points');
     const lineFeatures = [];
@@ -5080,7 +5518,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   }
   function toast(msg) { const el = $('#toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 2500) }
-  function setRegion() { const region = $('#region').value, r = regions[region]; if (!r) return; map.flyTo({ center: r.center, zoom: r.zoom, bearing: r.bearing, pitch: r.pitch, duration: 1400 }); loadSkiData(region); clearLine(); toast(t('toastRegionMoved', r.label)) }
+  function setRegion() { const region = $('#region').value, r = regions[region]; if (!r) return; map.flyTo({ center: r.center, zoom: r.zoom, bearing: regionCameraBearing(r.bearing), pitch: r.pitch, duration: 1400 }); loadSkiData(region); clearLine(); toast(t('toastRegionMoved', r.label)) }
   function clearLine() {
     pushHistory();
     state.points = [];
@@ -6005,8 +6443,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   });
   $('#liftsToggle').addEventListener('change', e => setLayerVisibility(['ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-terminals'], e.target.checked));
   $('#runsToggle').addEventListener('change', e => setLayerVisibility(['ski-runs'], e.target.checked));
-  $('#gpxToggle').addEventListener('change', e => setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints'], e.target.checked));
-  $('#satelliteBtn').addEventListener('click', event => toggleMapStylePopover(event.currentTarget)); // PC: style popover
+  $('#gpxToggle').addEventListener('change', e => setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints', 'route-endpoints-dot', 'route-endpoints-label'], e.target.checked));
+  // PC web: cycle 위성 → 지형도 → WINTER (style only; pitch / 2D·3D kept). Other layouts keep the style popover.
+  const MAP_STYLE_CYCLE = ['satellite', 'topo', 'winter'];
+  $('#satelliteBtn').addEventListener('click', event => {
+    if (document.body.dataset.pcWeb !== 'true') { toggleMapStylePopover(event.currentTarget); return; }
+    const index = MAP_STYLE_CYCLE.indexOf(state.mapStyle);
+    setMapStyle(MAP_STYLE_CYCLE[(index + 1) % MAP_STYLE_CYCLE.length]);
+  });
   $('#topoBtn').addEventListener('click', () => setMapStyle('topo')); // hidden by syncMapStyleButtons (kept for safety)
   syncMapStyleButtons();
   $('#tiltBtn').addEventListener('click', () => map.easeTo({ pitch: map.getPitch() > 20 ? 15 : 58, duration: 700 }));
@@ -6259,10 +6703,59 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     const mobileCompassBtn = $('#mobileCompassBtn');
     const mobileCompassNeedle = $('#mobileCompassNeedle');
+    // Compass mode change: turn the bearing only (zoom / pitch / center kept). While following, the turn is around the
+    // blue dot so it stays at its screen spot; follow cameras skip this short animation instead of cutting it.
+    const rotateCameraToBearing = (target) => {
+      const s = rideOnSession;
+      const routeFollowing = isRideRouteFollowing() && !s.routeFollowPaused && !s.followPaused;
+      if (state.nativeMap?.active) {
+        const fix = rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords;
+        if (routeFollowing && fix) { // native ride camera: bearing payload, pitch never sent
+          cameraBearingMode.transitionUntil = Date.now() + 1600; // the native ease is 1.5 s
+          sendNativeRideFollowCamera(fix, { bearing: target });
+          return;
+        }
+        // Plain native map: bearing-only command (zoom / pitch / centre kept) instead of the old "north" (which reset pitch).
+        if (typeof cameraBearingMode.sendNativeBearing === 'function') {
+          cameraBearingMode.transitionUntil = Date.now() + 650;
+          cameraBearingMode.lastNativeBearing = target;
+          cameraBearingMode.sendNativeBearing(target, 600);
+        }
+        return;
+      }
+      const dot = displayLocation.current;
+      const following = routeFollowing || (!isRideRouteFollowing() && myLocationFollow.active);
+      const options = { bearing: target, duration: 600, essential: true };
+      if (following && dot) options.around = [dot.lng, dot.lat];
+      cameraBearingMode.transitionUntil = Date.now() + 650;
+      map.easeTo(options);
+    };
+    // Native bearing-only camera (plain native map; the ride follow camera keeps its own setRideFollowCamera path).
+    cameraBearingMode.sendNativeBearing = (bearing, duration = 600) => {
+      const nm = state.nativeMap;
+      const plugin = nm.active && nm.shown ? nativeMapPlugin() : null;
+      if (!plugin?.setCameraBearing) return false;
+      plugin.setCameraBearing({ bearing, duration }).catch(error => console.warn('setCameraBearing failed:', error));
+      return true;
+    };
     if (mobileCompassBtn) {
+      for (const btn of [mobileCompassBtn, $('#rideCompassBtn')]) { // mode marks inside the existing buttons (no new button)
+        if (!btn || btn.querySelector('.compass-mode-north-label')) continue;
+        btn.insertAdjacentHTML('beforeend', '<span class="compass-mode-north-label" aria-hidden="true">N</span><span class="material-symbols-outlined compass-mode-nav-icon" aria-hidden="true">navigation</span>');
+        btn.classList.add('compass-mode-' + cameraBearingMode.mode);
+      }
+      // north → free → navigation → north; free entered by app start / a user rotate goes to north first.
       mobileCompassBtn.addEventListener('click', () => {
-        if (nativeCameraCommand('north')) return;
-        map.easeTo({ bearing: 0, pitch: 0, duration: 600 });
+        const c = cameraBearingMode, from = c.mode;
+        const next = from === 'north' ? 'free' : from === 'free' ? c.freeNext : 'north';
+        if (from === 'free' && !state.nativeMap?.active) c.freeBearing = map.getBearing(); // native: kept by applyNativeCameraUi
+        setCameraBearingMode(next, 'compass-click');
+        if (next === 'free') c.freeNext = 'navigation';
+        const target = next === 'north' ? 0
+          : next === 'free' ? (Number.isFinite(c.freeBearing) ? c.freeBearing : null)
+          : cameraModeBearing(); // navigation: route tangent while following, else GPS / movement
+        if (target === null || !Number.isFinite(target)) return; // no saved free bearing / no direction yet: keep the bearing
+        rotateCameraToBearing(target);
       });
       map.on('rotate', () => {
         const rotation = 'rotate(' + (-map.getBearing()) + 'deg)';
@@ -6343,14 +6836,14 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     map.easeTo({ pitch, duration: 700 });
     syncPcViewSwitch(pitch);
   }
+  // PC single 2D/3D toggle: shows the current view only (pitch / map style are independent of each other).
   function syncPcViewSwitch(pitch = map.getPitch()) {
     const is3d = pitch > 1;
-    for (const [id, on] of [['#pcView2dBtn', !is3d], ['#pcView3dBtn', is3d]]) {
-      const button = $(id);
-      if (!button) continue;
-      button.classList.toggle('active', on);
-      button.setAttribute('aria-pressed', String(on));
-    }
+    const button = $('#pcViewToggleBtn');
+    if (!button) return;
+    button.textContent = is3d ? '3D' : '2D';
+    button.setAttribute('aria-pressed', String(is3d));
+    button.title = is3d ? '2D로 전환' : '3D로 전환';
   }
 
   function syncPcWebLayout(enable) {
@@ -6396,6 +6889,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     syncPcViewSwitch();
     if (wasActive !== active) renderSaved(); // folder tree (PC) ↔ flat list (others)
     applyPcEditorLabels();
+    updateRouteEndpoints(); // START / END flags are PC-only: show / hide with the layout
     requestAnimationFrame(() => { map.resize(); drawProfile(); });
   }
 
@@ -6734,8 +7228,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     $('#pcAdminTabUsers')?.addEventListener('click', () => switchPcAdminTab('users'));
     $('#pcAdminTabPending')?.addEventListener('click', () => switchPcAdminTab('pending'));
-    $('#pcView2dBtn')?.addEventListener('click', () => pcSetMapView('2d'));
-    $('#pcView3dBtn')?.addEventListener('click', () => pcSetMapView('3d'));
+    $('#pcViewToggleBtn')?.addEventListener('click', () => pcSetMapView(map.getPitch() > 1 ? '2d' : '3d')); // 2D ↔ 3D only
     map.on('pitchend', () => syncPcViewSwitch()); // also follows user tilt (drag) and region fly-to
     $('#pcAdminTabCourses')?.addEventListener('click', () => switchPcAdminTab('courses'));
     $('#pcAdminTabRegions')?.addEventListener('click', () => switchPcAdminTab('regions'));
@@ -8633,7 +9126,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   // (opens offline, but parts may be empty until a supplementary download).
   function offlineUsable(status) { return status?.complete === true || status?.usable === true; }
   function offlineMissingText(missing) {
-    const names = { pixel_ratio: '고해상도 위성 영상', context: '주변 저배율 지형', style: '지도 스타일', zoom: '확대 범위', profile_missing: '이전 버전 다운로드' };
+    const names = { pixel_ratio: '고해상도 위성 영상', context: '주변 저배율 지형', style: '지도 스타일', zoom: '확대 범위', profile_missing: '이전 버전 다운로드', terrain: '지형도', winter: 'WINTER' };
     const parts = Array.isArray(missing) ? [...new Set(missing.map(code => names[code]).filter(Boolean))] : [];
     return parts.length ? ` (${parts.join('·')})` : '';
   }
@@ -9128,6 +9621,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     return true;
   }
   function applyNativeCameraUi(camera) {
+    // Free mode on the native map: remember its bearing (no auto bearing is sent in free, so this is the user's).
+    if (cameraBearingMode.mode === 'free' && Number.isFinite(Number(camera?.bearing))) cameraBearingMode.freeBearing = Number(camera.bearing);
     const rotation = 'rotate(' + (-camera.bearing) + 'deg)';
     for (const id of ['#mobileCompassNeedle', '#rideCompassNeedle']) { const el = $(id); if (el) el.style.transform = rotation; }
     const pitching = camera.pitch > 20;
@@ -9159,8 +9654,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
   async function showNativeRegion(regionId, payload) {
     const plugin = nativeMapPlugin();
-    await plugin.showEmbeddedMap({ ...payload, ...computeNativeMapLayout(false) });
+    const shown = await plugin.showEmbeddedMap({ ...payload, ...computeNativeMapLayout(false) });
     const nm = state.nativeMap;
+    nm.style = shown?.style || 'satellite'; // a new native map starts on satellite; the same map keeps its base style
+    syncMapStyleButtons();
     nm.active = true;
     nm.session = true;
     nm.regionId = regionId;
@@ -9455,7 +9952,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     $('#mobileRoutesRegion').value = region;
     $('#mobileEditorRegion').value = region;
     if (details.custom) {
-      map.flyTo({ center: details.center, zoom: details.zoom, bearing: details.bearing, pitch: details.pitch, duration: 900 });
+      map.flyTo({ center: details.center, zoom: details.zoom, bearing: regionCameraBearing(details.bearing), pitch: details.pitch, duration: 900 });
       map.getSource('ski-facilities')?.setData(emptyCollection);
       clearLine();
     } else {
@@ -11601,6 +12098,12 @@ async function startPartyMemberRideOn() {
 
     // Start-up: the native puck uses the same saved value as the online map.
     sendNative(compassHeading.offset, true);
+    // Online compass declination source: Android GeomagneticField through the plugin (no JS magnetic model).
+    compassHeading.fetchDeclination = (args) => {
+      const plugin = nativePlugin();
+      return plugin?.getMagneticDeclination ? plugin.getMagneticDeclination(args) : Promise.resolve(null);
+    };
+    refreshCompassDeclination(geolocateControl._lastKnownPosition?.coords); // a fix may already exist
   }
 
   function initAndroidBackButton() {

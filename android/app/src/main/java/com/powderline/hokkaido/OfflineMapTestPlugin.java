@@ -17,6 +17,7 @@ import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.GeomagneticField;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -184,6 +185,11 @@ public class OfflineMapTestPlugin extends Plugin {
     private static final String DEFAULT_SUPABASE_KEY = "sb_publishable_1ephBEp88K0I6OK0HoPMXw_QOvHklEY";
 
     private static final String STYLE_STANDARD_SATELLITE = Style.STANDARD_SATELLITE;
+    // Extra offline base styles (same URIs as the web MAPBOX_STYLES topo / winter). Keys match the web: satellite|topo|winter.
+    private static final String STYLE_OUTDOORS = "mapbox://styles/mapbox/outdoors-v12";
+    private static final String STYLE_WINTER = "mapbox://styles/ygbsss/cmwgizmmb009k01sm3cza0nv5";
+    private static final String TERRAIN_REGION_SUFFIX = "-terrain"; // powderline-offline-v1-{id}-terrain(-context)
+    private static final String WINTER_REGION_SUFFIX = "-winter";   // powderline-offline-v1-{id}-winter(-context)
     private static final String DEM_TILESET_URI = "mapbox://mapbox.mapbox-terrain-dem-v1";
     private static final String DONGTAN_TILE_REGION_ID = "dongtan-offline-test-v1";
     private static final String TILE_REGION_ID_PREFIX = "powderline-offline-v1-";
@@ -247,6 +253,8 @@ public class OfflineMapTestPlugin extends Plugin {
 
     private LocationManager locationManager;
     private LocationListener locationListener;
+    // Providers the current locationListener is registered with (main thread); used by onProviderEnabled.
+    private final java.util.Set<String> registeredLocationProviders = new java.util.HashSet<>();
     private Location lastKnownGpsFix;
     @Nullable private HeadingOffsetLocationProvider headingOffsetProvider; // created once, reused across re-enables
     // GPS auto-follow: on after [내 위치(GPS)], off when the user moves/rotates/tilts the map by hand.
@@ -256,6 +264,12 @@ public class OfflineMapTestPlugin extends Plugin {
     // Ride On route follow owns the camera (set from JS): the plain GPS centre follow stays out of the way.
     private volatile boolean rideFollowCamera = false;
     private long cameraCommandUntil = 0L; // a 2D/3D / north / zoom animation is running until then: do not cut it
+    // Plain-map GPS centre follow and the bearing-only command share the camera: whichever starts second carries the
+    // other's running target along (same centre / same bearing) instead of cutting it halfway. Main thread only.
+    @Nullable private CameraOptions gpsFollowTarget = null;
+    private long gpsFollowEaseUntil = 0L;
+    private double bearingEaseTarget = Double.NaN;
+    private long bearingEaseUntil = 0L;
     private boolean gpsDragging = false;          // a drag/pinch is in progress: follow is suspended, not ended
     private float gpsDragZoom = 0f;
     private int gpsDragMaxPointers = 0;
@@ -265,6 +279,8 @@ public class OfflineMapTestPlugin extends Plugin {
     // Embedded mode: the same Native MapView placed UNDER the transparent Capacitor WebView (the web UI stays on top).
     private FrameLayout embeddedContainer;
     private String embeddedRegionId = "";
+    // Native base style (satellite|topo|winter); back to satellite whenever the embedded map is destroyed.
+    private String nativeStyleKey = "satellite";
     private boolean embeddedForwardingTouch = false;
     private boolean[] embeddedHitGrid;
     private int embeddedGridCols = 0;
@@ -422,6 +438,7 @@ public class OfflineMapTestPlugin extends Plugin {
                 JSObject same = new JSObject();
                 same.put("shown", true);
                 same.put("regionId", activeRegionId);
+                same.put("style", nativeStyleKey); // same MapView: the chosen base style stays
                 call.resolve(same);
                 return;
             }
@@ -567,6 +584,89 @@ public class OfflineMapTestPlugin extends Plugin {
             embeddedCursor = (!clear && lng != null && lat != null) ? new double[]{lng, lat} : null;
             setSourceData(CURSOR_SOURCE_ID, cursorGeoJson());
             call.resolve();
+        });
+    }
+
+    /**
+     * Native base style switch on the same MapView: style = satellite | topo | winter. Only stored data is used (the
+     * embedded map stays network-blocked); a style whose StylePack / TileRegion is not stored for this region is refused
+     * (NOT_DOWNLOADED) and the current style stays. Camera (center/zoom/bearing/pitch/padding) is restored after the load;
+     * DEM terrain, route / cursor overlays and ski layers are re-added by apply3DTerrainAndOverlay. JS ride state is untouched.
+     */
+    @PluginMethod
+    public void setEmbeddedStyle(PluginCall call) {
+        final String key = normalizeStyleKey(call.getString("style", "satellite"));
+        mainHandler.post(() -> {
+            if (mapView == null) { call.reject("오프라인 지도가 표시되어 있지 않습니다.", "NO_MAP"); return; }
+            if (key.equals(nativeStyleKey)) { JSObject ret = new JSObject(); ret.put("style", key); call.resolve(ret); return; }
+            final String regionId = !TextUtils.isEmpty(embeddedRegionId) ? embeddedRegionId : activeRegionId;
+            final String uri = styleUriForKey(key);
+            final String mainId = tileRegionIdFor(regionId) + regionSuffixForKey(key);
+            try {
+                ensureOfflineManagers();
+                tileStore.getAllTileRegions(regionsExpected -> {
+                    final boolean tilesOk = tileRegionReady(findTileRegion(regionsExpected.isValue() ? regionsExpected.getValue() : null, mainId));
+                    offlineManager.getAllStylePacks(packsExpected -> {
+                        final boolean styleOk = stylePackReady(findStylePack(packsExpected.isValue() ? packsExpected.getValue() : null, uri));
+                        mainHandler.post(() -> {
+                            if (mapView == null) { call.reject("오프라인 지도가 표시되어 있지 않습니다.", "NO_MAP"); return; }
+                            if (!tilesOk || !styleOk) {
+                                call.reject("이 지역의 " + ("topo".equals(key) ? "지형도" : "winter".equals(key) ? "WINTER" : "위성")
+                                    + " 오프라인 데이터가 없습니다. 홈에서 보완 다운로드하세요.", "NOT_DOWNLOADED");
+                                return;
+                            }
+                            CameraState cs = mapView.getMapboxMap().getCameraState();
+                            CameraOptions keep = new CameraOptions.Builder().center(cs.getCenter()).zoom(cs.getZoom())
+                                .bearing(cs.getBearing()).pitch(cs.getPitch()).padding(cs.getPadding()).build();
+                            nativeStyleKey = key;
+                            setupMapStyleAnd3DTerrain(keep);
+                            JSObject ret = new JSObject();
+                            ret.put("style", key);
+                            call.resolve(ret);
+                        });
+                    });
+                });
+            } catch (Throwable e) {
+                call.reject("스타일 전환 실패: " + e.getMessage());
+            }
+        });
+    }
+
+    // Native START / END flags (not implemented yet): an endpoint GeoJSON source + layers would be added in
+    // ensureEmbeddedOverlays(), which already re-adds the route overlays after every style load (all base styles).
+
+    /**
+     * Compass modes on the plain native map: change the bearing only (bearing, duration ms, default 600).
+     * Zoom and pitch are never set, so they stay; the centre stays too, except that a running GPS centre follow is
+     * carried on to its own target. Programmatic easeTo never fires the gesture listeners (no false "rotate").
+     */
+    @PluginMethod
+    public void setCameraBearing(PluginCall call) {
+        final Double bearing = call.getDouble("bearing");
+        final Double rawDuration = call.getDouble("duration", 600.0);
+        if (bearing == null || bearing.isNaN() || bearing.isInfinite()) { call.reject("bearing required"); return; }
+        final long duration = rawDuration == null || rawDuration.isNaN() || rawDuration < 0 ? 600L : Math.min(3000L, rawDuration.longValue());
+        mainHandler.post(() -> {
+            JSObject ret = new JSObject();
+            if (mapView == null || gpsDragging) { ret.put("ok", false); call.resolve(ret); return; } // a finger on the map wins
+            try {
+                long now = System.currentTimeMillis();
+                long d = duration;
+                CameraOptions.Builder b = new CameraOptions.Builder().bearing(bearing);
+                CameraOptions follow = gpsFollowTarget;
+                if (follow != null && now < gpsFollowEaseUntil) {
+                    b.center(follow.getCenter()).padding(follow.getPadding());
+                    d = Math.max(duration, gpsFollowEaseUntil - now);
+                }
+                bearingEaseTarget = bearing;
+                bearingEaseUntil = now + d;
+                CameraAnimationsUtils.getCamera(mapView).easeTo(b.build(), new MapAnimationOptions.Builder().duration(d).build(), null);
+                ret.put("ok", true);
+            } catch (Throwable e) {
+                Log.w(TAG, "setCameraBearing failed: " + e.getMessage());
+                ret.put("ok", false);
+            }
+            call.resolve(ret);
         });
     }
 
@@ -1261,7 +1361,7 @@ public class OfflineMapTestPlugin extends Plugin {
             subscribeEmbeddedMapEvents();
             Log.i(TAG, "Embedded MapView created under WebView. Region=" + activeRegionId);
             setupMapStyleAnd3DTerrain();
-            enableLocationComponentIfPermitted();
+            restartLocationUpdates(); // offline map shown: puck + a freshly registered LocationManager listener
             return true;
         } catch (Throwable e) {
             Log.e(TAG, "Embedded MapView initialization failed", e);
@@ -1363,25 +1463,81 @@ public class OfflineMapTestPlugin extends Plugin {
         if (parent != null) parent.removeView(embeddedContainer);
         embeddedContainer = null;
         embeddedRegionId = "";
+        nativeStyleKey = "satellite";
         embeddedForwardingTouch = false;
         embeddedHitGrid = null;
     }
 
+    private static String satelliteStyleUri() {
+        return !TextUtils.isEmpty(STYLE_STANDARD_SATELLITE) ? STYLE_STANDARD_SATELLITE : "mapbox://styles/mapbox/standard-satellite";
+    }
+
+    private static String normalizeStyleKey(@Nullable String key) {
+        if ("topo".equals(key) || "terrain".equals(key)) return "topo";
+        if ("winter".equals(key)) return "winter";
+        return "satellite";
+    }
+
+    private static String styleUriForKey(String key) {
+        if ("topo".equals(key)) return STYLE_OUTDOORS;
+        if ("winter".equals(key)) return STYLE_WINTER;
+        return satelliteStyleUri();
+    }
+
+    /** TileRegion id suffix of a base style ("" = the existing satellite region, unchanged). */
+    private static String regionSuffixForKey(String key) {
+        if ("topo".equals(key)) return TERRAIN_REGION_SUFFIX;
+        if ("winter".equals(key)) return WINTER_REGION_SUFFIX;
+        return "";
+    }
+
+    private static boolean stylePackReady(@Nullable StylePack pack) {
+        return pack != null && (pack.getRequiredResourceCount() == 0
+            ? pack.getCompletedResourceCount() > 0
+            : pack.getCompletedResourceCount() >= pack.getRequiredResourceCount());
+    }
+
+    private static boolean tileRegionReady(@Nullable TileRegion region) {
+        return region != null && region.getCompletedResourceCount() > 0
+            && (region.getRequiredResourceCount() == 0 || region.getCompletedResourceCount() >= region.getRequiredResourceCount());
+    }
+
+    @Nullable
+    private static TileRegion findTileRegion(@Nullable List<TileRegion> regions, String id) {
+        if (regions == null) return null;
+        for (TileRegion r : regions) if (id.equals(r.getId())) return r;
+        return null;
+    }
+
+    @Nullable
+    private static StylePack findStylePack(@Nullable List<StylePack> packs, String uri) {
+        if (packs == null) return null;
+        for (StylePack p : packs) if (uri.equals(p.getStyleURI())) return p;
+        return null;
+    }
+
     private void setupMapStyleAnd3DTerrain() {
+        setupMapStyleAnd3DTerrain(null);
+    }
+
+    /** Loads the current native base style; keepCamera (style switch) restores center/zoom/bearing/pitch/padding after it. */
+    private void setupMapStyleAnd3DTerrain(@Nullable CameraOptions keepCamera) {
         if (mapView == null) {
             Log.e(TAG, "setupMapStyleAnd3DTerrain skipped: mapView is null");
             return;
         }
         try {
-            final String styleUri = !TextUtils.isEmpty(STYLE_STANDARD_SATELLITE)
-                ? STYLE_STANDARD_SATELLITE
-                : "mapbox://styles/mapbox/standard-satellite";
-            MapboxMap mapboxMap = mapView.getMapboxMap();
+            final String styleUri = styleUriForKey(nativeStyleKey);
+            final MapboxMap mapboxMap = mapView.getMapboxMap();
             Log.i(TAG, "Loading style: " + styleUri);
             mapboxMap.loadStyle(styleUri, new Style.OnStyleLoaded() {
                 @Override
                 public void onStyleLoaded(@NonNull Style style) {
                     Log.i(TAG, "Style loaded successfully: " + styleUri);
+                    if (keepCamera != null) {
+                        try { mapboxMap.setCamera(keepCamera); } catch (Throwable e) { Log.w(TAG, "camera restore failed: " + e.getMessage()); }
+                    }
+                    // Same restore for every base style: shared DEM + 3D terrain, route / cursor overlays, ski overlay.
                     apply3DTerrainAndOverlay(style);
                 }
             });
@@ -1491,7 +1647,50 @@ public class OfflineMapTestPlugin extends Plugin {
         }
     }
 
+    /**
+     * Existing users: when the satellite style pack + main + context regions are already complete for this device setup,
+     * the satellite step is skipped entirely (nothing re-fetched) and only the missing terrain / winter parts follow.
+     * Otherwise the original satellite flow runs unchanged.
+     */
     private void startStylePackDownload(
+        PluginCall call,
+        long generation,
+        String regionId,
+        String regionName,
+        String tileRegionId,
+        double[] regionBbox
+    ) {
+        try {
+            if (generation != downloadGeneration) return;
+            ensureOfflineManagers();
+            final String satUri = satelliteStyleUri();
+            tileStore.getAllTileRegions(regionsExpected -> {
+                List<TileRegion> regions = regionsExpected.isValue() ? regionsExpected.getValue() : null;
+                final TileRegion main = findTileRegion(regions, tileRegionId);
+                final TileRegion ctx = findTileRegion(regions, tileRegionId + CONTEXT_REGION_SUFFIX);
+                offlineManager.getAllStylePacks(packsExpected -> {
+                    List<StylePack> packs = packsExpected.isValue() ? packsExpected.getValue() : null;
+                    boolean satDone = stylePackReady(findStylePack(packs, satUri)) && tileRegionReady(main) && tileRegionReady(ctx)
+                        && downloadProfileMismatch(readRegionMeta(regionId), satUri).length() == 0;
+                    mainHandler.post(() -> {
+                        if (generation != downloadGeneration) return;
+                        if (!satDone) { startSatelliteStylePackDownload(call, generation, regionId, regionName, tileRegionId, regionBbox); return; }
+                        Log.i(TAG, "Satellite already complete for " + regionId + ": only missing terrain / winter parts are downloaded");
+                        long count = main.getCompletedResourceCount();
+                        double mb = main.getCompletedResourceSize() / (1024.0 * 1024.0);
+                        String okMsg = String.format(Locale.KOREA, "%s 위성+3D DEM 은 이미 저장되어 있습니다.", regionName);
+                        runExtraStylesThenFinish(call, generation, regionId, regionName, tileRegionId, regionBbox, satUri, mapPixelRatio(),
+                            count, mb, skiOutcomes.get(regionId), okMsg, true, ctx.getCompletedResourceCount(),
+                            ctx.getCompletedResourceSize() / (1024.0 * 1024.0));
+                    });
+                });
+            });
+        } catch (Throwable e) {
+            startSatelliteStylePackDownload(call, generation, regionId, regionName, tileRegionId, regionBbox);
+        }
+    }
+
+    private void startSatelliteStylePackDownload(
         PluginCall call,
         long generation,
         String regionId,
@@ -1767,23 +1966,137 @@ public class OfflineMapTestPlugin extends Plugin {
                     final boolean ok = ctxOk;
                     final long cc = ctxCount;
                     final double cm = ctxMb;
-                    mainHandler.post(() -> finishRegionDownload(call, regionId, regionName, tileRegionId, regionBbox, styleUri,
+                    mainHandler.post(() -> runExtraStylesThenFinish(call, generation, regionId, regionName, tileRegionId, regionBbox, styleUri,
                         pixelRatio, count, mb, skiOutcome, okMsg, ok, cc, cm));
                 });
         } catch (Throwable e) {
             Log.w(TAG, "Context TileRegion setup failed: " + e.getMessage());
-            finishRegionDownload(call, regionId, regionName, tileRegionId, regionBbox, styleUri, pixelRatio,
+            runExtraStylesThenFinish(call, generation, regionId, regionName, tileRegionId, regionBbox, styleUri, pixelRatio,
                 count, mb, skiOutcome, okMsg, false, 0, 0);
+        }
+    }
+
+    private interface ExtraStyleDone { void done(boolean ok); }
+
+    /** After satellite (+DEM, context): terrain then WINTER, each skipped when already stored; then the usual finish. */
+    private void runExtraStylesThenFinish(PluginCall call, long generation, String regionId, String regionName, String tileRegionId,
+                                          double[] regionBbox, String styleUri, float pixelRatio, long count, double mb,
+                                          JSONObject skiOutcome, String okMsg, boolean ctxOk, long ctxCount, double ctxMb) {
+        if (generation != downloadGeneration) return;
+        downloadExtraStyle(generation, regionId, regionName, tileRegionId, regionBbox, pixelRatio, "topo", "지형도", terrainOk ->
+            downloadExtraStyle(generation, regionId, regionName, tileRegionId, regionBbox, pixelRatio, "winter", "WINTER", winterOk ->
+                mainHandler.post(() -> {
+                    if (generation != downloadGeneration) return;
+                    finishRegionDownload(call, regionId, regionName, tileRegionId, regionBbox, styleUri, pixelRatio,
+                        count, mb, skiOutcome, okMsg, ctxOk, ctxCount, ctxMb, terrainOk, winterOk);
+                })));
+    }
+
+    /**
+     * One extra base style for the region: StylePack (same options as satellite) → main TileRegion z10-16 →
+     * context TileRegion z8-13. Style tiles only: no DEM descriptor (the satellite region's DEM is shared by all styles).
+     * Already-complete parts are skipped. A failure only marks this style not ready; it never fails the download.
+     */
+    private void downloadExtraStyle(long generation, String regionId, String regionName, String tileRegionId, double[] regionBbox,
+                                    float pixelRatio, String key, String label, ExtraStyleDone done) {
+        if (generation != downloadGeneration) return;
+        final String uri = styleUriForKey(key);
+        final String mainId = tileRegionId + regionSuffixForKey(key);
+        final String ctxId = mainId + CONTEXT_REGION_SUFFIX;
+        try {
+            ensureOfflineManagers();
+            tileStore.getAllTileRegions(regionsExpected -> {
+                List<TileRegion> regions = regionsExpected.isValue() ? regionsExpected.getValue() : null;
+                final boolean mainOk = tileRegionReady(findTileRegion(regions, mainId));
+                final boolean ctxOk = tileRegionReady(findTileRegion(regions, ctxId));
+                offlineManager.getAllStylePacks(packsExpected -> {
+                    final boolean styleOk = stylePackReady(findStylePack(packsExpected.isValue() ? packsExpected.getValue() : null, uri));
+                    mainHandler.post(() -> {
+                        if (generation != downloadGeneration) return;
+                        if (styleOk && mainOk && ctxOk) { Log.i(TAG, label + " already stored for " + regionId); done.done(true); return; }
+                        final Runnable tiles = () -> loadExtraStyleRegion(generation, regionId, regionName, label, uri, mainId, regionBbox,
+                            SAT_MIN_ZOOM, SAT_MAX_ZOOM, pixelRatio, "tiles", mainOk, okMain -> {
+                                if (!okMain) { done.done(false); return; }
+                                loadExtraStyleRegion(generation, regionId, regionName, label, uri, ctxId, contextBbox(regionBbox),
+                                    CONTEXT_SAT_MIN_ZOOM, CONTEXT_SAT_MAX_ZOOM, pixelRatio, "context", ctxOk, done);
+                            });
+                        if (styleOk) { tiles.run(); return; }
+                        updateStatus(regionName + " " + label + " 스타일 팩 다운로드 중...");
+                        StylePackLoadOptions styleOptions = new StylePackLoadOptions.Builder()
+                            .glyphsRasterizationMode(GlyphsRasterizationMode.IDEOGRAPHS_RASTERIZED_LOCALLY)
+                            .acceptExpired(true)
+                            .build();
+                        final DownloadReporter reporter = new DownloadReporter(regionId, "style");
+                        activeStyleCancelable = offlineManager.loadStylePack(uri, styleOptions,
+                            progress -> {
+                                if (generation != downloadGeneration) return;
+                                long d = progress.getCompletedResourceCount();
+                                reporter.report(d, progress.getRequiredResourceCount(), progress.getLoadedResourceSize(),
+                                    progress.getErroredResourceCount(), d >= Math.max(1, progress.getRequiredResourceCount()));
+                            },
+                            expected -> {
+                                if (generation != downloadGeneration) return;
+                                if (expected.isError()) {
+                                    Log.w(TAG, label + " style pack failed: " + (expected.getError() != null ? expected.getError().getMessage() : "unknown"));
+                                    mainHandler.post(() -> done.done(false));
+                                    return;
+                                }
+                                mainHandler.post(tiles);
+                            });
+                    });
+                });
+            });
+        } catch (Throwable e) {
+            Log.w(TAG, label + " download setup failed: " + e.getMessage());
+            done.done(false);
+        }
+    }
+
+    private void loadExtraStyleRegion(long generation, String regionId, String regionName, String label, String uri, String id,
+                                      double[] bbox, byte minZoom, byte maxZoom, float pixelRatio, String phase,
+                                      boolean alreadyOk, ExtraStyleDone done) {
+        if (generation != downloadGeneration) return;
+        if (alreadyOk) { done.done(true); return; }
+        try {
+            TilesetDescriptor descriptor = offlineManager.createTilesetDescriptor(new TilesetDescriptorOptions.Builder()
+                .styleURI(uri).minZoom(minZoom).maxZoom(maxZoom).pixelRatio(pixelRatio).build());
+            TileRegionLoadOptions opts = new TileRegionLoadOptions.Builder()
+                .geometry(bboxPolygon(bbox)).descriptors(Collections.singletonList(descriptor)).acceptExpired(true).build();
+            Log.i(TAG, String.format(Locale.US, "%s TileRegion %s: z%d-%d @%.2fx", label, id, minZoom, maxZoom, pixelRatio));
+            updateStatus(regionName + " " + label + ("context".equals(phase) ? " 주변 타일" : " 지도 타일") + " 다운로드 중...");
+            final DownloadReporter reporter = new DownloadReporter(regionId, phase);
+            activeTileCancelable = tileStore.loadTileRegion(id, opts,
+                progress -> {
+                    if (generation != downloadGeneration) return;
+                    long d = progress.getCompletedResourceCount();
+                    reporter.report(d, progress.getRequiredResourceCount(), progress.getLoadedResourceSize(),
+                        progress.getErroredResourceCount(), d >= Math.max(1, progress.getRequiredResourceCount()));
+                },
+                expected -> {
+                    if (generation != downloadGeneration) return;
+                    boolean ok = expected.isValue() && tileRegionReady(expected.getValue());
+                    if (!ok) Log.w(TAG, label + " TileRegion " + id + " not complete: "
+                        + (expected.isError() && expected.getError() != null ? expected.getError().getMessage() : "incomplete"));
+                    mainHandler.post(() -> done.done(ok));
+                });
+        } catch (Throwable e) {
+            Log.w(TAG, label + " TileRegion setup failed: " + e.getMessage());
+            done.done(false);
         }
     }
 
     private void finishRegionDownload(PluginCall call, String regionId, String regionName, String tileRegionId,
                                       double[] regionBbox, String styleUri, float pixelRatio, long count, double mb,
-                                      JSONObject skiOutcome, String okMsg, boolean ctxOk, long ctxCount, double ctxMb) {
+                                      JSONObject skiOutcome, String okMsg, boolean ctxOk, long ctxCount, double ctxMb,
+                                      boolean terrainOk, boolean winterOk) {
         final JSONObject profile = buildDownloadProfile(styleUri, pixelRatio, regionBbox, ctxOk);
         ioExecutor.execute(() -> markTileComplete(regionId, profile));
-        Log.i(TAG, String.format(Locale.US, "Download done %s: main %d res %.2f MB, context %s %d res %.2f MB, pixelRatio %.2f",
-            regionId, count, mb, ctxOk ? "ok" : "INCOMPLETE", ctxCount, ctxMb, pixelRatio));
+        Log.i(TAG, String.format(Locale.US, "Download done %s: main %d res %.2f MB, context %s %d res %.2f MB, pixelRatio %.2f, terrain %s, winter %s",
+            regionId, count, mb, ctxOk ? "ok" : "INCOMPLETE", ctxCount, ctxMb, pixelRatio, terrainOk ? "ok" : "MISSING", winterOk ? "ok" : "MISSING"));
+        if (!terrainOk || !winterOk) {
+            okMsg += "\n" + (!terrainOk && !winterOk ? "지형도·WINTER" : !terrainOk ? "지형도" : "WINTER")
+                + " 오프라인 저장 미완료 — 다시 다운로드하면 빠진 부분만 받습니다.";
+        }
         updateStatus(skiOutcome != null ? okMsg + "\n" + skiOutcomeText(regionName, skiOutcome) : okMsg);
         reapplyEmbeddedNetworkBlock();
         if (mapView != null && regionId.equals(activeRegionId)) {
@@ -1796,7 +2109,10 @@ public class OfflineMapTestPlugin extends Plugin {
             ret.put("regionName", regionName);
             ret.put("tileRegionId", tileRegionId);
             ret.put("includesTerrainDemDescriptor", true);
-            ret.put("complete", ctxOk);
+            ret.put("complete", ctxOk && terrainOk && winterOk); // every base style stored
+            ret.put("usable", true);                              // satellite + DEM stored: the map opens offline
+            ret.put("terrainReady", terrainOk);
+            ret.put("winterReady", winterOk);
             ret.put("completedResourceCount", count);
             ret.put("sizeMb", mb);
             ret.put("contextComplete", ctxOk);
@@ -1867,6 +2183,18 @@ public class OfflineMapTestPlugin extends Plugin {
                     && foundContext.getCompletedResourceCount() >= foundContext.getRequiredResourceCount();
                 final JSONArray mismatch = downloadProfileMismatch(readRegionMeta(statusRegionId), styleUri);
                 if (!contextOk && !jsonArrayContains(mismatch, "context")) mismatch.put("context");
+                // Extra base styles (terrain / WINTER): missing parts make the region "complete=false / needsUpdate",
+                // never "usable=false" (satellite + DEM alone still open offline).
+                final List<StylePack> allPacks = styleExpected.isValue() ? styleExpected.getValue() : null;
+                final boolean terrainStyleOk = stylePackReady(findStylePack(allPacks, STYLE_OUTDOORS));
+                final boolean terrainRegionOk = tileRegionReady(findTileRegion(regions, statusTileRegionId + TERRAIN_REGION_SUFFIX));
+                final boolean terrainContextOk = tileRegionReady(findTileRegion(regions, statusTileRegionId + TERRAIN_REGION_SUFFIX + CONTEXT_REGION_SUFFIX));
+                final boolean winterStyleOk = stylePackReady(findStylePack(allPacks, STYLE_WINTER));
+                final boolean winterRegionOk = tileRegionReady(findTileRegion(regions, statusTileRegionId + WINTER_REGION_SUFFIX));
+                final boolean winterContextOk = tileRegionReady(findTileRegion(regions, statusTileRegionId + WINTER_REGION_SUFFIX + CONTEXT_REGION_SUFFIX));
+                if (found != null && !(terrainStyleOk && terrainRegionOk && terrainContextOk)) mismatch.put("terrain");
+                if (found != null && !(winterStyleOk && winterRegionOk && winterContextOk)) mismatch.put("winter");
+                final JSObject skiInfo = describeSkiData(statusRegionId);
                 mainHandler.post(() -> {
                     if (found != null) {
                         double mb = found.getCompletedResourceSize() / (1024.0 * 1024.0);
@@ -1918,7 +2246,19 @@ public class OfflineMapTestPlugin extends Plugin {
                     ret.put("requiredResourceCount", required);
                     ret.put("sizeBytes", found != null ? found.getCompletedResourceSize() : 0);
                     ret.put("stylePackCount", styleCount);
-                    ret.put("skiData", describeSkiData(statusRegionId));
+                    ret.put("skiData", skiInfo);
+                    // Per-part readiness (additive; existing fields keep their meaning).
+                    ret.put("satelliteStyleReady", styleOk);
+                    ret.put("satelliteRegionReady", tilesOk);
+                    ret.put("satelliteContextReady", contextOk);
+                    ret.put("demReady", tilesOk); // DEM is a descriptor of the satellite main region
+                    ret.put("terrainStyleReady", terrainStyleOk);
+                    ret.put("terrainRegionReady", terrainRegionOk);
+                    ret.put("terrainContextReady", terrainContextOk);
+                    ret.put("winterStyleReady", winterStyleOk);
+                    ret.put("winterRegionReady", winterRegionOk);
+                    ret.put("winterContextReady", winterContextOk);
+                    ret.put("skiDataReady", skiInfo.optBoolean("hasLocalFile", false) || skiInfo.optBoolean("hasBundledFallback", false));
                     call.resolve(ret);
                 }
             });
@@ -2683,7 +3023,7 @@ public class OfflineMapTestPlugin extends Plugin {
     @PermissionCallback
     private void locationPermsCallback(PluginCall call) {
         if (getPermissionState("location") == PermissionState.GRANTED) {
-            enableLocationComponentIfPermitted();
+            restartLocationUpdates(); // permission just granted: register again (GPS needs FINE, see registerLocationProviders)
         }
     }
 
@@ -2708,10 +3048,15 @@ public class OfflineMapTestPlugin extends Plugin {
             // Follow once the position moved >= 3 m from the last followed fix (replaces the safe-area gate).
             if (!force && lastFollowFix != null && lastFollowFix.distanceTo(loc) < 3f) return;
             lastFollowFix = new Location(loc);
-            CameraOptions target = new CameraOptions.Builder()
+            CameraOptions.Builder targetBuilder = new CameraOptions.Builder()
                 .center(p)
-                .padding(new EdgeInsets(h * 0.2, 0.0, 0.0, 0.0))
-                .build();
+                .padding(new EdgeInsets(h * 0.2, 0.0, 0.0, 0.0));
+            long now = System.currentTimeMillis();
+            // A bearing-only turn is still running: keep turning to the same bearing (otherwise this ease would freeze it).
+            if (now < bearingEaseUntil && !Double.isNaN(bearingEaseTarget)) targetBuilder.bearing(bearingEaseTarget);
+            CameraOptions target = targetBuilder.build();
+            gpsFollowTarget = target;
+            gpsFollowEaseUntil = now + 700L;
             CameraAnimationsUtils.getCamera(mapView).easeTo(target, new MapAnimationOptions.Builder().duration(700L).build(), null);
         } catch (Throwable e) {
             Log.w(TAG, "GPS follow warning: " + e.getMessage());
@@ -2729,7 +3074,6 @@ public class OfflineMapTestPlugin extends Plugin {
         gestures.addOnMoveListener(new OnMoveListener() {
             @Override public void onMoveBegin(@NonNull MoveGestureDetector detector) {
                 gpsDragging = true;
-                emitCameraGesture("move"); // also reported for a pinch (2-finger move)
                 gpsDragMaxPointers = detector.getPointersCount();
                 gpsDragZoom = (float) mapView.getMapboxMap().getCameraState().getZoom();
             }
@@ -2744,6 +3088,8 @@ public class OfflineMapTestPlugin extends Plugin {
                 // Ride On route follow: the pan only pauses the ride camera (JS followPaused); the plain GPS follow
                 // state (gpsFollowActive) is left untouched. Without route follow: unchanged.
                 if (!pinch && !rideFollowCamera) stopGpsFollow();
+                // Reported only for a real pan (judged at the end): a pinch zoom never pauses the JS ride follow.
+                if (!pinch) emitCameraGesture("move");
             }
         });
         // Rotation and tilt (and pinch zoom) never end follow.
@@ -2819,6 +3165,11 @@ public class OfflineMapTestPlugin extends Plugin {
         private final Map<LocationConsumer, LocationConsumer> proxies = new HashMap<>();
         private volatile double offsetDeg;
         private double lastRawBearing = Double.NaN;
+        // True north: the SDK compass heading is magnetic. Declination (east +) from GeomagneticField at the latest fix;
+        // 0 until the first fix. Applied here once, before the manual offset. GPS course is never touched.
+        private volatile double declinationDeg = 0.0;
+        private volatile double declinationLat = Double.NaN, declinationLng = Double.NaN;
+        private long lastHeadingLogAt = 0L;
 
         HeadingOffsetLocationProvider(@NonNull Context context, double offsetDeg) {
             this.inner = new DefaultLocationProvider(context);
@@ -2830,11 +3181,42 @@ public class OfflineMapTestPlugin extends Plugin {
             return v < 0 ? v + 360.0 : v;
         }
 
+        /** magnetic heading → + declination (true heading) → + manual offset → 0..360. */
+        double toDisplayHeading(double magnetic) {
+            return normalize(magnetic + declinationDeg + offsetDeg);
+        }
+
+        /** Declination from the latest valid fix (lat / lng / altitude / fix time). */
+        void updateDeclination(@NonNull Location loc) {
+            try {
+                double lat = loc.getLatitude(), lng = loc.getLongitude();
+                if (Double.isNaN(lat) || Double.isNaN(lng)) return;
+                long time = loc.getTime() > 0 ? loc.getTime() : System.currentTimeMillis();
+                float alt = loc.hasAltitude() ? (float) loc.getAltitude() : 0f;
+                float d = new GeomagneticField((float) lat, (float) lng, alt, time).getDeclination();
+                if (Float.isNaN(d) || Float.isInfinite(d)) return;
+                declinationDeg = d;
+                declinationLat = lat;
+                declinationLng = lng;
+            } catch (Throwable e) {
+                Log.w(TAG, "declination warning: " + e.getMessage());
+            }
+        }
+
+        /** Dev log (max every 2 s): magnetic / declination / true / offset / final / position. Remove after device checks. */
+        void logHeading(double magnetic, double fin) {
+            long now = System.currentTimeMillis();
+            if (now - lastHeadingLogAt < 2000L) return;
+            lastHeadingLogAt = now;
+            Log.d(TAG, String.format(Locale.US, "[heading] magnetic=%.1f declination=%.2f true=%.1f offset=%.1f final=%.1f lat=%.5f lng=%.5f",
+                magnetic, declinationDeg, normalize(magnetic + declinationDeg), offsetDeg, fin, declinationLat, declinationLng));
+        }
+
         /** Applies a new offset immediately (re-emits the last raw heading); no provider re-creation. Main thread. */
         void setOffset(double deg) {
             offsetDeg = deg;
             if (Double.isNaN(lastRawBearing)) return; // no compass value received yet: nothing to redraw
-            double[] value = new double[] { normalize(lastRawBearing + deg) };
+            double[] value = new double[] { toDisplayHeading(lastRawBearing) };
             for (LocationConsumer consumer : new ArrayList<>(proxies.keySet())) {
                 consumer.onBearingUpdated(value, animator -> kotlin.Unit.INSTANCE);
             }
@@ -2854,9 +3236,9 @@ public class OfflineMapTestPlugin extends Plugin {
                     public void onBearingUpdated(@NonNull double[] bearing, Function1<? super ValueAnimator, Unit> options) {
                         if (bearing.length == 0) { consumer.onBearingUpdated(bearing, options); return; }
                         lastRawBearing = bearing[bearing.length - 1];
-                        double offset = offsetDeg;
                         double[] corrected = new double[bearing.length];
-                        for (int i = 0; i < bearing.length; i++) corrected[i] = normalize(bearing[i] + offset);
+                        for (int i = 0; i < bearing.length; i++) corrected[i] = toDisplayHeading(bearing[i]);
+                        logHeading(lastRawBearing, corrected[corrected.length - 1]);
                         consumer.onBearingUpdated(corrected, options);
                     }
 
@@ -2913,12 +3295,37 @@ public class OfflineMapTestPlugin extends Plugin {
                 Context app = activity.getApplicationContext();
                 headingOffsetProvider = new HeadingOffsetLocationProvider(app, readHeadingOffset(app));
             }
+            Location lastFix = lastKnownGpsFix;
+            if (lastFix != null) headingOffsetProvider.updateDeclination(lastFix); // true north before the next fix
             headingOffsetProvider.inner.updatePuckBearing(locPlugin.getPuckBearingEnabled() ? locPlugin.getPuckBearing() : null);
             if (locPlugin.getLocationProvider() != headingOffsetProvider) {
                 locPlugin.setLocationProvider(headingOffsetProvider); // unregisters from the previous provider first
             }
         } catch (Throwable e) {
             Log.w(TAG, "heading offset provider warning: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Magnetic declination (deg, east +) from GeomagneticField for the online (WebView) compass, so both maps use the
+     * same true-north source. Pure calculation: no sensor, no location request, no state change.
+     */
+    @PluginMethod
+    public void getMagneticDeclination(PluginCall call) {
+        Double lat = call.getDouble("latitude");
+        Double lng = call.getDouble("longitude");
+        if (lat == null || lng == null || lat.isNaN() || lng.isNaN()) { call.reject("latitude/longitude required"); return; }
+        Double alt = call.getDouble("altitude", 0.0);
+        Double time = call.getDouble("time");
+        long t = time != null && !time.isNaN() && time > 0 ? time.longValue() : System.currentTimeMillis();
+        try {
+            float d = new GeomagneticField(lat.floatValue(), lng.floatValue(),
+                alt == null || alt.isNaN() || alt.isInfinite() ? 0f : alt.floatValue(), t).getDeclination();
+            JSObject ret = new JSObject();
+            ret.put("declination", (double) d);
+            call.resolve(ret);
+        } catch (Throwable e) {
+            call.reject("declination failed: " + e.getMessage());
         }
     }
 
@@ -2957,6 +3364,12 @@ public class OfflineMapTestPlugin extends Plugin {
             if (location.hasBearing()) o.put("bearing", (double) location.getBearing());
             String provider = location.getProvider();
             if (provider != null) o.put("provider", provider);
+            // Temporary device check: what reaches the web Ride logic (JS) from the native LocationManager.
+            Log.d(TAG, String.format(Locale.US, "[native-gps] emitEmbeddedLocation provider=%s lat=%.6f lng=%.6f acc=%s speed=%s bearing=%s t=%d",
+                provider, location.getLatitude(), location.getLongitude(),
+                location.hasAccuracy() ? String.valueOf(location.getAccuracy()) : "-",
+                location.hasSpeed() ? String.valueOf(location.getSpeed()) : "-",
+                location.hasBearing() ? String.valueOf(location.getBearing()) : "-", location.getTime()));
             notifyListeners("embeddedLocation", o);
         } catch (Throwable e) {
             Log.w(TAG, "embeddedLocation warning: " + e.getMessage());
@@ -3052,17 +3465,25 @@ public class OfflineMapTestPlugin extends Plugin {
         final Double lng = call.getDouble("longitude");
         final Double bearing = call.getDouble("bearing");
         mainHandler.post(() -> {
+            // Ride follow starting (off → on): make sure the LocationManager listener is alive before the camera
+            // ownership moves away from the plain GPS follow (airplane mode: GPS fixes only come from here).
+            if (active && !rideFollowCamera) {
+                Log.i(TAG, "Ride follow start: restarting LocationManager updates");
+                restartLocationUpdates();
+            }
             rideFollowCamera = active;
             JSObject ret = new JSObject();
             boolean moved = false;
             try {
                 if (active && mapView != null && lat != null && lng != null && !lat.isNaN() && !lng.isNaN()
-                        && System.currentTimeMillis() >= cameraCommandUntil) {
+                        && System.currentTimeMillis() >= cameraCommandUntil && !gpsDragging) { // never fight a finger on the map
                     int h = mapView.getHeight();
                     if (h > 0) {
+                        // Top padding 0.28 × the real MapView height → the rider ~14% below centre (same as online).
+                        // No zoom in the options: the user's zoom is kept.
                         CameraOptions.Builder b = new CameraOptions.Builder()
                             .center(Point.fromLngLat(lng, lat))
-                            .padding(new EdgeInsets(h * 0.5, 0.0, 0.0, 0.0));
+                            .padding(new EdgeInsets(h * 0.28, 0.0, 0.0, 0.0));
                         if (bearing != null && !bearing.isNaN()) b.bearing(bearing);
                         // ~2 s native fix interval: a 1.5 s ease keeps the motion continuous without lagging behind.
                         CameraAnimationsUtils.getCamera(mapView).easeTo(b.build(), new MapAnimationOptions.Builder().duration(1500L).build(), null);
@@ -3114,7 +3535,14 @@ public class OfflineMapTestPlugin extends Plugin {
                 locationListener = new LocationListener() {
                     @Override
                     public void onLocationChanged(@NonNull Location location) {
+                        // Temporary device check: is "gps" still arriving in airplane mode?
+                        Log.d(TAG, String.format(Locale.US, "[native-gps] onLocationChanged provider=%s lat=%.6f lng=%.6f acc=%s speed=%s bearing=%s t=%d",
+                            location.getProvider(), location.getLatitude(), location.getLongitude(),
+                            location.hasAccuracy() ? String.valueOf(location.getAccuracy()) : "-",
+                            location.hasSpeed() ? String.valueOf(location.getSpeed()) : "-",
+                            location.hasBearing() ? String.valueOf(location.getBearing()) : "-", location.getTime()));
                         lastKnownGpsFix = location;
+                        if (headingOffsetProvider != null) headingOffsetProvider.updateDeclination(location); // native puck: true north
                         mainHandler.post(() -> followGpsIfNeeded(location, false));
                         mainHandler.post(() -> updateStatus(String.format(
                             Locale.KOREA,
@@ -3130,28 +3558,50 @@ public class OfflineMapTestPlugin extends Plugin {
                     public void onStatusChanged(String provider, int status, Bundle extras) {}
 
                     @Override
-                    public void onProviderEnabled(@NonNull String provider) {}
+                    public void onProviderEnabled(@NonNull String provider) {
+                        // Location / GPS switched on after the listener was set up: register again (only when this
+                        // provider is not registered yet, so a registration-time callback cannot loop).
+                        Log.i(TAG, "[native-gps] provider enabled: " + provider + " (registered=" + registeredLocationProviders.contains(provider) + ")");
+                        if (!registeredLocationProviders.contains(provider)) mainHandler.post(() -> restartLocationUpdates());
+                    }
 
                     @Override
-                    public void onProviderDisabled(@NonNull String provider) {}
+                    public void onProviderDisabled(@NonNull String provider) {
+                        Log.i(TAG, "[native-gps] provider disabled: " + provider);
+                    }
                 };
 
+                registeredLocationProviders.clear();
+                final boolean fine = ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_FINE_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED;
+                final boolean coarse = ContextCompat.checkSelfPermission(activity, Manifest.permission.ACCESS_COARSE_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED;
                 for (String provider : Arrays.asList(
                     LocationManager.GPS_PROVIDER,
                     LocationManager.NETWORK_PROVIDER,
                     LocationManager.PASSIVE_PROVIDER
                 )) {
+                    boolean enabled = false;
                     try {
-                        if (locationManager.isProviderEnabled(provider)) {
+                        enabled = locationManager.isProviderEnabled(provider);
+                        // GPS needs precise location: COARSE alone is never treated as a working GPS registration.
+                        boolean permitted = LocationManager.GPS_PROVIDER.equals(provider) ? fine : (fine || coarse);
+                        if (enabled && permitted) {
                             locationManager.requestLocationUpdates(
                                 provider, 2000L, 1f, locationListener
                             );
+                            registeredLocationProviders.add(provider);
                         }
+                        Log.i(TAG, "[native-gps] provider=" + provider + " enabled=" + enabled + " fine=" + fine + " coarse=" + coarse
+                            + " registered=" + registeredLocationProviders.contains(provider)
+                            + (enabled && !permitted ? " (no FINE permission)" : ""));
                         Location cached = locationManager.getLastKnownLocation(provider);
                         if (cached != null && (lastKnownGpsFix == null || cached.getTime() > lastKnownGpsFix.getTime())) {
                             lastKnownGpsFix = cached;
                         }
-                    } catch (Throwable ignored) {
+                    } catch (Throwable e) {
+                        Log.w(TAG, "[native-gps] provider=" + provider + " enabled=" + enabled + " fine=" + fine + " coarse=" + coarse
+                            + " registration FAILED: " + e.getMessage());
                     }
                 }
             }
