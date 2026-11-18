@@ -4749,6 +4749,16 @@ select {
     -webkit-appearance: none;
   }
   body[data-mobile-view="map"] .mobile-hud-course-banner select option { color: #0f172a; background: #fff; }
+  /* Hit area: the select runs under the ▼ to the banner's right edge (text end unchanged: 12 pad + 17 icon + 7 gap + 17). */
+  body[data-mobile-view="map"] .mobile-hud-course-banner { position: relative; }
+  body[data-mobile-view="map"] .mobile-hud-course-banner select { margin-right: -12px; padding-right: 53px; cursor: pointer; }
+  body[data-mobile-view="map"] .mobile-hud-course-banner > .material-symbols-outlined {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
   body[data-mobile-view="map"] .mobile-hud-left-rail { display: none !important; }
   body[data-mobile-view="map"] .mobile-hud-header {
     padding: 10px;
@@ -5711,6 +5721,14 @@ select {
   .party-joined-ride-btn { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 44px; padding: 8px 12px; border: 0; border-radius: 8px; background: #38bdf8; color: #001e2c; font-size: 14px; font-weight: 700; letter-spacing: .04em; }
   .party-joined-ride-btn .material-symbols-outlined { font-size: 20px; }
   .party-joined-ride-btn:disabled { opacity: .55; }
+  .party-joined-ride-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .party-joined-ride-actions .party-joined-ride-btn { min-width: 0; padding: 8px 6px; font-size: 13px; letter-spacing: .02em; white-space: nowrap; }
+  .party-joined-ride-actions .party-joined-ride-btn > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .party-joined-ride-btn.secondary { border: 1px solid #38bdf8; background: transparent; color: #8ed5ff; }
+  .party-joined-course { cursor: pointer; }
+  .party-joined-course.selected { border-color: #38bdf8; background: rgba(56, 189, 248, .1); box-shadow: inset 0 0 0 1px #38bdf8; }
+  .party-joined-course-radio { flex: 0 0 auto; color: #87929a; font-size: 20px; }
+  .party-joined-course.selected .party-joined-course-radio { color: #38bdf8; }
   .party-joined-note { display: flex; align-items: center; justify-content: center; gap: 4px; margin: 0; color: #87929a; font-size: 12px; }
   .party-joined-note .material-symbols-outlined { font-size: 14px; }
   .party-joined-location { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 8px; background: #181c21; }

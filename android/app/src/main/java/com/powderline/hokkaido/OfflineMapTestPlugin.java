@@ -263,6 +263,7 @@ public class OfflineMapTestPlugin extends Plugin {
     private boolean gpsGesturesHooked = false;
     // Ride On route follow owns the camera (set from JS): the plain GPS centre follow stays out of the way.
     private volatile boolean rideFollowCamera = false;
+    private double rideFollowZoom = Double.NaN; // Ride Follow base zoom (start / user zoom only; NaN = not set)
     private long cameraCommandUntil = 0L; // a 2D/3D / north / zoom animation is running until then: do not cut it
     // Plain-map GPS centre follow and the bearing-only command share the camera: whichever starts second carries the
     // other's running target along (same centre / same bearing) instead of cutting it halfway. Main thread only.
@@ -292,11 +293,18 @@ public class OfflineMapTestPlugin extends Plugin {
     private static final String ROUTE_SOURCE_ID = "powderline-route";
     private static final String ROUTE_GLOW_LAYER_ID = "powderline-route-glow";
     private static final String ROUTE_LINE_LAYER_ID = "powderline-route-line";
+    private static final String ROUTE_ENDPOINTS_SOURCE_ID = "powderline-route-endpoints";
+    private static final String ROUTE_ENDPOINTS_DOT_LAYER_ID = "powderline-route-endpoints-dot";
+    private static final String ROUTE_ENDPOINTS_LABEL_LAYER_ID = "powderline-route-endpoints-label";
+    private static final String ROUTE_START_IMAGE_ID = "powderline-route-start-label";
+    private static final String ROUTE_END_IMAGE_ID = "powderline-route-end-label";
     private static final String CURSOR_SOURCE_ID = "powderline-profile-cursor";
     private static final String CURSOR_LAYER_ID = "powderline-profile-cursor";
     private static final String CURSOR_IMAGE_ID = "powderline-profile-cross";
     private static final double TERRAIN_EXAGGERATION = 1.5; // same value as setStyleTerrain below
     private String embeddedRouteJson = "{\"type\":\"FeatureCollection\",\"features\":[]}";
+    private double[] embeddedRouteStart = null;
+    private double[] embeddedRouteEnd = null;
     private double[] embeddedCursor = null;
     private boolean embeddedCameraEventPending = false;
     private int embeddedLoadingErrorCount = 0;
@@ -567,9 +575,23 @@ public class OfflineMapTestPlugin extends Plugin {
     @PluginMethod
     public void setEmbeddedRoute(PluginCall call) {
         final String json = call.getString("geojson", "");
+        final Double startLng = call.getDouble("startLng");
+        final Double startLat = call.getDouble("startLat");
+        final Double endLng = call.getDouble("endLng");
+        final Double endLat = call.getDouble("endLat");
         mainHandler.post(() -> {
             if (!TextUtils.isEmpty(json)) embeddedRouteJson = json;
+            if (startLng != null && startLat != null && endLng != null && endLat != null
+                && Double.isFinite(startLng) && Double.isFinite(startLat)
+                && Double.isFinite(endLng) && Double.isFinite(endLat)) {
+                embeddedRouteStart = new double[]{startLng, startLat};
+                embeddedRouteEnd = new double[]{endLng, endLat};
+            } else {
+                embeddedRouteStart = null;
+                embeddedRouteEnd = null;
+            }
             setSourceData(ROUTE_SOURCE_ID, embeddedRouteJson);
+            setSourceData(ROUTE_ENDPOINTS_SOURCE_ID, routeEndpointsGeoJson());
             call.resolve();
         });
     }
@@ -631,9 +653,6 @@ public class OfflineMapTestPlugin extends Plugin {
             }
         });
     }
-
-    // Native START / END flags (not implemented yet): an endpoint GeoJSON source + layers would be added in
-    // ensureEmbeddedOverlays(), which already re-adds the route overlays after every style load (all base styles).
 
     /**
      * Compass modes on the plain native map: change the bearing only (bearing, duration ms, default 600).
@@ -705,7 +724,10 @@ public class OfflineMapTestPlugin extends Plugin {
                     duration = 900L;
                 } else { ret.put("ok", false); call.resolve(ret); return; }
                 cameraCommandUntil = System.currentTimeMillis() + duration;
-                CameraAnimationsUtils.getCamera(mapView).easeTo(b.build(), new MapAnimationOptions.Builder().duration(duration).build(), null);
+                CameraOptions target = b.build();
+                // Ride Follow: the zoom the user asked for (+/- / fit) becomes the base zoom.
+                if (rideFollowCamera && target.getZoom() != null) rideFollowZoom = target.getZoom();
+                CameraAnimationsUtils.getCamera(mapView).easeTo(target, new MapAnimationOptions.Builder().duration(duration).build(), null);
                 ret.put("ok", true);
             } catch (Throwable e) {
                 Log.w(TAG, "embeddedCamera(" + cmd + ") failed: " + e.getMessage());
@@ -782,6 +804,7 @@ public class OfflineMapTestPlugin extends Plugin {
                 o.put("zoom", cs.getZoom());
                 o.put("bearing", cs.getBearing());
                 o.put("pitch", cs.getPitch());
+                o.put("center", new JSObject().put("lng", cs.getCenter().longitude()).put("lat", cs.getCenter().latitude()));
                 notifyListeners("embeddedCamera", o);
             }, 100);
         }));
@@ -2755,6 +2778,14 @@ public class OfflineMapTestPlugin extends Plugin {
     private static final String ROUTE_LINE_LAYER = "{\"id\":\"" + ROUTE_LINE_LAYER_ID + "\",\"type\":\"line\",\"source\":\"" + ROUTE_SOURCE_ID + "\","
         + "\"paint\":{\"line-color\":[\"coalesce\",[\"get\",\"color\"],\"#ff0000\"],"
         + "\"line-width\":[\"case\",[\"==\",[\"get\",\"selected\"],true],4,3],\"line-opacity\":1,\"line-emissive-strength\":1}}"; // unlit on 3D terrain
+    private static final String ROUTE_ENDPOINTS_DOT_LAYER = "{\"id\":\"" + ROUTE_ENDPOINTS_DOT_LAYER_ID + "\",\"type\":\"circle\",\"source\":\"" + ROUTE_ENDPOINTS_SOURCE_ID + "\","
+        + "\"paint\":{\"circle-radius\":6,\"circle-color\":[\"match\",[\"get\",\"role\"],\"start\",\"#16a34a\",\"#dc2626\"],"
+        + "\"circle-stroke-color\":\"#ffffff\",\"circle-stroke-width\":2,\"circle-emissive-strength\":1}}";
+    private static final String ROUTE_ENDPOINTS_LABEL_LAYER = "{\"id\":\"" + ROUTE_ENDPOINTS_LABEL_LAYER_ID + "\",\"type\":\"symbol\",\"source\":\"" + ROUTE_ENDPOINTS_SOURCE_ID + "\","
+        // Label drawn as a style image (no glyph download), so START / END text also shows offline on every style pack.
+        + "\"layout\":{\"icon-image\":[\"match\",[\"get\",\"role\"],\"start\",\"" + ROUTE_START_IMAGE_ID + "\",\"" + ROUTE_END_IMAGE_ID + "\"],"
+        + "\"icon-anchor\":\"bottom\",\"icon-offset\":[0,-6],\"icon-allow-overlap\":true,\"icon-ignore-placement\":true},"
+        + "\"paint\":{\"icon-emissive-strength\":1}}";
     private static final String CURSOR_LAYER = "{\"id\":\"" + CURSOR_LAYER_ID + "\",\"type\":\"symbol\",\"source\":\"" + CURSOR_SOURCE_ID + "\","
         + "\"layout\":{\"icon-image\":\"" + CURSOR_IMAGE_ID + "\",\"icon-allow-overlap\":true,\"icon-ignore-placement\":true}}";
     private static final String SKI_TERMINALS_LAYER = "{\"id\":\"powderline-ski-lift-terminals\",\"type\":\"circle\",\"source\":\"" + SKI_TERMINALS_SOURCE_ID + "\","
@@ -2867,6 +2898,15 @@ public class OfflineMapTestPlugin extends Plugin {
             + embeddedCursor[0] + "," + embeddedCursor[1] + "]}}]}";
     }
 
+    private String routeEndpointsGeoJson() {
+        if (embeddedRouteStart == null || embeddedRouteEnd == null) return "{\"type\":\"FeatureCollection\",\"features\":[]}";
+        return "{\"type\":\"FeatureCollection\",\"features\":["
+            + "{\"type\":\"Feature\",\"properties\":{\"role\":\"start\",\"label\":\"START\"},\"geometry\":{\"type\":\"Point\",\"coordinates\":["
+            + embeddedRouteStart[0] + "," + embeddedRouteStart[1] + "]}},"
+            + "{\"type\":\"Feature\",\"properties\":{\"role\":\"end\",\"label\":\"END\"},\"geometry\":{\"type\":\"Point\",\"coordinates\":["
+            + embeddedRouteEnd[0] + "," + embeddedRouteEnd[1] + "]}}]}";
+    }
+
     /** Small yellow cross (same look as the web marker) as a style image. */
     private void addCursorImage(@NonNull Style style) {
         if (style.hasStyleImage(CURSOR_IMAGE_ID)) return;
@@ -2894,18 +2934,56 @@ public class OfflineMapTestPlugin extends Plugin {
         bmp.recycle();
     }
 
-    /** (Re)adds the GPX route + selected-point marker layers on top of everything. */
+    /** White bold START / END text with a role-coloured halo (same look as the web text layer), as a style image. */
+    private void addEndpointLabelImage(@NonNull Style style, String imageId, String label, String haloColor) {
+        if (style.hasStyleImage(imageId)) return;
+        final float scale = 2.0f;
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        p.setTextSize(11f * scale);
+        p.setTextAlign(Paint.Align.CENTER);
+        p.setStrokeJoin(Paint.Join.ROUND);
+        float halo = 2f * scale;
+        Paint.FontMetrics fm = p.getFontMetrics();
+        int w = (int) Math.ceil(p.measureText(label) + halo * 2 + 2);
+        int h = (int) Math.ceil(fm.descent - fm.ascent + halo * 2 + 2);
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bmp);
+        float x = w / 2f, y = halo + 1 - fm.ascent;
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(halo * 2);
+        p.setColor(Color.parseColor(haloColor));
+        canvas.drawText(label, x, y, p);
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(Color.WHITE);
+        canvas.drawText(label, x, y, p);
+        ByteBuffer buffer = ByteBuffer.allocateDirect(bmp.getByteCount());
+        bmp.copyPixelsToBuffer(buffer);
+        buffer.rewind();
+        Image image = new Image(w, h, new DataRef(buffer));
+        Expected<String, com.mapbox.bindgen.None> res = style.addStyleImage(
+            imageId, scale, image, false, new ArrayList<ImageStretches>(), new ArrayList<ImageStretches>(), (ImageContent) null);
+        if (res.isError()) Log.w(TAG, "endpoint label image error: " + res.getError());
+        bmp.recycle();
+    }
+
+    /** (Re)adds the route, its endpoints, and selected-point marker above the ski layers. */
     private void ensureEmbeddedOverlays(@NonNull Style style) {
         try {
-            for (String id : new String[]{CURSOR_LAYER_ID, ROUTE_LINE_LAYER_ID, ROUTE_GLOW_LAYER_ID}) {
+            for (String id : new String[]{CURSOR_LAYER_ID, ROUTE_ENDPOINTS_LABEL_LAYER_ID, ROUTE_ENDPOINTS_DOT_LAYER_ID, ROUTE_LINE_LAYER_ID, ROUTE_GLOW_LAYER_ID}) {
                 if (style.styleLayerExists(id)) style.removeStyleLayer(id);
             }
-            for (String id : new String[]{CURSOR_SOURCE_ID, ROUTE_SOURCE_ID}) {
+            for (String id : new String[]{CURSOR_SOURCE_ID, ROUTE_ENDPOINTS_SOURCE_ID, ROUTE_SOURCE_ID}) {
                 if (style.styleSourceExists(id)) style.removeStyleSource(id);
             }
             addGeoJsonSource(style, ROUTE_SOURCE_ID, embeddedRouteJson);
             addSkiLayer(style, ROUTE_GLOW_LAYER);
             addSkiLayer(style, ROUTE_LINE_LAYER);
+            addGeoJsonSource(style, ROUTE_ENDPOINTS_SOURCE_ID, routeEndpointsGeoJson());
+            addSkiLayer(style, ROUTE_ENDPOINTS_DOT_LAYER);
+            addEndpointLabelImage(style, ROUTE_START_IMAGE_ID, "START", "#15803d");
+            addEndpointLabelImage(style, ROUTE_END_IMAGE_ID, "END", "#b91c1c");
+            addSkiLayer(style, ROUTE_ENDPOINTS_LABEL_LAYER);
             addCursorImage(style);
             addGeoJsonSource(style, CURSOR_SOURCE_ID, cursorGeoJson());
             addSkiLayer(style, CURSOR_LAYER);
@@ -3088,6 +3166,7 @@ public class OfflineMapTestPlugin extends Plugin {
                 // Ride On route follow: the pan only pauses the ride camera (JS followPaused); the plain GPS follow
                 // state (gpsFollowActive) is left untouched. Without route follow: unchanged.
                 if (!pinch && !rideFollowCamera) stopGpsFollow();
+                if (pinch) captureRideFollowZoomAfterGesture(); // user pinch: new Ride Follow base zoom
                 // Reported only for a real pan (judged at the end): a pinch zoom never pauses the JS ride follow.
                 if (!pinch) emitCameraGesture("move");
             }
@@ -3108,7 +3187,7 @@ public class OfflineMapTestPlugin extends Plugin {
         gestures.addOnScaleListener(new OnScaleListener() {
             @Override public void onScaleBegin(@NonNull StandardScaleGestureDetector detector) { emitCameraGesture("zoom"); }
             @Override public void onScale(@NonNull StandardScaleGestureDetector detector) {}
-            @Override public void onScaleEnd(@NonNull StandardScaleGestureDetector detector) {}
+            @Override public void onScaleEnd(@NonNull StandardScaleGestureDetector detector) { captureRideFollowZoomAfterGesture(); }
         });
         gpsGesturesHooked = true;
     }
@@ -3458,6 +3537,18 @@ public class OfflineMapTestPlugin extends Plugin {
      * active=false hands the camera back to the plain GPS follow. The position sits ~25% below the screen centre
      * (top padding = half the height). Only the camera is touched: no style / source / layer / terrain work.
      */
+    /**
+     * User zoom gesture ended (pinch / scale / double-tap) during Ride Follow: its zoom becomes the base zoom. Read now and
+     * once more after the SDK's scale-velocity / double-tap animation (~400 ms) has settled.
+     */
+    private void captureRideFollowZoomAfterGesture() {
+        Runnable read = () -> {
+            if (rideFollowCamera && mapView != null) rideFollowZoom = mapView.getMapboxMap().getCameraState().getZoom();
+        };
+        read.run();
+        mainHandler.postDelayed(read, 400L);
+    }
+
     @PluginMethod
     public void setRideFollowCamera(PluginCall call) {
         final boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));
@@ -3472,6 +3563,7 @@ public class OfflineMapTestPlugin extends Plugin {
                 restartLocationUpdates();
             }
             rideFollowCamera = active;
+            if (!active) rideFollowZoom = Double.NaN; // Ride Follow ended: the next start takes the zoom on screen
             JSObject ret = new JSObject();
             boolean moved = false;
             try {
@@ -3480,10 +3572,13 @@ public class OfflineMapTestPlugin extends Plugin {
                     int h = mapView.getHeight();
                     if (h > 0) {
                         // Top padding 0.28 × the real MapView height → the rider ~14% below centre (same as online).
-                        // No zoom in the options: the user's zoom is kept.
+                        // Base zoom (set once at start, changed only by user zoom input), so terrain/camera
+                        // constraints cannot accumulate a zoom change.
+                        if (Double.isNaN(rideFollowZoom)) rideFollowZoom = mapView.getMapboxMap().getCameraState().getZoom();
                         CameraOptions.Builder b = new CameraOptions.Builder()
                             .center(Point.fromLngLat(lng, lat))
-                            .padding(new EdgeInsets(h * 0.28, 0.0, 0.0, 0.0));
+                            .padding(new EdgeInsets(h * 0.28, 0.0, 0.0, 0.0))
+                            .zoom(rideFollowZoom);
                         if (bearing != null && !bearing.isNaN()) b.bearing(bearing);
                         // ~2 s native fix interval: a 1.5 s ease keeps the motion continuous without lagging behind.
                         CameraAnimationsUtils.getCamera(mapView).easeTo(b.build(), new MapAnimationOptions.Builder().duration(1500L).build(), null);

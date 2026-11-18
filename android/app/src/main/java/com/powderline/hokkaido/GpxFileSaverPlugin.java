@@ -52,7 +52,12 @@ public class GpxFileSaverPlugin extends Plugin {
 
     @ActivityCallback
     private void onCreateDocumentResult(PluginCall call, ActivityResult result) {
-        if (call == null) return;
+        if (call == null) {
+            Uri orphan = result.getData() != null ? result.getData().getData() : null;
+            Log.e(TAG, "SAF result has no saved plugin call");
+            if (orphan != null) deletePartialDocument(orphan);
+            return;
+        }
         Intent data = result.getData();
         Uri uri = data != null ? data.getData() : null;
         if (result.getResultCode() != Activity.RESULT_OK || uri == null) {
@@ -64,13 +69,21 @@ public class GpxFileSaverPlugin extends Plugin {
             return;
         }
         final String content = call.getString("content", "");
+        Log.i(TAG, "SAF write ready contentLength=" + content.length());
+        if (TextUtils.isEmpty(content)) {
+            deletePartialDocument(uri);
+            call.reject("저장할 파일 내용이 없습니다.", "EMPTY_CONTENT");
+            bridge.releaseCall(call);
+            return;
+        }
         new Thread(() -> {
             try {
-                writeUtf8(uri, content);
+                int bytesWritten = writeUtf8(uri, content);
                 JSObject ret = new JSObject();
                 ret.put("saved", true);
                 ret.put("cancelled", false);
                 ret.put("uri", uri.toString());
+                ret.put("bytesWritten", bytesWritten);
                 call.resolve(ret);
             } catch (Exception e) {
                 Log.e(TAG, "GPX write failed", e);
@@ -82,7 +95,7 @@ public class GpxFileSaverPlugin extends Plugin {
         }, "GpxFileSaverWrite").start();
     }
 
-    private void writeUtf8(Uri uri, String content) throws Exception {
+    private int writeUtf8(Uri uri, String content) throws Exception {
         ContentResolver resolver = getContext().getContentResolver();
         OutputStream out;
         try {
@@ -91,10 +104,13 @@ public class GpxFileSaverPlugin extends Plugin {
             out = resolver.openOutputStream(uri, "w");
         }
         if (out == null) throw new FileNotFoundException("출력 스트림을 열 수 없습니다.");
+        byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+        Log.i(TAG, "SAF stream write contentLength=" + content.length() + " utf8Bytes=" + bytes.length);
         try (OutputStream stream = out) {
-            stream.write(content.getBytes(StandardCharsets.UTF_8));
+            stream.write(bytes);
             stream.flush();
         }
+        return bytes.length;
     }
 
     private void deletePartialDocument(Uri uri) {

@@ -417,6 +417,7 @@
     routeFollowStartedOnce: false, routeFollowRouteKey: null, // route follow really started once (for this route) → restart allowed
     routeFollowCompleted: false // reached the route end: route follow ended automatically, no off-route checks after it
   };
+  let gpxFileSaverPlugin = null; // cache for getGpxFileSaverPlugin(); declared early to avoid a TDZ error
   // routeFollowPaused = the user paused route follow itself (button); followPaused = camera-only pause (map gesture).
   function startRideOnSession(source) {
     if (rideOnSession.active) return; // same session: keep its state (re-entering the ride screen does not reset it)
@@ -428,7 +429,7 @@
     });
     resetRideApproach();
     resetRideProgress();
-    renderRouteFollowControls();
+      renderRouteFollowControls();
     unlockRideAlertAudio(); // Ride On tap = user gesture: the approach sound may play before any other tap
     // Position tracking for the 30 m approach check (blue dot only: no camera move, no GPS recording). center:false
     // keeps the camera as is; triggerMyLocationGps itself does nothing when a watch is already running.
@@ -681,7 +682,18 @@ const mapboxToken=await loadMapboxToken();
 const hasMapboxToken=mapboxToken.startsWith('pk.');
 const tokenFallbackStyle={version:8,sources:{},layers:[{id:'token-background',type:'background',paint:{'background-color':'#aebcb3'}}]};
 mapboxgl.accessToken=mapboxToken;
-const map=new mapboxgl.Map({container:'map',style:hasMapboxToken?MAPBOX_STYLES.satellite:tokenFallbackStyle,center:regions.furano.center,zoom:regions.furano.zoom,bearing:regions.furano.bearing,pitch:regions.furano.pitch,antialias:true,maxPitch:75});
+// Initial region: the last region the user picked (if still valid), otherwise the built-in Furano fallback.
+const initialRegionId = (() => {
+  const saved = readLastRegion();
+  const select = document.getElementById('region');
+  if (saved && regions[saved] && !regions[saved].custom && select && [...select.options].some(option => option.value === saved)) {
+    select.value = saved;
+    return saved;
+  }
+  return 'furano';
+})();
+const initialRegion = regions[initialRegionId] || regions.furano;
+const map=new mapboxgl.Map({container:'map',style:hasMapboxToken?MAPBOX_STYLES.satellite:tokenFallbackStyle,center:initialRegion.center,zoom:initialRegion.zoom,bearing:initialRegion.bearing,pitch:initialRegion.pitch,antialias:true,maxPitch:75});
 map.addControl(new mapboxgl.NavigationControl({showCompass:true}), 'bottom-right');
 const geolocateControl = new mapboxgl.GeolocateControl({
   positionOptions: { enableHighAccuracy: true },
@@ -798,8 +810,8 @@ if (typeof geolocateControl._onDeviceOrientation === 'function') {
 }
 // My-location marker 2D → 3D by pitch: the marker is screen-aligned (mapbox only translates it, still at the GPS point on
 // terrain) and the app tilts the dot + sector itself: tilt = pitch·(1 − smoothstep(30°, 60°, pitch)), so ≤30° matches the old
-// ground-flat look and ≥60° faces the screen. The sector's screen direction comes from map.project() of the heading 5 m
-// ahead, so map bearing/pitch are applied exactly once. The accuracy circle marker stays ground-aligned (untouched).
+// ground-flat look and ≥60° faces the screen. The sector's screen direction is heading − map bearing (pitch / terrain
+// never change it). The accuracy circle marker stays ground-aligned (untouched).
 const userLocationTilt = { prepared: null };
 function updateUserLocationTilt() {
   const marker = geolocateControl._userLocationDotMarker;
@@ -820,15 +832,9 @@ function updateUserLocationTilt() {
   const heading = geolocateControl._heading; // compass + screen rotation + manual offset (set by the wrapper above)
   const lngLat = marker.getLngLat();
   if (typeof heading !== 'number' || !lngLat) { sector.style.transform = ''; return; }
-  const rad = heading * Math.PI / 180;
-  const ahead = [
-    lngLat.lng + (5 * Math.sin(rad)) / (111320 * Math.cos(lngLat.lat * Math.PI / 180)),
-    lngLat.lat + (5 * Math.cos(rad)) / 111320
-  ];
-  const a = map.project(lngLat), b = map.project(ahead);
-  const dx = b.x - a.x, dy = b.y - a.y;
-  // Screen angle S of the heading (clockwise from screen-up); fallback when the 5 m step projects to ~0 px.
-  const screenAngle = Math.hypot(dx, dy) > 0.01 ? Math.atan2(dx, -dy) : (heading - map.getBearing()) * Math.PI / 180;
+  // Screen angle S of the heading (clockwise from screen-up) = final heading − map bearing: the phone's compass
+  // direction, independent of pitch / perspective / terrain (a projected ground step would widen with pitch).
+  const screenAngle = normalizeCompass(heading - map.getBearing()) * Math.PI / 180;
   // In a plane tilted by rotateX(t), angle φ shows on screen as atan2(sin φ, cos φ·cos t); solve for S.
   const tiltRad = tilt * Math.PI / 180;
   const phi = Math.atan2(Math.sin(screenAngle) * Math.cos(tiltRad), Math.cos(screenAngle)) * 180 / Math.PI;
@@ -1052,6 +1058,7 @@ function centerOnceDuringRoutePause() {
 // End route follow only (Ride On session, GPS and the selected route stay).
 function endRouteFollow() {
   Object.assign(rideOnSession, { routeFollowActive: false, routeFollowPaused: false, followPaused: false, routePrompted: true });
+  rideFollowCam.zoom = null; // route follow ended: the next start takes the zoom on screen
   resetRideOffRoute();
   syncNativeRideFollow(); // native: active=false → plain GPS follow again
   renderRouteFollowControls();
@@ -1157,7 +1164,8 @@ document.getElementById('routeFollowBeginBtn')?.addEventListener('click', () => 
 const RIDE_FOLLOW_PITCH = 54, RIDE_FOLLOW_OFFSET = 0.14, RIDE_FOLLOW_DURATION = 600;
 const RIDE_COURSE_MIN_SPEED = 2, RIDE_COURSE_MIN_MOVE = 12, RIDE_COURSE_MAX_ACCURACY = 30;
 const RIDE_BEARING_DEADBAND = 5, RIDE_BEARING_GAIN = 0.3;
-const rideFollowCam = { bearing: null, anchor: null, lastFix: null, ownEaseUntil: 0 };
+// zoom: Ride Follow base zoom (set at start, changed only by user zoom input), so terrain/camera constraints cannot accumulate.
+const rideFollowCam = { bearing: null, anchor: null, lastFix: null, ownEaseUntil: 0, zoom: null };
 // ---- Camera bearing mode (compass button): bearing only; zoom / pitch / follow / 64% position are never touched here.
 // north = 0°, free = the user's own bearing (never overwritten by follow), navigation = rideFollowCam.bearing (GPS course /
 // 12 m movement direction, unchanged maths). Session only: the app always starts in free.
@@ -1290,6 +1298,8 @@ function applyRideFollowCamera(coords, { pitch = null, fromFix = false } = {}) {
   const bearing = cameraModeBearing(); // north 0 / navigation rideFollowCam.bearing / free: untouched
   if (bearing !== null) options.bearing = bearing;
   if (pitch !== null) options.pitch = pitch;
+  if (!Number.isFinite(rideFollowCam.zoom)) rideFollowCam.zoom = map.getZoom(); // only when no base zoom yet
+  options.zoom = rideFollowCam.zoom; // base zoom, never the constraint-changed current zoom
   rideFollowCam.ownEaseUntil = Date.now() + duration + 50;
   map.easeTo(options);
 }
@@ -1297,6 +1307,7 @@ function startRideFollowCamera() {
   rideFollowCam.bearing = null;
   rideFollowCam.anchor = null;
   rideNavBearing.value = null; // navigation route tangent starts again from this follow
+  rideFollowCam.zoom = map.getZoom(); // route follow (re)start: the zoom on screen becomes the base zoom
   const coords = rideFollowCam.lastFix || geolocateControl._lastKnownPosition?.coords;
   if (coords) updateRideFollowBearing(coords);
   rideFollowCam.ownEaseUntil = 0;
@@ -1743,6 +1754,10 @@ function handleRideLocationFix(coords, timestamp, source) {
     maybeAutoResumeAfterGesture(coords); // on the route: resume after a look-around once the rider moves again
   }
 }
+map.on('zoomend', (e) => {
+  // User zoom (pinch / double-click / wheel carry originalEvent): new Ride Follow base zoom. Constraint changes never do.
+  if (e?.originalEvent && isRideRouteFollowing() && !state.nativeMap?.active) rideFollowCam.zoom = map.getZoom();
+});
 // Native offline map route-follow camera: JS sends position + the stabilised bearing above (no Java copy of the
 // bearing logic). While route follow is on, the native plain GPS follow is switched off (also during a pause).
 let nativeRideFollowSent = null;
@@ -2626,7 +2641,7 @@ function isMyPartyLocationSharingEnabled(party = state.currentParty) {
   return party.location_sharing_enabled !== false;
 }
 
-function selectMyParty(party) {
+function selectMyParty(party, { skipGps = false } = {}) {
   const previousPartyId = state.currentParty?.id;
   const routeIds = Array.isArray(party.route_ids) ? party.route_ids.filter(Boolean) : [];
   const sharedCourses = resolvePartySharedCourses(party);
@@ -2642,7 +2657,11 @@ function selectMyParty(party) {
     ? party.members.map(member => normalizePartyMemberRow(member, gpsIntervalSeconds)).filter(Boolean)
     : [];
   const myMember = members.find(member => member.user_id === state.session?.user?.id);
+  // Member-side course pick (independent of ACTIVE); restored from the party cache.
+  const cachedSelectedId = readPartyCacheEntry(state.session?.user?.id, party.id)?.selectedPartyRouteId;
+  const selectedPartyRouteId = cachedSelectedId && sharedCourses.some(route => route.id === cachedSelectedId) ? cachedSelectedId : null;
   state.currentParty = {
+    selectedPartyRouteId,
     ...party,
     gps_interval_seconds: gpsIntervalSeconds,
     members,
@@ -2653,6 +2672,7 @@ function selectMyParty(party) {
     selectedRouteId:sharedCourse?.id || routeId || '',
     sharedCourse
   };
+  if (skipGps) return;
   if (typeof syncPartyGpsRuntimeForCurrentParty === 'function') {
     syncPartyGpsRuntimeForCurrentParty();
   }
@@ -2681,6 +2701,87 @@ async function fetchMyPartyMemberRows(client, partyId = null) {
   };
 }
 
+// ---- Party shared-route cache (separate from personal course cache) ----
+// Key: powderline.partySharedRoutes.v1.<userId> → { parties: { [partyId]: entry } }
+function partySharedCacheKey(userId) { return `powderline.partySharedRoutes.v1.${userId}`; }
+function readPartySharedCache(userId) {
+  if (!userId) return {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(partySharedCacheKey(userId)) || '{}');
+    return parsed && typeof parsed.parties === 'object' && parsed.parties ? parsed.parties : {};
+  } catch { return {}; }
+}
+function writePartySharedCache(userId, parties) {
+  if (!userId) return;
+  try { localStorage.setItem(partySharedCacheKey(userId), JSON.stringify({ parties })); } catch (error) { console.warn('Party cache write failed:', error); }
+}
+function readPartyCacheEntry(userId, partyId) {
+  return partyId ? readPartySharedCache(userId)[partyId] || null : null;
+}
+function writePartyCacheEntry(userId, entry) {
+  if (!userId || !entry?.partyId) return;
+  const parties = readPartySharedCache(userId);
+  parties[entry.partyId] = { ...entry, updatedAt: new Date().toISOString() };
+  writePartySharedCache(userId, parties);
+}
+function deletePartyCacheEntry(userId, partyId) {
+  if (!userId || !partyId) return;
+  const parties = readPartySharedCache(userId);
+  if (!(partyId in parties)) return;
+  delete parties[partyId];
+  writePartySharedCache(userId, parties);
+}
+function partyCacheDisplayInfo(party) {
+  const { id, leader_id, name, region, max_members, invite_code, location_sharing_enabled, gps_interval_seconds, created_at } = party || {};
+  return { id, leader_id, name, region, max_members, invite_code, location_sharing_enabled, gps_interval_seconds, created_at };
+}
+function partyCourseToCacheRoute(course) {
+  return { routeId: course.id, name: course.name, region: course.region, points: course.points, distanceKm: course.km, routeOrder: course.order };
+}
+function partyCacheRouteToCourse(route, activeRouteId) {
+  return normalizePartyRouteRow({
+    route_id: route?.routeId, name: route?.name, region: route?.region, points: route?.points,
+    distance_km: route?.distanceKm, route_order: route?.routeOrder, is_active: Boolean(activeRouteId) && route?.routeId === activeRouteId
+  });
+}
+function partyCacheEntryCourses(entry) {
+  return (Array.isArray(entry?.routes) ? entry.routes : [])
+    .map(route => partyCacheRouteToCourse(route, entry.activeRouteId)).filter(Boolean)
+    .sort((a, b) => a.order - b.order);
+}
+// Only call with a successful server result: replaces the party's cached routes, keeps a still-valid selection.
+function savePartyCacheFromServer(userId, party, courses, activeRouteId) {
+  if (!userId || !party?.id) return;
+  const previous = readPartyCacheEntry(userId, party.id);
+  const routes = (courses || []).map(partyCourseToCacheRoute);
+  const selected = previous?.selectedPartyRouteId;
+  writePartyCacheEntry(userId, {
+    partyId: party.id,
+    party: partyCacheDisplayInfo(party),
+    routes,
+    activeRouteId: activeRouteId && routes.some(route => route.routeId === activeRouteId) ? activeRouteId : null,
+    selectedPartyRouteId: selected && routes.some(route => route.routeId === selected) ? selected : null
+  });
+}
+function partyFromCacheEntry(entry) {
+  const courses = partyCacheEntryCourses(entry);
+  return {
+    ...(entry.party || {}), id: entry.partyId,
+    members: [], partyRoutes: courses, route_ids: courses.map(course => course.id),
+    active_route_id: entry.activeRouteId || null, fromPartyCache: true
+  };
+}
+// Offline / failed sync: show cached parties without touching party GPS sharing.
+function restorePartiesFromCache(userId, previousPartyId) {
+  const entries = Object.values(readPartySharedCache(userId)).filter(entry => entry?.partyId);
+  state.myParties = entries
+    .sort((a, b) => String(b.party?.created_at || '').localeCompare(String(a.party?.created_at || '')))
+    .map(partyFromCacheEntry);
+  const party = state.myParties.find(item => item.id === previousPartyId) || state.myParties[0];
+  if (party) selectMyParty(party, { skipGps: true });
+  return state.myParties.length > 0;
+}
+
 async function loadMyParties({selectedId} = {}) {
   const client = supabaseClient;
   const userId = state.session?.user?.id;
@@ -2700,6 +2801,7 @@ async function loadMyParties({selectedId} = {}) {
       .order('created_at', {ascending:false}));
   } catch (requestError) {
     console.warn('loadMyParties error:', requestError);
+    if (client === supabaseClient && state.session?.user?.id === userId) restorePartiesFromCache(userId, previousPartyId);
     renderPartyMain();
     setPartyCreateAvailability();
     return;
@@ -2707,6 +2809,7 @@ async function loadMyParties({selectedId} = {}) {
   if (client !== supabaseClient || state.session?.user?.id !== userId) return;
   if (error) {
     if (!['42P01', '42703', 'PGRST205'].includes(error.code)) console.warn('loadMyParties error:', error);
+    restorePartiesFromCache(userId, previousPartyId);
     renderPartyMain();
     setPartyCreateAvailability();
     return;
@@ -2721,12 +2824,14 @@ async function loadMyParties({selectedId} = {}) {
   }
   if (client !== supabaseClient || state.session?.user?.id !== userId) return;
   let routeRows = [];
+  let routesSynced = false;
   try {
     const {data:rows, error:routesError} = await client.rpc('list_my_party_routes');
     if (routesError) {
       if (!['PGRST202', '42883'].includes(routesError.code)) console.warn('loadMyParties routes error:', routesError);
     } else {
       routeRows = rows || [];
+      routesSynced = true;
     }
   } catch (routesError) {
     console.warn('loadMyParties routes error:', routesError);
@@ -2751,17 +2856,44 @@ async function loadMyParties({selectedId} = {}) {
     routesByParty.get(row.party_id).push(normalized);
   }
   state.partySchemaReady = true;
-  state.myParties = (data || []).map(party => ({
-    ...party,
-    gps_interval_seconds: intervalByParty.get(party.id) || sanitizePartyGpsInterval(party.gps_interval_seconds),
-    members:membersByParty.get(party.id) || [],
-    partyRoutes:routesByParty.get(party.id) || []
-  }));
+  // Party cache reconcile: the parties query succeeded, so it is the authoritative list of my parties.
+  const cachedParties = readPartySharedCache(userId);
+  const serverPartyIds = new Set((data || []).map(party => party.id));
+  for (const cachedId of Object.keys(cachedParties)) {
+    if (!serverPartyIds.has(cachedId)) deletePartyCacheEntry(userId, cachedId); // disbanded / left / removed
+  }
+  state.myParties = (data || []).map(party => {
+    const serverRoutes = routesByParty.get(party.id) || [];
+    const cachedEntry = cachedParties[party.id];
+    const merged = {
+      ...party,
+      gps_interval_seconds: intervalByParty.get(party.id) || sanitizePartyGpsInterval(party.gps_interval_seconds),
+      members:membersByParty.get(party.id) || [],
+      // Routes RPC failed: keep the cached shared courses instead of treating it as an empty list.
+      partyRoutes: routesSynced ? serverRoutes : (cachedEntry ? partyCacheEntryCourses(cachedEntry) : [])
+    };
+    if (routesSynced) {
+      const activeRouteId = serverRoutes.find(route => route.isActive)?.id || party.active_route_id || null;
+      savePartyCacheFromServer(userId, merged, serverRoutes.slice().sort((a, b) => a.order - b.order), activeRouteId);
+    } else if (!merged.active_route_id && cachedEntry?.activeRouteId) {
+      merged.active_route_id = cachedEntry.activeRouteId;
+    }
+    return merged;
+  });
   const party = state.myParties.find(item => item.id === previousPartyId) || state.myParties[0];
   if (party) selectMyParty(party);
   else if (typeof stopPartyGpsRuntime === 'function') stopPartyGpsRuntime({ clearMarkers: true });
   renderPartyMain();
   setPartyCreateAvailability();
+}
+
+// Last region the user picked ('powderline.lastRegion'); function-scoped literal avoids TDZ on early calls.
+function readLastRegion() {
+  try { return localStorage.getItem('powderline.lastRegion') || ''; } catch { return ''; }
+}
+function saveLastRegion(id) {
+  if (!id || !regions[id] || regions[id].custom) return;
+  try { localStorage.setItem('powderline.lastRegion', id); } catch {}
 }
 
 function syncRegionSelectors() {
@@ -2770,19 +2902,37 @@ function syncRegionSelectors() {
     .sort((a, b) => (a[1].sortOrder ?? 999) - (b[1].sortOrder ?? 999));
   const skiSuffix = status => status === 'pending' || status === 'processing' ? ' · 데이터 준비 중' : status === 'failed' ? ' · 데이터 준비 실패' : '';
   const options = active.map(([id, details]) => `<option value="${escapeHtml(id)}">${escapeHtml(details.label + skiSuffix(details.skiDataStatus))}</option>`).join('');
-  const fallback = active.some(([id]) => id === 'furano') ? 'furano' : active[0]?.[0] || '';
+  const lastRegion = readLastRegion();
+  const lastRegionValid = Boolean(lastRegion) && active.some(([id]) => id === lastRegion);
+  // Saved last region beats the Furano fallback; Furano is only the first-run (no saved value) fallback.
+  const fallback = lastRegionValid ? lastRegion
+    : active.some(([id]) => id === 'furano') ? 'furano' : active[0]?.[0] || '';
+  // First sync where the saved region is available: start every region selector on it (not just home).
+  const restoreLastRegion = lastRegionValid && !syncRegionSelectors.lastRegionRestored;
+  const regionBefore = $('#region')?.value;
   for (const id of ['region', 'mobileRegionSelect', 'homeRegionSelect', 'rideRegionSelect', 'partyCreateRegion']) {
     const select = $(`#${id}`);
     if (!select) continue;
     const previous = select.value;
+    if (id === 'homeRegionSelect') {
+      // Home: no auto-pick. Keep current choice, else restore the last saved region, else show placeholder.
+      select.innerHTML = `<option value="">지역을 선택하세요</option>${options}`;
+      const has = value => value && [...select.options].some(option => option.value === value);
+      select.value = has(previous) ? previous : has(lastRegion) ? lastRegion : '';
+      continue;
+    }
     select.innerHTML = options;
     if (id === 'region' && regions[previous]?.custom) {
       const customOption = new Option(regions[previous].label, previous);
       customOption.dataset.courseCustom = 'true';
       select.add(customOption);
     }
-    select.value = [...select.options].some(option => option.value === previous) ? previous : fallback;
+    select.value = restoreLastRegion && id !== 'partyCreateRegion' ? lastRegion
+      : [...select.options].some(option => option.value === previous) ? previous : fallback;
   }
+  if (!lastRegion || lastRegionValid) syncRegionSelectors.lastRegionRestored = true;
+  // Saved region only known from the server catalog (not in the static HTML options): move the app state there once.
+  if (restoreLastRegion && regionBefore && regionBefore !== lastRegion) $('#region')?.dispatchEvent(new Event('change'));
   renderMobileCourseRegions();
   renderMobileHome();
   // PC course folders use region display names; refresh them when the catalog (labels) changes.
@@ -2929,6 +3079,11 @@ function activateOfflineAccess(client, error) {
   state.session = offlineAccessActive ? session : null;
   state.profile = offlineAccessActive ? profile : null;
   useLocalRoutes();
+  if (offlineAccessActive && session?.user?.id) {
+    restorePartiesFromCache(session.user.id, state.currentParty?.id);
+    renderPartyMain();
+    setPartyCreateAvailability();
+  }
   authInitializationComplete = true;
   updateAuthUi(offlineAccessActive ? '오프라인 모드 · 로컬 기능만 사용할 수 있습니다.' : (error?.message || '온라인 인증이 필요합니다.'));
   if (offlineAccessActive) scheduleOfflineRevalidation();
@@ -3007,7 +3162,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       gpsRecording.initialized=false;
       if (event === 'SIGNED_OUT') {
         clearOfflineAccessGrant(previousUserId);
-        if (previousUserId) { try { localStorage.removeItem(CLOUD_ROUTES_CACHE_PREFIX + previousUserId); } catch { } }
+        if (previousUserId) { try { localStorage.removeItem(CLOUD_ROUTES_CACHE_PREFIX + previousUserId); localStorage.removeItem(partySharedCacheKey(previousUserId)); } catch { } }
       }
       onlineAuthVerified=false;
       state.profile=null;
@@ -4227,13 +4382,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (status) status.textContent = text;
   }
 
-  // PC web only: START at state.points[0], END at the last point while the active course has >= 2 points; empty otherwise
-  // (mobile, cleared course). Called from render() (create / select / GPX / edit / cut / undo / redo / clear / style load).
+  // START at state.points[0], END at the last point while the active course has >= 2 points; empty otherwise.
+  // Called from render() (create / select / GPX / edit / cut / undo / redo / clear / style load).
   function updateRouteEndpoints() {
     const source = map.getSource('route-endpoints');
     if (!source) return;
     const pts = state.points;
-    const show = document.body.dataset.pcWeb === 'true' && Array.isArray(pts) && pts.length >= 2;
+    const show = Array.isArray(pts) && pts.length >= 2;
     const point = (p, role, label) => ({ type: 'Feature', properties: { role, label }, geometry: { type: 'Point', coordinates: [p.lng ?? p[0], p.lat ?? p[1]] } });
     source.setData(show ? { type: 'FeatureCollection', features: [point(pts[0], 'start', 'START'), point(pts[pts.length - 1], 'end', 'END')] } : emptyCollection);
   }
@@ -5750,7 +5905,6 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     ].join('\n');
   }
 
-  let gpxFileSaverPlugin = null;
   function getGpxFileSaverPlugin() {
     const capacitor = window.Capacitor;
     if (capacitor?.getPlatform?.() !== 'android') return null;
@@ -6653,6 +6807,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       mobileRegion.value = $('#region').value;
       mobileRegion.addEventListener('change', () => {
         $('#region').value = mobileRegion.value;
+        saveLastRegion(mobileRegion.value);
+        const homeRegion = $('#homeRegionSelect');
+        if (homeRegion && homeRegion.value !== mobileRegion.value && [...homeRegion.options].some(o => o.value === mobileRegion.value)) { homeRegion.value = mobileRegion.value; renderMobileHome(); }
         setRegion();
         renderMobileMapCourses({ reset: true });
       });
@@ -6765,8 +6922,16 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       });
     }
 
-    $('#mobileZoomInBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomIn')) map.zoomIn({ duration: 300 }); });
-    $('#mobileZoomOutBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomOut')) map.zoomOut({ duration: 300 }); });
+    // Online +/-: the zoom after the animation becomes the Ride Follow base zoom (button zooms carry no originalEvent).
+    // Target first (a follow ease during the 300 ms keeps it), then the real zoom once this animation ends (listener added
+    // after zoomIn/zoomOut, so a zoomend from the animation it interrupts is not taken).
+    const rideBaseZoomButton = (delta, zoomFn) => {
+      if (isRideRouteFollowing()) rideFollowCam.zoom = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), map.getZoom() + delta));
+      zoomFn();
+      if (isRideRouteFollowing()) map.once('zoomend', () => { if (isRideRouteFollowing()) rideFollowCam.zoom = map.getZoom(); });
+    };
+    $('#mobileZoomInBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomIn')) rideBaseZoomButton(1, () => map.zoomIn({ duration: 300 })); });
+    $('#mobileZoomOutBtn')?.addEventListener('click', () => { if (!nativeCameraCommand('zoomOut')) rideBaseZoomButton(-1, () => map.zoomOut({ duration: 300 })); });
     $('#mobileLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
     $('#mobileInfoBtn')?.addEventListener('click', () => $('#mobileMapProfileToggle')?.click());
     $('#mobileMapRideOnBtn')?.addEventListener('click', () => mobileHomeRideOn('ride', 'map'));
@@ -6889,7 +7054,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     syncPcViewSwitch();
     if (wasActive !== active) renderSaved(); // folder tree (PC) ↔ flat list (others)
     applyPcEditorLabels();
-    updateRouteEndpoints(); // START / END flags are PC-only: show / hide with the layout
+    updateRouteEndpoints();
     requestAnimationFrame(() => { map.resize(); drawProfile(); });
   }
 
@@ -9600,7 +9765,19 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const send = () => {
       const plugin = nativeMapPlugin();
       const data = nativeRouteCollection(nm) || (nm.gpsLine === null && nm.route === null ? { type: 'FeatureCollection', features: [] } : null);
-      if (plugin?.setEmbeddedRoute && data) plugin.setEmbeddedRoute({ geojson: JSON.stringify(data) }).catch(() => { });
+      if (plugin?.setEmbeddedRoute && data) {
+        const points = state.points;
+        const hasEndpoints = Array.isArray(points) && points.length >= 2;
+        const start = hasEndpoints ? points[0] : null;
+        const end = hasEndpoints ? points[points.length - 1] : null;
+        plugin.setEmbeddedRoute({
+          geojson: JSON.stringify(data),
+          startLng: start ? start.lng ?? start[0] : null,
+          startLat: start ? start.lat ?? start[1] : null,
+          endLng: end ? end.lng ?? end[0] : null,
+          endLat: end ? end.lat ?? end[1] : null
+        }).catch(() => { });
+      }
     };
     if (immediate) { send(); return; }
     clearTimeout(nm.routeTimer);
@@ -9752,12 +9929,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (!regionSel || !courseSel) return;
     const srcRegion = $('#region');
     if (!regionSel.options.length && srcRegion) {
-      regionSel.innerHTML = [...srcRegion.options].map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.textContent)}</option>`).join('');
-      regionSel.value = srcRegion.value;
+      regionSel.innerHTML = '<option value="">지역을 선택하세요</option>' + [...srcRegion.options].map(o => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.textContent)}</option>`).join('');
+      const lastRegion = readLastRegion();
+      regionSel.value = [...regionSel.options].some(o => o.value && o.value === lastRegion) ? lastRegion : '';
     }
     const region = regionSel.value;
     const prevCourse = courseSel.value;
-    const courses = state.saved.map((r, i) => ({ r, i })).filter(({ r }) => !r.region || r.region === region);
+    const courses = region ? state.saved.map((r, i) => ({ r, i })).filter(({ r }) => !r.region || r.region === region) : [];
     courseSel.innerHTML = '<option value="">코스 선택 안 함 (지역 지도만 보기)</option>' +
       courses.map(({ r, i }) => `<option value="${i}">${escapeHtml(r.name)} · ${Number(r.km || 0).toFixed(1)} km</option>`).join('');
     if (prevCourse && courses.some(({ i }) => String(i) === prevCourse)) courseSel.value = prevCourse;
@@ -9833,6 +10011,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function mobileHomeRideOn(destinationView = 'ride', rideSource = 'home') {
+    if (rideSource === 'home' && !$('#homeRegionSelect')?.value) { toast('지역을 선택하세요'); return; }
     if (destinationView === 'ride') startRideOnSession(rideSource);
     const regionSel = $('#homeRegionSelect');
     const courseSel = $('#homeCourseSelect');
@@ -9864,7 +10043,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function initMobileHomeInteractions() {
-    $('#homeRegionSelect')?.addEventListener('change', () => {
+    $('#homeRegionSelect')?.addEventListener('change', event => {
+      // Only user picks are remembered (offline auto-pick dispatches a synthetic change).
+      if (event.isTrusted) saveLastRegion($('#homeRegionSelect').value);
       const courseSel = $('#homeCourseSelect');
       if (courseSel) courseSel.value = '';
       renderMobileHome();
@@ -9915,8 +10096,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     $('#rideLocateBtn')?.addEventListener('click', () => triggerMyLocationGps({ center: true }));
     $('#rideInfoBtn')?.addEventListener('click', () => $('#mobileMapProfileToggle')?.click());
     $('#region')?.addEventListener('change', () => {
+      saveLastRegion($('#region').value);
       const regionSel = $('#homeRegionSelect');
-      if (regionSel && regionSel.value !== $('#region').value) { regionSel.value = $('#region').value; renderMobileHome(); }
+      if (regionSel && regionSel.value !== $('#region').value && regions[$('#region').value] && !regions[$('#region').value].custom) { regionSel.value = $('#region').value; renderMobileHome(); }
     });
     renderMobileHome();
   }
@@ -10746,6 +10928,7 @@ async function leaveCurrentParty() {
     const { error } = await client.rpc('leave_party', { p_party_id: partyId });
     if (client !== supabaseClient || state.session?.user?.id !== userId) return;
     if (error) throw error;
+    deletePartyCacheEntry(userId, partyId); // party shared routes only; personal courses untouched
     modal.hidden = true;
     await loadMyParties();
     setMobileAppView('party');
@@ -10783,6 +10966,7 @@ async function disbandCurrentParty() {
     const {error} = await client.rpc('disband_party', {p_party_id:partyId});
     if (client !== supabaseClient || state.session?.user?.id !== userId) return;
     if (error) throw error;
+    deletePartyCacheEntry(userId, partyId); // party shared routes only; personal courses untouched
     modal.hidden = true;
     await loadMyParties();
     setMobileAppView('party');
@@ -11295,13 +11479,19 @@ function renderPartyJoined() {
   if (activeDistEl) {
     activeDistEl.textContent = Number.isFinite(activeCourse?.km) ? `${activeCourse.km.toFixed(1)} km` : '';
   }
+  if (party && party.selectedPartyRouteId && !courses.some(course => course?.id === party.selectedPartyRouteId)) {
+    party.selectedPartyRouteId = null;
+  }
+  const selectedPartyRouteId = party?.selectedPartyRouteId || '';
   $('#partyJoinedCourses').innerHTML = courses.length ? courses.map(course => {
     const isActive = course?.id === activeRouteId || Boolean(course?.isActive && !activeRouteId);
+    const isSelected = Boolean(selectedPartyRouteId) && course?.id === selectedPartyRouteId;
     const activeBadge = isActive ? '<span class="party-joined-course-badge">ACTIVE</span>' : '';
     const dist = Number.isFinite(course?.km) ? `<small>${course.km.toFixed(1)} km</small>` : '';
     const courseIdAttr = escapeHtml(course?.id || '');
-    return `<div class="party-joined-course${isActive ? ' active' : ''}"><div class="party-joined-course-main"><div class="party-joined-course-title"><strong>${escapeHtml(course?.name || '이름 없는 코스')}</strong>${activeBadge}</div>${dist}</div><button type="button" class="party-joined-preview-btn" data-party-preview-id="${courseIdAttr}"><span class="material-symbols-outlined" aria-hidden="true">map</span><span>미리보기</span></button></div>`;
+    return `<div class="party-joined-course${isActive ? ' active' : ''}${isSelected ? ' selected' : ''}" role="radio" aria-checked="${isSelected}" tabindex="0" data-party-select-id="${courseIdAttr}"><span class="material-symbols-outlined party-joined-course-radio" aria-hidden="true">${isSelected ? 'radio_button_checked' : 'radio_button_unchecked'}</span><div class="party-joined-course-main"><div class="party-joined-course-title"><strong>${escapeHtml(course?.name || '이름 없는 코스')}</strong>${activeBadge}</div>${dist}</div><button type="button" class="party-joined-preview-btn" data-party-preview-id="${courseIdAttr}"><span class="material-symbols-outlined" aria-hidden="true">map</span><span>미리보기</span></button></div>`;
   }).join('') : '<p>공유 코스가 없습니다.</p>';
+  updatePartyJoinedRideButtons();
 
   const joinedLocToggle = $('#partyJoinedLocationToggle');
   if (joinedLocToggle) {
@@ -11325,49 +11515,148 @@ function renderPartyJoined() {
     : '<p>표시할 파티원이 없습니다.</p>';
 }
 
+function isRideablePartyCourse(course) {
+  return Boolean(course?.id) && Array.isArray(course.points) && course.points.length >= 2;
+}
+function resolvePartyActiveCourse(party) {
+  const courses = resolvePartySharedCourses(party);
+  return (party?.active_route_id ? courses.find(course => course?.id === party.active_route_id) : null)
+    || courses.find(course => course?.isActive === true) || null;
+}
+function getPartyActiveCourse(party) {
+  const course = resolvePartyActiveCourse(party);
+  return isRideablePartyCourse(course) ? course : null;
+}
+function getPartySelectedCourse(party) {
+  const id = party?.selectedPartyRouteId;
+  const course = id ? resolvePartySharedCourses(party).find(item => item?.id === id) : null;
+  return isRideablePartyCourse(course) ? course : null;
+}
+function updatePartyJoinedRideButtons() {
+  const party = state.currentParty;
+  const activeButton = $('#partyJoinedRideOnBtn');
+  const selectedButton = $('#partyJoinedSelectedRideOnBtn');
+  if (activeButton && !activeButton.hasAttribute('aria-busy')) activeButton.disabled = !getPartyActiveCourse(party);
+  if (selectedButton && !selectedButton.hasAttribute('aria-busy')) selectedButton.disabled = !getPartySelectedCourse(party);
+}
+// Member card pick: local only (cache + state). Never touches the server ACTIVE route.
+function setPartyMemberSelectedRoute(routeId) {
+  const party = state.currentParty;
+  if (!party?.id || !routeId || !resolvePartySharedCourses(party).some(course => course?.id === routeId)) return;
+  party.selectedPartyRouteId = routeId;
+  const userId = state.session?.user?.id;
+  const entry = readPartyCacheEntry(userId, party.id);
+  if (entry) writePartyCacheEntry(userId, { ...entry, selectedPartyRouteId: routeId });
+  renderPartyJoined();
+}
+async function enterPartyCourseRide(course) {
+  if ((navigator.onLine === false || offlineAccessActive || mobileHomeMapMode === 'offline') && window.Capacitor?.getPlatform?.() === 'android') {
+    const plugin = nativeMapPlugin();
+    if (!plugin) throw new Error('이 앱에서는 오프라인 지도를 열 수 없습니다.');
+    const regionId = course.region || state.currentParty?.region;
+    if (!regionId) throw new Error('파티 코스의 지역 정보가 없습니다.');
+    if (!state.nativeMap.active || state.nativeMap.regionId !== regionId) {
+      await ensureLocalOfflineCatalog();
+      const { payload } = createOfflineRegionPayload(regionId, regions[regionId] || {});
+      if (!payload) throw new Error('파티 코스 지역의 오프라인 지도 정보가 없습니다.');
+      const status = await withTimeout(plugin.getOfflineStatus({ regionId }), 8000, '오프라인 지도 상태 확인 시간이 초과되었습니다.');
+      offlineRegionStatuses.set(regionId, status || {});
+      if (!offlineUsable(status)) throw new Error('파티 코스 지역의 오프라인 지도를 사용할 수 없습니다.');
+      await withTimeout(showNativeRegion(regionId, payload), 25000, '오프라인 지도를 여는 시간이 초과되었습니다.');
+    }
+    if (mobileHomeMapMode !== 'offline') setMobileHomeMapMode('offline');
+  }
+  const srcRegion = $('#region');
+  const targetRegion = course.region || (state.nativeMap.active ? state.nativeMap.regionId : '');
+  if (targetRegion && srcRegion && srcRegion.value !== targetRegion && regions[targetRegion]) {
+    srcRegion.value = targetRegion;
+    srcRegion.dispatchEvent(new Event('change'));
+  }
+  applySavedRoute(course, 'ride', 'party-member');
+}
+
 async function startPartyMemberRideOn() {
   const party = state.currentParty;
   const button = $('#partyJoinedRideOnBtn');
-  if (!party?.id || !button || button.disabled || !supabaseClient || !state.session?.user || state.profile?.status !== 'approved') return;
-  const client = supabaseClient;
+  const offlineApproved = offlineAccessActive === true && state.profile?.status === 'offline-approved';
+  if (!party?.id || !button || button.disabled || !state.session?.user || (state.profile?.status !== 'approved' && !offlineApproved)) return;
   const userId = state.session.user.id;
   button.disabled = true;
   button.setAttribute('aria-busy', 'true');
   try {
-    const { data, error } = await client.rpc('list_my_party_routes');
-    if (client !== supabaseClient || state.session?.user?.id !== userId || state.currentParty !== party) return;
-    if (error) throw error;
-    const partyRows = (data || []).filter(row => row.party_id === party.id);
-    const activeRow = partyRows.find(row => row.is_active);
-    const activeCourse = normalizePartyRouteRow(activeRow);
-    if (!activeCourse) {
+    // Online: try to pick up the latest ACTIVE. Any failure falls back to the cached ACTIVE.
+    const client = supabaseClient;
+    if (client && navigator.onLine !== false) {
+      try {
+        const { data, error } = await client.rpc('list_my_party_routes');
+        if (client !== supabaseClient || state.session?.user?.id !== userId || state.currentParty !== party) return;
+        if (error) throw error;
+        const partyRows = (data || []).filter(row => row.party_id === party.id);
+        party.partyRoutes = partyRows.map(normalizePartyRouteRow).filter(Boolean);
+        party.route_ids = partyRows
+          .slice()
+          .sort((a, b) => Number(a.route_order) - Number(b.route_order))
+          .map(row => row.route_id)
+          .filter(Boolean);
+        party.active_route_id = partyRows.find(row => row.is_active)?.route_id || null;
+        savePartyCacheFromServer(userId, party, party.partyRoutes.slice().sort((a, b) => a.order - b.order), party.active_route_id);
+        const savedSelected = readPartyCacheEntry(userId, party.id)?.selectedPartyRouteId || null;
+        party.selectedPartyRouteId = savedSelected;
+      } catch (syncError) {
+        console.warn('Party ACTIVE sync failed; using cached ACTIVE:', syncError);
+      }
+    }
+    party.sharedCourses = resolvePartySharedCourses(party);
+    const activeCandidate = resolvePartyActiveCourse(party);
+    if (!activeCandidate) {
       toast('현재 활성화된 파티 코스가 없습니다.');
       return;
     }
-    party.partyRoutes = partyRows.map(normalizePartyRouteRow).filter(Boolean);
-    party.route_ids = partyRows
-      .slice()
-      .sort((a, b) => Number(a.route_order) - Number(b.route_order))
-      .map(row => row.route_id)
-      .filter(Boolean);
-    party.sharedCourses = resolvePartySharedCourses(party);
-    party.active_route_id = activeCourse.id;
+    if (!isRideablePartyCourse(activeCandidate)) {
+      toast('활성 파티 코스의 경로 정보가 없습니다.');
+      return;
+    }
+    const activeCourse = activeCandidate;
     party.sharedCourse = activeCourse;
     renderPartyJoined();
-    const srcRegion = $('#region');
-    if (activeCourse.region && srcRegion && srcRegion.value !== activeCourse.region && regions[activeCourse.region]) {
-      srcRegion.value = activeCourse.region;
-      srcRegion.dispatchEvent(new Event('change'));
+    await enterPartyCourseRide(activeCourse);
+    if (supabaseClient) {
+      syncPartyGpsRuntimeForCurrentParty();
+      refreshCurrentPartyMemberLocations();
     }
-    applySavedRoute(activeCourse, 'ride', 'party-member');
-    syncPartyGpsRuntimeForCurrentParty();
-    refreshCurrentPartyMemberLocations();
   } catch (error) {
     toast(error?.message || '파티 활성 코스를 불러오지 못했습니다.');
   } finally {
     if (button.isConnected) {
-      button.disabled = false;
       button.removeAttribute('aria-busy');
+      updatePartyJoinedRideButtons();
+    }
+  }
+}
+
+// Member's own pick from the shared list; local Ride On only (no RPC, no set_party_active_route).
+async function startPartyMemberSelectedRideOn() {
+  const party = state.currentParty;
+  const button = $('#partyJoinedSelectedRideOnBtn');
+  if (!party?.id || (button && button.disabled)) return;
+  const course = getPartySelectedCourse(party);
+  if (!course) {
+    toast('먼저 공유 코스를 선택하세요.');
+    updatePartyJoinedRideButtons();
+    return;
+  }
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  try {
+    await enterPartyCourseRide(course);
+  } catch (error) {
+    toast(error?.message || '파티 코스를 열지 못했습니다.');
+  } finally {
+    if (button?.isConnected) {
+      button.removeAttribute('aria-busy');
+      updatePartyJoinedRideButtons();
     }
   }
 }
@@ -11495,7 +11784,7 @@ async function startPartyMemberRideOn() {
       const id = event.target.closest('[data-party-id]')?.dataset.partyId;
       const party = state.myParties.find(item => item.id === id);
       if (!party) return;
-      selectMyParty(party);
+      selectMyParty(party, { skipGps: Boolean(party.fromPartyCache) || !supabaseClient }); // cached/offline: no GPS start
       renderPartyMain();
       setMobileAppView(state.currentParty.isLeader ? 'party-leader' : 'party-joined');
     });
@@ -11565,6 +11854,7 @@ async function startPartyMemberRideOn() {
   });
   $('#partyJoinedBackBtn')?.addEventListener('click', () => setMobileAppView('party'));
   $('#partyJoinedRideOnBtn')?.addEventListener('click', startPartyMemberRideOn);
+  $('#partyJoinedSelectedRideOnBtn')?.addEventListener('click', startPartyMemberSelectedRideOn);
   $('#partyJoinedLocationToggle')?.addEventListener('click', event => {
     const toggle = event.currentTarget;
     if (toggle.disabled) return;
@@ -11635,7 +11925,17 @@ async function startPartyMemberRideOn() {
     const previewBtn = event.target.closest('[data-party-preview-id]');
     if (previewBtn && !previewBtn.disabled) {
       previewPartyCourse(previewBtn.dataset.partyPreviewId);
+      return;
     }
+    const card = event.target.closest('[data-party-select-id]');
+    if (card) setPartyMemberSelectedRoute(card.dataset.partySelectId);
+  });
+  $('#partyJoinedCourses')?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const card = event.target.closest('[data-party-select-id]');
+    if (!card || event.target !== card) return;
+    event.preventDefault();
+    setPartyMemberSelectedRoute(card.dataset.partySelectId);
   });
 
     renderMobileCourseRegions();
