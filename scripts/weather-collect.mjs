@@ -45,14 +45,74 @@ function requestUrl({latitude, longitude, elevation}, {pastDays, timezone}) {
   return url;
 }
 
-async function request(location, settings) {
+// ---- Network policy (CI: GitHub runners -> api.open-meteo.com) ----
+// Up to MAX_ATTEMPTS per point, retrying ONLY transient failures: connection-level errors (undici "fetch failed" with
+// ECONNRESET / ETIMEDOUT / EAI_AGAIN / UND_ERR_* ...), request timeouts, HTTP 429 / 5xx and a 200 whose body could not
+// be read as JSON. Never retried: other HTTP 4xx (bad parameters) and non-network exceptions.
+// Time: REQUEST_TIMEOUT_MS per attempt, and a per-region budget REGION_BUDGET_MS (3 points) so one bad region cannot
+// stall the run (weather-pipeline.mjs kills a collector after 5 min; 15 regions stay well inside the 45 min job).
+export const REQUEST_TIMEOUT_MS = 20000;
+export const MAX_ATTEMPTS = 3;
+export const RETRY_DELAYS_MS = [2000, 6000]; // before attempt 2, 3 (+ up to 25 % jitter); Retry-After honoured up to 15 s
+export const REGION_BUDGET_MS = 120000;
+const TRANSIENT_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND', 'ENETUNREACH',
+  'EHOSTUNREACH', 'ENETDOWN', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED',
+  'UND_ERR_ABORTED', 'ERR_SSL_WRONG_VERSION_NUMBER', 'ECONNCLOSED']);
+
+// Error -> {kind, code, message, transient}. Walks error.cause (undici puts the real reason there: "fetch failed" alone
+// says nothing). Messages are capped; the request URL holds only public coordinates / parameters.
+export function describeFetchError(error) {
+  const chain = [];
+  for (let e = error, depth = 0; e && depth < 4; e = e.cause, depth++) chain.push(e);
+  const code = chain.map(e => e?.code).find(c => typeof c === 'string') || null;
+  const name = error?.name || 'Error';
+  const timeout = chain.some(e => e?.name === 'TimeoutError' || e?.name === 'AbortError');
+  const message = chain.map(e => `${e?.name || 'Error'}: ${e?.message || e}`).join(' <- ').slice(0, 300);
+  const network = name === 'TypeError' && /fetch failed|terminated|other side closed|socket/i.test(String(error?.message));
+  return {kind: timeout ? 'timeout' : code ? 'network' : network ? 'network' : 'exception', code, message,
+    transient: timeout || (code ? TRANSIENT_CODES.has(code) : network)};
+}
+
+const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// One point: {ok, status, body, attempts, elapsed_ms, attempt_log, error?, code?, kind?}. Never throws.
+export async function request(location, settings, {fetchImpl = fetch, sleep = sleepMs, now = Date.now, deadline = Infinity, random = Math.random, log = () => {}} = {}) {
+  const url = requestUrl(location, settings);
+  const started = now();
+  const attemptLog = [];
   for (let attempt = 1; ; attempt++) {
-    const response = await fetch(requestUrl(location, settings), {signal: AbortSignal.timeout(20000)});
-    const body = await response.json().catch(() => null);
-    if (response.ok || attempt >= 2 || !(response.status === 429 || response.status >= 500)) {
-      return {status: response.status, ok: response.ok, body};
+    const t0 = now();
+    const timeout = Math.max(1000, Math.min(REQUEST_TIMEOUT_MS, deadline - t0));
+    let outcome;
+    try {
+      const response = await fetchImpl(url, {signal: AbortSignal.timeout(timeout)});
+      let body = null, bodyError = null;
+      try { body = await response.json(); } catch (e) { bodyError = describeFetchError(e); }
+      if (response.ok && body && typeof body === 'object' && !body.error) outcome = {ok: true, status: response.status, body};
+      else if (response.ok) outcome = {ok: false, status: response.status, body, kind: 'invalid_body', code: bodyError?.code ?? null,
+        error: bodyError ? `body unreadable: ${bodyError.message}` : String(body?.reason || 'invalid JSON body').slice(0, 200), transient: true};
+      else outcome = {ok: false, status: response.status, body, kind: 'http', code: null, error: String(body?.reason || `HTTP ${response.status}`).slice(0, 200),
+        transient: response.status === 429 || response.status >= 500, retryAfter: Number(response.headers?.get?.('retry-after'))};
+    } catch (error) {
+      const d = describeFetchError(error);
+      outcome = {ok: false, status: null, body: null, kind: d.kind, code: d.code, error: d.message, transient: d.transient};
     }
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    const elapsed = now() - t0;
+    attemptLog.push({attempt, ms: elapsed, http: outcome.status, kind: outcome.ok ? 'ok' : outcome.kind, code: outcome.code ?? null, error: outcome.ok ? null : outcome.error});
+    if (outcome.ok) return {ok: true, status: outcome.status, body: outcome.body, attempts: attempt, elapsed_ms: now() - started, attempt_log: attemptLog};
+    let delay = RETRY_DELAYS_MS[attempt - 1] ?? 0;
+    delay = Math.round(delay * (1 + 0.25 * random()));
+    if (Number.isFinite(outcome.retryAfter) && outcome.retryAfter > 0) delay = Math.max(delay, Math.min(outcome.retryAfter * 1000, 15000));
+    const outOfTime = now() + delay + 1000 > deadline;
+    const retry = outcome.transient && attempt < MAX_ATTEMPTS && !outOfTime;
+    log({point_id: location.point_id, attempt, ms: elapsed, http: outcome.status, kind: outcome.kind, code: outcome.code ?? null, error: outcome.error,
+      next: retry ? `retry in ${delay} ms` : !outcome.transient ? 'not retryable' : outOfTime ? 'region time budget exhausted' : 'attempts exhausted'});
+    if (!retry) {
+      return {ok: false, status: outcome.status, body: outcome.body, attempts: attempt, elapsed_ms: now() - started, attempt_log: attemptLog,
+        kind: outcome.kind, code: outcome.code ?? null, error: outcome.error, transient: outcome.transient,
+        gave_up: !outcome.transient ? 'not_retryable' : outOfTime ? 'region_budget' : 'max_attempts'};
+    }
+    await sleep(delay);
   }
 }
 
@@ -92,16 +152,16 @@ function rowsFrom(block, vars, base, timeKey, offset) {
   }));
 }
 
-async function collectPoint(regionId, location, settings) {
+async function collectPoint(regionId, location, settings, net = {}) {
   const fetchedAt = new Date().toISOString();
-  let result;
-  try {
-    result = await request(location, settings);
-  } catch (error) {
-    return {error: String(error?.message || error).slice(0, 200), fetched_at: fetchedAt};
-  }
-  if (!result.ok) return {http: result.status, error: String(result.body?.reason || 'HTTP error').slice(0, 200), fetched_at: fetchedAt};
+  const result = await request(location, settings, net);
+  const failure = extra => ({http: result.status, error: result.error, kind: result.kind, code: result.code, attempts: result.attempts,
+    elapsed_ms: result.elapsed_ms, gave_up: result.gave_up, attempt_log: result.attempt_log, fetched_at: fetchedAt, ...extra});
+  if (!result.ok) return failure();
   const body = result.body;
+  if (!body.hourly || !body.daily || !Number.isFinite(Number(body.utc_offset_seconds))) {
+    return failure({kind: 'invalid_body', error: 'response without hourly / daily / utc_offset_seconds'});
+  }
   const offset = Number(body.utc_offset_seconds) || 0;
   const key = {region_id: regionId, point_id: location.point_id, model: MODEL, fetched_at: fetchedAt};
   const snapshot = {
@@ -119,7 +179,7 @@ async function collectPoint(regionId, location, settings) {
     ...Object.fromEntries(CURRENT_VARS.map(name => [name, Number.isFinite(body.current[name]) ? body.current[name] : null]))
   } : null;
   return {
-    http: result.status, snapshot, current,
+    http: result.status, attempts: result.attempts, elapsed_ms: result.elapsed_ms, snapshot, current,
     hourly: rowsFrom(body.hourly, HOURLY_VARS, key, 'forecast_time', offset),
     daily: rowsFrom(body.daily, DAILY_VARS, key, 'forecast_date', offset),
     quality: {
@@ -165,7 +225,11 @@ function compactQuality(q) {
     hourly_issues: flag(q.hourly), daily_issues: flag(q.daily)};
 }
 
-export async function collectRegion(regionId) {
+// net: {fetchImpl, sleep, now, random} for tests; the region time budget starts here.
+export async function collectRegion(regionId, net = {}) {
+  const deadline = (net.now || Date.now)() + REGION_BUDGET_MS;
+  // Every failed attempt goes to stderr at once (one JSON line), so the Actions log shows the real cause per point.
+  const log = entry => console.error(JSON.stringify({collect_attempt_failed: regionId, ...entry}));
   const region = weatherRegionById[regionId];
   if (!region) throw new Error(`unknown weather region: ${regionId}`);
   const settings = {pastDays: PAST_DAYS_BY_COUNTRY[region.country], timezone: region.timezone};
@@ -185,10 +249,19 @@ export async function collectRegion(regionId) {
     points: derived.points, point_issues: derived.issues, skipped_points: skipped,
     snapshots: [], current: [], hourly: [], daily: [], quality: {}, errors: [], comparisons: {}
   };
+  output.requested_points = locations.length;
+  output.network = {attempts: 0, retried_points: 0, elapsed_ms: 0, budget_ms: REGION_BUDGET_MS};
   const results = {};
   for (const location of locations) {
-    const r = await collectPoint(regionId, location, settings);
-    if (r.error) { output.errors.push({point_id: location.point_id, http: r.http ?? null, error: r.error}); continue; }
+    const r = await collectPoint(regionId, location, settings, {log, ...net, deadline});
+    output.network.attempts += r.attempts || 0;
+    output.network.elapsed_ms += r.elapsed_ms || 0;
+    if ((r.attempts || 0) > 1) output.network.retried_points++;
+    if (r.error) {
+      output.errors.push({point_id: location.point_id, http: r.http ?? null, kind: r.kind ?? null, code: r.code ?? null, error: r.error,
+        attempts: r.attempts ?? null, elapsed_ms: r.elapsed_ms ?? null, gave_up: r.gave_up ?? null, attempt_log: r.attempt_log ?? []});
+      continue;
+    }
     results[location.point_type] = r;
     output.snapshots.push(r.snapshot);
     if (r.current) output.current.push(r.current);
@@ -206,8 +279,16 @@ export async function collectRegion(regionId) {
 }
 
 // Static copy for the app (dist/data/weather/<region>.json): summit / mid / base only, column arrays, real API
-// values only (missing = null). Written only when at least one point was received.
+// values only (missing = null). Written only when EVERY requested point was received in this run: a partial / failed
+// collection never replaces the previous good file (the pipeline then reports the region as a collect failure).
+export function publishBlockedReason(output) {
+  if (output.errors?.length) return `${output.errors.length} point(s) failed: ${output.errors.map(e => `${e.point_id} ${e.code || e.kind || ''}`.trim()).join(', ')}`;
+  if (!output.snapshots?.length) return 'no point received';
+  if (Number.isFinite(output.requested_points) && output.snapshots.length < output.requested_points) return 'incomplete point set';
+  return null;
+}
 export async function publishRegion(output) {
+  if (publishBlockedReason(output)) return null;
   const snapshots = output.snapshots.filter(s => ['summit', 'mid', 'base'].includes(s.point_type));
   if (!snapshots.length) return null;
   const columns = (rows, timeKey, vars) => {
@@ -249,9 +330,12 @@ async function main() {
   let failed = false;
   for (const regionId of regionIds) {
     const {output, file} = await collectRegion(regionId);
-    if (publish) console.log(JSON.stringify({region: regionId, published: await publishRegion(output)}));
+    if (publish) {
+      const blocked = publishBlockedReason(output);
+      console.log(JSON.stringify({region: regionId, published: blocked ? null : await publishRegion(output), ...(blocked ? {publish_skipped: `${blocked}; previous file kept`} : {})}));
+    }
     console.log(JSON.stringify({region: regionId, file, rows: {snapshots: output.snapshots.length, current: output.current.length,
-      hourly: output.hourly.length, daily: output.daily.length}, skipped: output.skipped_points, errors: output.errors}));
+      hourly: output.hourly.length, daily: output.daily.length}, network: output.network, skipped: output.skipped_points, errors: output.errors}));
     for (const s of output.snapshots) {
       const c = output.current.find(row => row.point_id === s.point_id);
       console.log(JSON.stringify({point: s.point_type, requested_ele: s.requested_elevation, api_ele: s.elevation,

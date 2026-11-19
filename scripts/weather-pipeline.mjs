@@ -41,8 +41,13 @@ function collect(region) {
       const published = lines.find(l => l.region === region && 'published' in l)?.published ?? null;
       const summary = lines.find(l => l.region === region && 'rows' in l) || null;
       const pointsRequested = summary ? (summary.rows?.snapshots ?? 0) + (summary.errors?.length ?? 0) : null;
-      resolve({exit_code: code, published, errors: summary?.errors ?? null, skipped: summary?.skipped ?? null, work_file: summary?.file ?? null, points_requested: pointsRequested,
-        stderr: err.trim().slice(-400) || null});
+      const publishSkipped = lines.find(l => l.region === region && 'publish_skipped' in l)?.publish_skipped ?? null;
+      // Collector stderr: one JSON line per failed attempt (code / kind / timing) -> keep them all, plus any other tail.
+      const attemptLines = err.split(/\r?\n/).filter(l => l.includes('"collect_attempt_failed"')).slice(-12);
+      resolve({exit_code: code, signal: child.signalCode ?? null, published, publish_skipped: publishSkipped, errors: summary?.errors ?? null, skipped: summary?.skipped ?? null,
+        work_file: summary?.file ?? null, points_requested: pointsRequested, network: summary?.network ?? null,
+        attempt_failures: attemptLines.map(l => { try { return JSON.parse(l); } catch { return l.slice(0, 300); } }),
+        stderr: err.split(/\r?\n/).filter(l => !l.includes('"collect_attempt_failed"')).join('\n').trim().slice(-400) || null});
     });
   });
 }
@@ -212,15 +217,23 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   }
   // Collector runs in child processes: its Open-Meteo requests are estimated from its own output (points received +
   // points failed; retries inside the collector are not visible). DEM checks are cached in weather-regions.mjs.
-  const collectorEstimate = runs.reduce((a, r) => a + (r.steps?.collect?.points_requested ?? 0), 0);
+  // The collector now reports its real attempt count (retries included) in `network.attempts`.
+  const collectorEstimate = runs.reduce((a, r) => a + (r.steps?.collect?.network?.attempts ?? r.steps?.collect?.points_requested ?? 0), 0);
   const api_usage = {in_process: usage, collector_requests_estimated: collectorEstimate, dem_requests_estimated: 0,
     total_estimated: usage.requests + collectorEstimate};
   const summary = {schema_version: 1, started_at_utc: runs[0]?.started_at_utc ?? null, run_at_utc: new Date().toISOString(), snow_surface: snowSurface, api_usage, regions: runs,
     ok: runs.filter(r => r.ok).map(r => r.region), failed: runs.filter(r => !r.ok).map(r => r.region)};
   writeJsonAtomic(path.join(ROOT, 'work/weather', 'weather-pipeline-last-run.json'), summary);
   console.log(JSON.stringify({ok: summary.ok, failed: summary.failed, api_usage}));
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `api usage: ${JSON.stringify(api_usage)}
-
-`);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    // Failed regions with the concrete network cause per point (job summary is visible without downloading logs).
+    const failedLines = runs.filter(r => !r.ok).map(r => {
+      const c = r.steps?.collect;
+      const pts = (c?.errors || []).map(e => `${e.point_id}: ${e.kind || ''}${e.code ? ` ${e.code}` : ''}${e.http ? ` HTTP ${e.http}` : ''} after ${e.attempts ?? '?'} attempt(s) (${e.gave_up || 'failed'}) - ${String(e.error || '').slice(0, 160)}`);
+      return `- ${r.region}: failed at ${r.failed_step || 'unknown'}${c?.signal ? ` (collector ${c.signal})` : ''}${pts.length ? `\n  - ${pts.join('\n  - ')}` : ''}`;
+    });
+    const retried = runs.reduce((a, r) => a + (r.steps?.collect?.network?.retried_points ?? 0), 0);
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `api usage: ${JSON.stringify(api_usage)} · collector points retried: ${retried}\n\n${failedLines.length ? `failed regions (previous files kept):\n${failedLines.join('\n')}\n\n` : ''}`);
+  }
   if (summary.failed.length) process.exitCode = 1;
 }
