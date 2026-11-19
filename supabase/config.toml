@@ -2,3 +2,15 @@ project_id = "lxfsvhwibiaspnaduhri"
 
 [functions.mapbox-public-token]
 verify_jwt = false
+
+# Auth is enforced in code by @supabase/server (withSupabase). ES256 session JWTs are verified
+# against SUPABASE_JWKS (auth: 'user'); the outbox webhook must send the default secret key in the
+# `apikey` header (auth: 'secret'). The gateway JWT check would reject that key, so it stays off.
+[functions.register-push-token]
+verify_jwt = false
+
+[functions.party-sos]
+verify_jwt = false
+
+[functions.dispatch-fcm-notification]
+verify_jwt = false

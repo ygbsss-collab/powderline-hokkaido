@@ -1,0 +1,54 @@
+{
+  "config_id": "snow-surface-experimental-v0.2",
+  "status": "experimental_initial_thresholds_not_validated",
+  "note": "Initial experimental thresholds for model-based surface-state estimation. Not calibrated against field observations.",
+  "window_hours": [
+    24,
+    48,
+    72
+  ],
+  "min_coverage_ratio": 0.9,
+  "rain_on_snow": {
+    "window_h": 72,
+    "min_rain_mm": 1,
+    "min_rain_hour_mm": 0.2,
+    "require_snowpack": true
+  },
+  "fresh_powder": {
+    "window_h": 24,
+    "min_new_snow_cm": 5,
+    "max_temp_c": 0
+  },
+  "melt_freeze": {
+    "window_h": 72,
+    "melt_temp_c": 0.5,
+    "min_melt_hours": 2,
+    "refreeze_temp_c": -1,
+    "require_snowpack": true
+  },
+  "wind_affected": {
+    "window_h": 24,
+    "strong_wind_ms": 8,
+    "min_strong_wind_hours": 4,
+    "min_transportable_snow_48h_cm": 2
+  },
+  "buried_by_new_snow_cm": 5,
+  "primary_priority": [
+    "rain_on_snow",
+    "melt_freeze",
+    "fresh_powder",
+    "wind_affected"
+  ],
+  "snowpack": {
+    "min_depth_m": 0.01,
+    "min_depth_for_state_m": 0.05,
+    "shallow_depth_m": 0.1,
+    "source_field": "snow_depth (Open-Meteo model estimate, not observed)",
+    "note": "experimental: below min_depth_for_state_m no surface state is confirmed"
+  },
+  "freshness": {
+    "fresh_max_age_h": 3,
+    "stale_max_age_h": 12,
+    "note": "experimental: age = analysis time - last complete weather hour; expired -> primary_state null"
+  }
+}

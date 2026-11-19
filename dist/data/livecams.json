@@ -1,0 +1,803 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-11-19",
+  "excludedRegionIds": [
+    "region_5n0cllub"
+  ],
+  "regions": {
+    "asahidake": {
+      "regionId": "asahidake",
+      "resortName": "아사히다케 로프웨이",
+      "external": {
+        "type": "external",
+        "url": "https://asahidake.hokkaido.jp/ja/",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "asahidake-sugatami",
+          "name": "스가타미역 아사히다케",
+          "type": "image",
+          "url": "https://webcam.wakasagroup.com/asahidake_webcam_now.jpg",
+          "embedUrl": "https://webcam.wakasagroup.com/asahidake_webcam_now.jpg",
+          "enabled": true,
+          "verificationStatus": "verified_official_image_cache_60s"
+        }
+      ]
+    },
+    "rusutsu": {
+      "regionId": "rusutsu",
+      "resortName": "루스츠 리조트",
+      "external": {
+        "type": "external",
+        "url": "https://rusutsu.com/live-mountain-cams/",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "rusutsu-west-mt",
+          "name": "West Mt.",
+          "type": "image",
+          "url": "https://rusutsu.com/live-mountain-cams/",
+          "embedUrl": "https://powdercam.net/app/show.php?serial_number=00000000ba88488c&force=WaU9xDcru3a3cWAm&202611191620",
+          "enabled": true,
+          "verificationStatus": "verified_official_image_force_param"
+        },
+        {
+          "cameraId": "rusutsu-lake-toya",
+          "name": "도야호 전망",
+          "type": "image",
+          "url": "https://rusutsu.com/live-mountain-cams/",
+          "embedUrl": "https://powdercam.net/app/show.php?serial_number=00000000996399a2&force=WaU9xDcru3a3cWAm&202611191620",
+          "enabled": true,
+          "verificationStatus": "verified_official_image_force_param"
+        },
+        {
+          "cameraId": "rusutsu-mt-yotei",
+          "name": "요테이산 전망",
+          "type": "image",
+          "url": "https://rusutsu.com/live-mountain-cams/",
+          "embedUrl": "https://powdercam.net/app/show.php?serial_number=00000000edd3eefd&force=WaU9xDcru3a3cWAm&202611191620",
+          "enabled": true,
+          "verificationStatus": "verified_official_image_force_param"
+        }
+      ]
+    },
+    "furano": {
+      "regionId": "furano",
+      "resortName": "후라노 스키장",
+      "external": {
+        "type": "external",
+        "url": "https://www.princehotels.co.jp/ski/furano/livecamera/",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "furano-ropeway-summit",
+          "name": "후라노 로프웨이 산정",
+          "type": "iframe",
+          "url": "https://www.princehotels.co.jp/ski/furano/livecamera/",
+          "embedUrl": "https://skiday.app/qjjomrGpZ2icbbkYBQxh/869223040349118/embed",
+          "enabled": true,
+          "verificationStatus": "verified_official_iframe_headers_allow"
+        },
+        {
+          "cameraId": "furano-summit-snow-depth",
+          "name": "바람의 정원",
+          "type": "iframe",
+          "url": "https://www.princehotels.co.jp/ski/furano/livecamera/",
+          "embedUrl": "https://skiday.app/qjjomrGpZ2icbbkYBQxh/865036042047983/embed",
+          "enabled": true,
+          "verificationStatus": "verified_official_iframe_headers_allow"
+        }
+      ]
+    },
+    "niseko": {
+      "regionId": "niseko",
+      "resortName": "니세코 유나이티드",
+      "external": {
+        "type": "external",
+        "url": "https://www.niseko.ne.jp/ja/livecamera/",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "niseko-annupuri",
+          "name": "니세코 안누푸리 국제 스키장",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=z4xJYd7931A",
+          "embedUrl": "https://www.youtube.com/embed/z4xJYd7931A?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "niseko-village-upper",
+          "name": "니세코 빌리지 상부 곤돌라",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=WMAL8MGGnRg",
+          "embedUrl": "https://www.youtube.com/embed/WMAL8MGGnRg?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "niseko-village-base",
+          "name": "니세코 빌리지 곤돌라 산록역",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=w1BuUCVYdsQ",
+          "embedUrl": "https://www.youtube.com/embed/w1BuUCVYdsQ?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "niseko-hirafu-ace3",
+          "name": "그랜드 히라후 에이스 제3리프트",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=c_Mftnh0iJI",
+          "embedUrl": "https://www.youtube.com/embed/c_Mftnh0iJI?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "niseko-hirafu-king",
+          "name": "그랜드 히라후 킹 곤돌라",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=taDZzy8yMTw",
+          "embedUrl": "https://www.youtube.com/embed/taDZzy8yMTw?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "niseko-hanazono",
+          "name": "니세코 하나조노 리조트",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=1ksmiy6EsDo",
+          "embedUrl": "https://www.youtube.com/embed/1ksmiy6EsDo?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        }
+      ]
+    },
+    "kamui": {
+      "regionId": "kamui",
+      "resortName": "카무이 스키 링크스",
+      "external": {
+        "type": "external",
+        "url": "https://www.kamui-skilinks.com/",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "kamui-snow-depth",
+          "name": "현재 적설 상황",
+          "type": "iframe",
+          "url": "https://www.kamui-skilinks.com/",
+          "embedUrl": "https://skiday.app/kZqeo91wlEjhcbAFKn7Y/869223046915003/embed",
+          "enabled": true,
+          "verificationStatus": "verified_official_iframe_headers_allow"
+        }
+      ]
+    },
+    "kiroro": {
+      "regionId": "kiroro",
+      "resortName": "키로로 리조트",
+      "external": {
+        "type": "external",
+        "url": "https://www.kiroro.co.jp/ja/livecamera/",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "kiroro-base",
+          "name": "베이스 에어리어",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=q96NwhD6Lrw",
+          "embedUrl": "https://www.youtube.com/embed/q96NwhD6Lrw?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "kiroro-snow-24h",
+          "name": "24시간 강설 카메라",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=Y3bXHw8TA2o",
+          "embedUrl": "https://www.youtube.com/embed/Y3bXHw8TA2o?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "kiroro-asari-summit",
+          "name": "키로로 곤돌라 아사리다케 산정",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=qtU23CdE7mU",
+          "embedUrl": "https://www.youtube.com/embed/qtU23CdE7mU?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "kiroro-nagamine2",
+          "name": "나가미네 제2 에어리어",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=RVblxnP4Ry8",
+          "embedUrl": "https://www.youtube.com/embed/RVblxnP4Ry8?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        }
+      ]
+    },
+    "dontan": {
+      "regionId": "dontan",
+      "resortName": "사호로 리조트",
+      "external": {
+        "type": "external",
+        "url": "https://sahoro-resort.com/winter/ski/course-info?lang=jp",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "sahoro-gelande",
+          "name": "게렌데 카메라",
+          "type": "image",
+          "url": "https://sahoro-resort.com/livecam/glive.jpg",
+          "embedUrl": "https://sahoro-resort.com/livecam/glive.jpg",
+          "enabled": true,
+          "verificationStatus": "verified_official_image"
+        }
+      ]
+    },
+    "region_tsbh66ti": {
+      "regionId": "region_tsbh66ti",
+      "resortName": "쿠로다케 로프웨이",
+      "external": {
+        "type": "external",
+        "url": "https://www.rinyu.co.jp/kurodake/index.html",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_accessible"
+      },
+      "cameras": [
+        {
+          "cameraId": "kurodake-sounkyo",
+          "name": "소운쿄 온천가 방면",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=ZI3L4mmGvHs",
+          "embedUrl": "https://www.youtube.com/embed/ZI3L4mmGvHs?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        },
+        {
+          "cameraId": "kurodake-summit",
+          "name": "쿠로다케 산정 방면",
+          "type": "youtube",
+          "url": "https://www.youtube.com/watch?v=AZtMZlAMnKY",
+          "embedUrl": "https://www.youtube.com/embed/AZtMZlAMnKY?autoplay=0&rel=0&playsinline=1",
+          "enabled": true,
+          "verificationStatus": "verified_official_youtube_embed"
+        }
+      ]
+    },
+    "region_q49t34uk": {
+      "regionId": "region_q49t34uk",
+      "resortName": "아사리가와 온천 스키장",
+      "external": {
+        "type": "external",
+        "url": "https://asari-ski.com/live-camera/",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_camera_source_unresolved"
+      },
+      "cameras": []
+    },
+    "abcdef": {
+      "regionId": "abcdef",
+      "resortName": "웰리힐리파크",
+      "external": {
+        "type": "external",
+        "url": "https://www.wellihillipark.com/home/customer/webcam",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_hls_reuse_unconfirmed"
+      },
+      "cameras": [
+        {
+          "cameraId": "wellihilli-01",
+          "name": "알파",
+          "type": "hls",
+          "url": "https://www.wellihillipark.com/home/customer/webcam",
+          "embedUrl": "https://live.wellihillipark.com/wellihillipark/_definst_/cam02.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "wellihilli-02",
+          "name": "베이스",
+          "type": "hls",
+          "url": "https://www.wellihillipark.com/home/customer/webcam",
+          "embedUrl": "https://live.wellihillipark.com/wellihillipark/_definst_/cam03.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "wellihilli-03",
+          "name": "슬로프 광장 / 전경",
+          "type": "hls",
+          "url": "https://www.wellihillipark.com/home/customer/webcam",
+          "embedUrl": "https://live.wellihillipark.com/wellihillipark/_definst_/cam04.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "wellihilli-04",
+          "name": "정상 광장",
+          "type": "hls",
+          "url": "https://www.wellihillipark.com/home/customer/webcam",
+          "embedUrl": "https://live.wellihillipark.com/wellihillipark/_definst_/cam05.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_official_hls_offline_at_check"
+        },
+        {
+          "cameraId": "wellihilli-05",
+          "name": "고카트 / MTB파크",
+          "type": "hls",
+          "url": "https://www.wellihillipark.com/home/customer/webcam",
+          "embedUrl": "https://live.wellihillipark.com/wellihillipark/_definst_/cam06.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "wellihilli-06",
+          "name": "워터플래닛",
+          "type": "hls",
+          "url": "https://www.wellihillipark.com/home/customer/webcam",
+          "embedUrl": "https://live.wellihillipark.com/wellihillipark/_definst_/cam07.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        }
+      ],
+      "cameraSource": "Official resort stream URLs (cross-checked via github.com/hletrd/slopes links.json, Apache-2.0)"
+    },
+    "yongpyong": {
+      "regionId": "yongpyong",
+      "resortName": "모나용평",
+      "external": {
+        "type": "external",
+        "url": "https://www.yongpyong.co.kr/kor/guide/realTimeNews/ypResortWebcam.do",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_hls_reuse_unconfirmed"
+      },
+      "cameras": [
+        {
+          "cameraId": "mona-01",
+          "name": "발왕산 氣 스카이워크",
+          "type": "hls",
+          "url": "https://www.yongpyong.co.kr/kor/guide/realTimeNews/ypResortWebcam.do",
+          "embedUrl": "https://live.yongpyong.co.kr/cam01/index.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "mona-02",
+          "name": "발왕산 천년주목숲길",
+          "type": "hls",
+          "url": "https://www.yongpyong.co.kr/kor/guide/realTimeNews/ypResortWebcam.do",
+          "embedUrl": "https://live.yongpyong.co.kr/cam02/index.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "mona-03",
+          "name": "베이스 전경 / 레드 슬로프",
+          "type": "hls",
+          "url": "https://www.yongpyong.co.kr/kor/guide/realTimeNews/ypResortWebcam.do",
+          "embedUrl": "https://live.yongpyong.co.kr/cam08/index.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "mona-04",
+          "name": "모나 용평 진입로",
+          "type": "hls",
+          "url": "https://www.yongpyong.co.kr/kor/guide/realTimeNews/ypResortWebcam.do",
+          "embedUrl": "https://live.yongpyong.co.kr/cam05/index.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "mona-05",
+          "name": "옐로우 슬로프",
+          "type": "hls",
+          "url": "https://www.yongpyong.co.kr/kor/guide/realTimeNews/ypResortWebcam.do",
+          "embedUrl": "https://live.yongpyong.co.kr/cam11/index.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        }
+      ],
+      "cameraSource": "Official resort stream URLs (cross-checked via github.com/hletrd/slopes links.json, Apache-2.0)"
+    },
+    "phoenix": {
+      "regionId": "phoenix",
+      "resortName": "휘닉스파크",
+      "external": {
+        "type": "external",
+        "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_official_page"
+      },
+      "cameras": [
+        {
+          "cameraId": "phoenix-01",
+          "name": "호크 / 스패로우",
+          "type": "hls",
+          "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+          "embedUrl": "https://streaming.phoenixhnr.co.kr/hls/yh_02_02.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "phoenix-02",
+          "name": "도도",
+          "type": "hls",
+          "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+          "embedUrl": "https://streaming.phoenixhnr.co.kr/hls/sp_01_01.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "phoenix-03",
+          "name": "불새마루",
+          "type": "hls",
+          "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+          "embedUrl": "https://streaming.phoenixhnr.co.kr/hls/ht_01_01.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "phoenix-04",
+          "name": "베이스",
+          "type": "hls",
+          "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+          "embedUrl": "https://streaming.phoenixhnr.co.kr/hls/bc_02_01.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "phoenix-05",
+          "name": "펭귄",
+          "type": "hls",
+          "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+          "embedUrl": "https://streaming.phoenixhnr.co.kr/hls/bc_01.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "phoenix-06",
+          "name": "스노우 빌리지",
+          "type": "hls",
+          "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+          "embedUrl": "https://streaming.phoenixhnr.co.kr/hls/yh_01_01.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "phoenix-07",
+          "name": "몽블랑 정상",
+          "type": "hls",
+          "url": "https://phoenixhnr.co.kr/page/pyeongchang/guide/operation/sketchMovie",
+          "embedUrl": "https://streaming.phoenixhnr.co.kr/hls/mb_03_02.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        }
+      ],
+      "cameraSource": "Official resort stream URLs (cross-checked via github.com/hletrd/slopes links.json, Apache-2.0)"
+    },
+    "region_cdqt3r41": {
+      "regionId": "region_cdqt3r41",
+      "resortName": "지산리조트",
+      "external": {
+        "type": "external",
+        "url": "https://www.jisanresort.co.kr/w/ski/slopes/webcam.asp",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_seasonal_camera_offline"
+      },
+      "cameras": [
+        {
+          "cameraId": "jisan-01",
+          "name": "레몬 탑승장",
+          "type": "hls",
+          "url": "https://www.jisanresort.co.kr/m/ski/slopes/webcam.asp",
+          "embedUrl": "https://ant.livecity.co.kr:5443/jisancam/streams/jisan1.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_official_hls_offline_at_check"
+        },
+        {
+          "cameraId": "jisan-02",
+          "name": "오렌지 / 뉴오렌지 탑승장",
+          "type": "hls",
+          "url": "https://www.jisanresort.co.kr/m/ski/slopes/webcam.asp",
+          "embedUrl": "https://ant.livecity.co.kr:5443/jisancam/streams/jisan2.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "jisan-03",
+          "name": "5번 / 6번 슬로프",
+          "type": "hls",
+          "url": "https://www.jisanresort.co.kr/m/ski/slopes/webcam.asp",
+          "embedUrl": "https://ant.livecity.co.kr:5443/jisancam/streams/jisan3.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_cors_ok"
+        },
+        {
+          "cameraId": "jisan-04",
+          "name": "블루 탑승장",
+          "type": "hls",
+          "url": "https://www.jisanresort.co.kr/m/ski/slopes/webcam.asp",
+          "embedUrl": "https://ant.livecity.co.kr:5443/jisancam/streams/jisan4.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_official_hls_offline_at_check"
+        },
+        {
+          "cameraId": "jisan-05",
+          "name": "실버 탑승장",
+          "type": "hls",
+          "url": "https://www.jisanresort.co.kr/m/ski/slopes/webcam.asp",
+          "embedUrl": "https://ant.livecity.co.kr:5443/jisancam/streams/jisan5.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_official_hls_offline_at_check"
+        }
+      ],
+      "cameraSource": "Official resort stream URLs (cross-checked via github.com/hletrd/slopes links.json, Apache-2.0)"
+    },
+    "region_huyvh4ar": {
+      "regionId": "region_huyvh4ar",
+      "resortName": "하이원 스키장",
+      "external": {
+        "type": "external",
+        "url": "https://www.high1.com/ski/slopeView.do?key=748&mode=p",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_camera_unconfirmed"
+      },
+      "cameras": [
+        {
+          "cameraId": "high1-01",
+          "name": "하이원탑 (제우스1 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=1",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch1.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-02",
+          "name": "하이원탑 (헤라2 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=2",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch2.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-03",
+          "name": "하이원탑 (아폴로1 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=3",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch3.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-04",
+          "name": "마운틴허브 (스노우월드 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=4",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch4.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-05",
+          "name": "마운틴허브 (아폴로3 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=5",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch5.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-06",
+          "name": "마운틴허브 (아테나2 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=6",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch6.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-07",
+          "name": "마운틴 베이스 (아테나 리프트)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=7",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch7.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-08",
+          "name": "아테나2 하단",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=8",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch8.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-09",
+          "name": "밸리탑 (빅토리아1 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=9",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch9.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-10",
+          "name": "제우스2 합류구간",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=10",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch10.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-11",
+          "name": "밸리허브 (헤라 리프트 입구)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=11",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch11.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-12",
+          "name": "밸리허브 (아폴로3 합류)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=12",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch12.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-13",
+          "name": "밸리허브 (제우스3)",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=13",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch13.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-14",
+          "name": "제우스3 중단",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=14",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch14.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-15",
+          "name": "아폴로4 중단",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=15",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch15.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-16",
+          "name": "아폴로 베이스",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=16",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch16.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-17",
+          "name": "제우스3 하단",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=17",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch17.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "high1-18",
+          "name": "밸리 베이스",
+          "type": "hls",
+          "url": "https://www.high1.com/webcam/pop_webcam.do?ch=18",
+          "embedUrl": "http://59.30.12.195:1935/live/_definst_/ch18.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        }
+      ],
+      "cameraSource": "Official resort stream URLs (cross-checked via github.com/hletrd/slopes links.json, Apache-2.0)"
+    },
+    "region_wxkfnu11": {
+      "regionId": "region_wxkfnu11",
+      "resortName": "곤지암리조트",
+      "external": {
+        "type": "external",
+        "url": "https://m.konjiamresort.co.kr/ski/skiLveCam.dev",
+        "embedUrl": null,
+        "enabled": true,
+        "verificationStatus": "verified_page_stream_reuse_unconfirmed"
+      },
+      "cameras": [
+        {
+          "cameraId": "konjiam-01",
+          "name": "정상 휴게소",
+          "type": "hls",
+          "url": "https://m.konjiamresort.co.kr/ski/skiLveCam.dev",
+          "embedUrl": "http://konjiam.live.cdn.cloudn.co.kr/konjiam/cam01.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "konjiam-02",
+          "name": "정상부 슬로프 (씽큐, 그램)",
+          "type": "hls",
+          "url": "https://m.konjiamresort.co.kr/ski/skiLveCam.dev",
+          "embedUrl": "http://konjiam.live.cdn.cloudn.co.kr/konjiam/cam02.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "konjiam-03",
+          "name": "중간 슬로프 (와이낫 상단)",
+          "type": "hls",
+          "url": "https://m.konjiamresort.co.kr/ski/skiLveCam.dev",
+          "embedUrl": "http://konjiam.live.cdn.cloudn.co.kr/konjiam/cam05.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "konjiam-04",
+          "name": "초중급 베이스 (휘센)",
+          "type": "hls",
+          "url": "https://m.konjiamresort.co.kr/ski/skiLveCam.dev",
+          "embedUrl": "http://konjiam.live.cdn.cloudn.co.kr/konjiam/cam03.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        },
+        {
+          "cameraId": "konjiam-05",
+          "name": "중상급 베이스 (와이낫, CNP)",
+          "type": "hls",
+          "url": "https://m.konjiamresort.co.kr/ski/skiLveCam.dev",
+          "embedUrl": "http://konjiam.live.cdn.cloudn.co.kr/konjiam/cam04.stream/playlist.m3u8",
+          "enabled": true,
+          "verificationStatus": "verified_hls_http_only_mixed_content_blocked_on_https"
+        }
+      ],
+      "cameraSource": "Official resort stream URLs (cross-checked via github.com/hletrd/slopes links.json, Apache-2.0)"
+    }
+  }
+}

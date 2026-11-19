@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "region_id": "rusutsu",
+  "data_kind": "snow_surface_estimate_published",
+  "label": "모델 기반 설질 추정",
+  "disclaimer": "Model-based experimental estimate of likely snow-surface conditions. NOT an observed surface state and NOT an avalanche or safety assessment. Model snow depth is a model estimate, not an observed snow depth.",
+  "config_id": "snow-surface-experimental-v0.2",
+  "freshness_thresholds_h": {
+    "fresh_max_age_h": 3,
+    "stale_max_age_h": 12
+  },
+  "timestamps": {
+    "collected_at_utc": "2026-11-19T01:34:03.381Z",
+    "analysis_at_utc": "2026-11-19T01:34:08.215Z",
+    "last_valid_weather_hour_utc": {
+      "summit": "2026-11-19T01:00:00.000Z",
+      "mid": "2026-11-19T01:00:00.000Z",
+      "base": "2026-11-19T01:00:00.000Z"
+    }
+  },
+  "analysis_window": {
+    "first_hour_utc": "2026-11-16T02:00:00.000Z",
+    "last_hour_utc": "2026-11-19T01:00:00.000Z"
+  },
+  "model_source": {
+    "path": "dist/data/weather/rusutsu.json",
+    "sha256": "965e387d1319df35ba461043139b9943b1f8c3a9eee6e829bdeeb8e89853108b",
+    "fetched_at": "2026-11-19T01:34:03.381Z"
+  },
+  "source": {
+    "path": "work/weather/rusutsu-snow-surface-pipeline.json",
+    "sha256": "bd18938534e8c4127df9e1d07b749712663a055089af5a76d3551af28ada4a3c"
+  },
+  "published_at_utc": "2026-11-19T01:34:08.254Z",
+  "points": {
+    "summit": {
+      "point_type": "summit",
+      "elevation_m": 987.8,
+      "primary_state": null,
+      "state_at_last_valid_hour": null,
+      "modifiers": [
+        "no_modelled_snowpack",
+        "rain_without_snowpack"
+      ],
+      "reason": "no_modelled_snowpack_at_window_end",
+      "basis_summary": null,
+      "last_valid_weather_hour_utc": "2026-11-19T01:00:00.000Z",
+      "freshness": {
+        "status": "fresh",
+        "age_hours": 0.57,
+        "display_as_current": true,
+        "thresholds_h": {
+          "fresh_max_age_h": 3,
+          "stale_max_age_h": 12,
+          "note": "experimental: age = analysis time - last complete weather hour; expired -> primary_state null"
+        }
+      }
+    },
+    "mid": {
+      "point_type": "mid",
+      "elevation_m": 700.6,
+      "primary_state": null,
+      "state_at_last_valid_hour": null,
+      "modifiers": [
+        "no_modelled_snowpack",
+        "rain_without_snowpack",
+        "melting_unrefrozen_at_window_end"
+      ],
+      "reason": "no_modelled_snowpack_at_window_end",
+      "basis_summary": null,
+      "last_valid_weather_hour_utc": "2026-11-19T01:00:00.000Z",
+      "freshness": {
+        "status": "fresh",
+        "age_hours": 0.57,
+        "display_as_current": true,
+        "thresholds_h": {
+          "fresh_max_age_h": 3,
+          "stale_max_age_h": 12,
+          "note": "experimental: age = analysis time - last complete weather hour; expired -> primary_state null"
+        }
+      }
+    },
+    "base": {
+      "point_type": "base",
+      "elevation_m": 414.2,
+      "primary_state": null,
+      "state_at_last_valid_hour": null,
+      "modifiers": [
+        "no_modelled_snowpack",
+        "rain_without_snowpack",
+        "melting_unrefrozen_at_window_end"
+      ],
+      "reason": "no_modelled_snowpack_at_window_end",
+      "basis_summary": null,
+      "last_valid_weather_hour_utc": "2026-11-19T01:00:00.000Z",
+      "freshness": {
+        "status": "fresh",
+        "age_hours": 0.57,
+        "display_as_current": true,
+        "thresholds_h": {
+          "fresh_max_age_h": 3,
+          "stale_max_age_h": 12,
+          "note": "experimental: age = analysis time - last complete weather hour; expired -> primary_state null"
+        }
+      }
+    }
+  }
+}

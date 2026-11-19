@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="./vendor/mapbox-gl.css" />
     <link rel="stylesheet" href="./vendor/fonts.css" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./weather.css" />
     <link rel="icon" type="image/png" href="./assets/favicon.png" />
   </head>
   <body data-mobile-auth="checking">
@@ -122,6 +123,11 @@
       </aside>
       <section class="map-panel profile-open">
         <div id="map"></div>
+        <button id="partySosButton" class="party-sos-control" type="button" aria-label="SOS 요청: 3초간 길게 누르기" aria-describedby="partySosSafety" hidden>
+          <svg class="party-sos-progress" viewBox="0 0 52 52" aria-hidden="true"><circle class="party-sos-progress-track" cx="26" cy="26" r="23"></circle><circle class="party-sos-progress-value" cx="26" cy="26" r="23"></circle></svg>
+          <span class="party-sos-label">SOS</span>
+        </button>
+        <span id="partySosSafety" class="party-sos-assistive">FCM 알림 수신은 보장되지 않으며 긴급 구조 신고를 대신하지 않습니다.</span>
         <!-- PC web only: right-top map controls. The existing style switch and Mapbox zoom/compass/locate controls are moved in here (never duplicated). -->
         <div id="pcMapControls" class="pc-map-controls" hidden>
           <!-- One card, two independent buttons: [2D/3D toggle] | [map style cycle] (the existing style button is moved into the slot). -->
@@ -279,31 +285,35 @@
       <div class='home-bg-graphic' aria-hidden='true'><svg fill="none" preserveAspectRatio="xMidYMid slice" viewBox="0 0 400 800" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="homeDarkSky" x1="0%" x2="0%" y1="0%" y2="100%"><stop offset="0%" stop-color="#080d14"></stop><stop offset="50%" stop-color="#0f1722"></stop><stop offset="100%" stop-color="#0a0e13"></stop></linearGradient><linearGradient id="homeDarkPeak" x1="0%" x2="100%" y1="0%" y2="100%"><stop offset="0%" stop-color="#1e2d3d" stop-opacity="0.7"></stop><stop offset="50%" stop-color="#111e2e" stop-opacity="0.6"></stop><stop offset="100%" stop-color="#09131d" stop-opacity="0.9"></stop></linearGradient></defs><rect fill="url(#homeDarkSky)" height="800" width="400"></rect><polygon fill="url(#homeDarkPeak)" points="-50,260 120,90 280,240 460,110 480,450 -50,450"></polygon><polygon fill="#07101a" opacity="0.6" points="120,90 190,160 280,240 330,300 210,380 70,300"></polygon><rect fill="#0a0e13" height="420" opacity="0.95" width="400" y="380"></rect></svg></div>
       <header class='home-header'><div class="home-brand-pill"><span>POWDERLINE</span></div></header>
       <main class="home-main">
-        <div class="home-title-row"><span class="home-title">COURSE SELECT</span></div>
         <section class="home-filter-grid">
-          <div class="home-field"><label for="homeRegionSelect" class="home-field-label">지역 선택</label><div class="home-select-wrap"><select id="homeRegionSelect" class="home-select"></select><span class="material-symbols-outlined home-select-icon">expand_more</span></div></div>
+          <div class="home-field"><label for="homeCountrySelect" class="home-field-label">국가 선택</label><div class="home-select-wrap"><select id="homeCountrySelect" class="home-select"><option value="-">국가를 선택하세요</option></select><span class="material-symbols-outlined home-select-icon">expand_more</span></div></div>
+          <div class="home-field"><label for="homeRegionSelect" class="home-field-label">스키장 선택</label><div class="home-select-wrap"><select id="homeRegionSelect" class="home-select"></select><span class="material-symbols-outlined home-select-icon">expand_more</span></div></div>
           <div class="home-field"><label for="homeCourseSelect" class="home-field-label">코스 선택</label><div class="home-select-wrap"><select id="homeCourseSelect" class="home-select"></select><span class="material-symbols-outlined home-select-icon">expand_more</span></div></div>
         </section>
-        <section class="home-map-card">
-          <img class="home-map-image" src="assets/course-select-topographic-3d.png" alt="" aria-hidden="true" />
-          <div class="home-map-top"><div class="home-map-chip home-map-chip-live"><span class="home-live-dot"></span><span>TOPOGRAPHIC 3D</span></div><div class="home-map-chip"><span id="homeCourseMeta">—</span></div></div>
-          <div class="home-map-bottom">
-            <section class="home-map-mode-selector" aria-labelledby="homeMapModeTitle">
+        <section class="home-info-cards">
+          <section id="homeWeatherCard" class="home-weather-card home-weather-hero" data-wx-group="cloudy" role="button" tabindex="0" aria-controls="weatherDetailPage" aria-label="날씨 상세 보기">
+            <div class="home-weather-head"><span class="home-weather-title">WEATHER CONDITION</span><span id="homeWeatherValidTime" class="home-weather-time">--</span><span class="material-symbols-outlined home-weather-chevron" aria-hidden="true">chevron_right</span></div>
+            <div class="home-weather-line home-weather-trio">
+              <span class="home-weather-cond"><span id="homeWeatherIcon" class="material-symbols-outlined" aria-hidden="true">remove</span><strong id="homeWeatherState">--</strong></span>
+              <span><small>기온</small><strong id="homeWeatherSummitTemp">--°C</strong></span>
+              <span><small>풍속</small><strong id="homeWeatherWind">--m/s</strong></span>
+            </div>
+          </section>
+            <section class="home-map-mode-selector home-mode-card" aria-labelledby="homeMapModeTitle">
               <div class="home-map-mode-heading"><span id="homeMapModeTitle">지도 모드</span><small>MAP MODE</small></div>
               <div class="home-map-mode-options" role="radiogroup" aria-labelledby="homeMapModeTitle">
                 <button id="homeOnlineMapModeBtn" type="button" class="home-map-mode-option" role="radio" aria-checked="false" data-home-map-mode="online"><span class="material-symbols-outlined" aria-hidden="true">public</span><span><strong>온라인 3D</strong><small>실시간 지도</small></span></button>
                 <button id="homeOfflineMapModeBtn" type="button" class="home-map-mode-option" role="radio" aria-checked="false" data-home-map-mode="offline"><span class="material-symbols-outlined" aria-hidden="true">download_for_offline</span><span><strong>오프라인 3D</strong><small>다운로드 지도</small></span></button>
               </div>
               <p id="homeMapModeHint" class="home-map-mode-hint" aria-live="polite">지도 모드를 선택하세요.</p>
+              <section id="homeOfflineRegionsPanel" class="home-offline-regions-panel" aria-labelledby="homeOfflineRegionsTitle">
+                <div class="home-offline-regions-heading">
+                  <span id="homeOfflineRegionsTitle">선택 스키장 오프라인 지도</span>
+                  <small>OFFLINE MAP</small>
+                </div>
+                <div id="homeOfflineRegionList" class="home-offline-region-list" aria-live="polite"></div>
+              </section>
             </section>
-          </div>
-        </section>
-        <section id="homeOfflineRegionsPanel" class="home-offline-regions-panel" aria-labelledby="homeOfflineRegionsTitle" hidden>
-          <div class="home-offline-regions-heading">
-            <span id="homeOfflineRegionsTitle">오프라인 다운로드 지역</span>
-            <small>OFFLINE MAPS</small>
-          </div>
-          <div id="homeOfflineRegionList" class="home-offline-region-list" aria-live="polite"></div>
         </section>
         <section class="home-cta"><button id="homeRideOnBtn" type="button" class="home-ride-on-btn" disabled aria-describedby="homeMapModeHint"><span>RIDE ON</span></button></section>
         <p class="home-credit">POWDERLINE | YK Lab - GYOHYEOK YUN</p>
@@ -1293,9 +1303,22 @@
         </div>
       </div>
     </div>
+    <section id="weatherDetailPage" class="weather-detail-page" aria-labelledby="weatherDetailTitle" hidden>
+      <div class="weather-detail-inner">
+        <header class="weather-detail-header">
+          <div class="weather-detail-bar">
+            <button id="weatherDetailBackBtn" class="weather-detail-back" type="button" aria-label="뒤로가기"><span class="material-symbols-outlined" aria-hidden="true">arrow_back_ios_new</span></button>
+            <h1 id="weatherDetailTitle">기상 현황</h1>
+          </div>
+        </header>
+        <div id="weatherDetailBody" class="weather-detail-body"></div>
+      </div>
+    </section>
     <script src="./config.js"></script>
     <script src="./vendor/mapbox-gl.js"></script>
     <script src="./vendor/supabase.js"></script>
+    <script src="./weather.js"></script>
     <script src="./app.js"></script>
+    <script src="./push-notifications.js"></script>
   </body>
 </html>

@@ -7035,6 +7035,38 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
   body[data-native-android="1"] .home-map-top { display: none; }
   body[data-native-android="1"] .home-map-card { min-height: 0; height: auto; flex: 0 0 auto; }
 }
+/* Home fits one screen (mobile web + Android). The screen already ends above the bottom nav
+   (.mobile-standalone-screen bottom: 56px + safe area), so its height is 100dvh - nav.
+   TOPOGRAPHIC 3D image: an in-flow block (chips overlay it), full width, centre-cropped. Its height is ~40% less
+   than the old visible image area and follows the screen height (dvh); it is the only part that shrinks when
+   the screen is short (down to 56px for the chips). The card = image + the mode panel's own
+   height, so mode buttons are never clipped; RIDE ON sits at the bottom (margin-top: auto). If a tiny screen
+   still cannot fit, the screen scrolls instead of hiding buttons. */
+@media (max-width: 768px) {
+  /* Old visible image = old card (min(380px, 46dvh)) - mode panel (138px); new = 60% of it. */
+  #mobileHomeScreen { --home-map-image-h: clamp(56px, calc((min(380px, 46dvh) - 138px) * 0.6), 146px); }
+  #mobileHomeScreen .home-main { min-height: 0; overflow: visible; }
+  /* Shrinks only down to image min (56px) + mode panel (measured 138px; 119px / 97px on short Android, below). */
+  #mobileHomeScreen .home-map-card { flex: 0 1 auto; height: auto; min-height: 194px; max-height: none; margin-top: 0; overflow: visible; }
+  #mobileHomeScreen .home-map-image {
+    position: relative; inset: auto; flex: 0 1 var(--home-map-image-h); height: var(--home-map-image-h); min-height: 56px;
+    object-fit: cover; object-position: center; border-radius: 15px 15px 0 0;
+  }
+  #mobileHomeScreen .home-map-top { position: absolute; top: 0; left: 0; right: 0; }
+  #mobileHomeScreen .home-map-bottom { margin-top: 0; border-radius: 0 0 15px 15px; }
+  #mobileHomeScreen .home-cta { margin-top: auto; }
+  body[data-native-android="1"] #mobileHomeScreen { overflow-y: auto; }
+}
+@media (max-width: 768px) and (max-height: 760px) {
+  body[data-native-android="1"] #mobileHomeScreen .home-map-card { min-height: 175px; } /* tighter mode panel (119px) */
+}
+@media (max-width: 768px) and (max-height: 640px) {
+  body[data-native-android="1"] #mobileHomeScreen .home-map-card { min-height: 153px; } /* mode panel without heading (97px) */
+}
+@media (max-width: 768px) and (max-height: 560px) {
+  body[data-native-android="1"] #mobileHomeScreen .home-map-card { min-height: 0; } /* image + chips hidden: panel only */
+  body[data-native-android="1"] #mobileHomeScreen .home-map-bottom { border-radius: 15px; }
+}
 
 /* My-location heading: translucent red sector (dot stays blue) (Google Maps style) instead of mapbox's arrowhead.
    Shown only while mapbox adds .mapboxgl-user-location-show-heading (valid compass heading). The marker is
@@ -7227,4 +7259,181 @@ body[data-pc-web="true"] .pc-withdraw-link:hover { background: rgba(255, 180, 17
 }
 :is(#mobileCompassBtn, #rideCompassBtn).compass-mode-navigation .compass-mode-nav-icon {
   display: block; font-size: 20px; line-height: 1; color: #38bdf8;
+}
+/* Party Ride SOS: isolated overlay; existing map/HUD control positions are unchanged. */
+.party-sos-control {
+  position: absolute;
+  z-index: 46;
+  top: 92px;
+  left: 18px;
+  width: 68px;
+  height: 68px;
+  margin: 0;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, .92);
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  box-shadow: 0 5px 16px rgba(0, 0, 0, .4), 0 0 0 3px rgba(127, 29, 29, .24);
+  font: 800 16px/1 'Inter', 'Noto Sans KR', sans-serif;
+  letter-spacing: .02em;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.party-sos-control[hidden] { display: none !important; }
+.party-sos-control:focus-visible { outline: 3px solid #fde68a; outline-offset: 3px; }
+.party-sos-control:disabled { cursor: wait; opacity: .88; }
+.party-sos-control.is-active {
+  border-color: #fde68a;
+  background: #7f1d1d;
+  box-shadow: 0 5px 16px rgba(0, 0, 0, .4), 0 0 0 4px rgba(253, 230, 138, .32);
+}
+.party-sos-control.is-success { background: #15803d; }
+.party-sos-control.is-error { background: #b91c1c; animation: party-sos-error .28s ease-in-out 2; }
+.party-sos-label { position: relative; z-index: 2; display: block; pointer-events: none; }
+.party-sos-control.is-active .party-sos-label,
+.party-sos-control.is-loading .party-sos-label { font-size: 11px; line-height: 1.1; }
+
+.party-sos-progress {
+  position: absolute;
+  inset: -2px;
+  z-index: 1;
+  width: 68px;
+  height: 68px;
+  overflow: visible;
+  pointer-events: none;
+  transform: rotate(-90deg);
+}
+
+.party-sos-progress circle { fill: none; stroke-width: 3; }
+.party-sos-progress-track { stroke: rgba(255, 255, 255, .24); }
+.party-sos-progress-value {
+  stroke: #fff;
+  stroke-linecap: round;
+  stroke-dasharray: 144.52;
+  stroke-dashoffset: 144.52;
+  opacity: 0;
+}
+
+.party-sos-control.is-holding .party-sos-progress-value {
+  opacity: 1;
+  animation: party-sos-hold 3s linear forwards;
+}
+
+.party-sos-control.is-loading .party-sos-progress-value {
+  opacity: 1;
+  stroke-dashoffset: 108;
+  animation: party-sos-spin .8s linear infinite;
+}
+
+.party-sos-assistive {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.party-sos-marker {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 3px solid #fff;
+  border-radius: 50% 50% 50% 12%;
+  background: #dc2626;
+  color: #fff;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, .42);
+  font: 900 11px/1 'Inter', 'Noto Sans KR', sans-serif;
+  transform: rotate(-45deg);
+  cursor: pointer;
+}
+
+.party-sos-marker::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border: 2px solid rgba(239, 68, 68, .65);
+  border-radius: 50%;
+  animation: party-sos-pulse 1.5s ease-out infinite;
+}
+
+.party-sos-marker > span { transform: rotate(45deg); }
+.party-sos-popup { min-width: 180px; color: #111827; font: 12px/1.45 'Inter', 'Noto Sans KR', sans-serif; }
+.party-sos-popup strong { display: block; margin-bottom: 3px; color: #b91c1c; font-size: 13px; }
+
+@keyframes party-sos-hold { to { stroke-dashoffset: 0; } }
+@keyframes party-sos-spin { to { transform: rotate(360deg); transform-origin: 26px 26px; } }
+@keyframes party-sos-pulse { from { opacity: .9; transform: scale(.75); } to { opacity: 0; transform: scale(1.35); } }
+@keyframes party-sos-error { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(3px); } }
+
+@media (max-width: 768px) {
+  .party-sos-control {
+    top: calc(122px + env(safe-area-inset-top));
+    left: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .party-sos-marker::after,
+  .party-sos-control.is-error { animation: none; }
+}
+
+/* Foreground FCM banners (push-notifications.js). Android shows no system notification while the app is open. */
+.pl-push-banners {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  z-index: 10060;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(560px, calc(100% - 16px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.pl-push-banners:empty { display: none; }
+.pl-push-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px 10px 12px;
+  border: 1px solid #36393f;
+  border-radius: 14px;
+  background: rgba(38, 42, 48, .97);
+  color: #e0e2ea;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .38);
+  pointer-events: auto;
+  animation: pl-push-in .18s ease-out;
+}
+.pl-push-banner.is-leaving { opacity: 0; transform: translateY(-8px); transition: opacity .18s ease, transform .18s ease; }
+.pl-push-banner-icon { flex: 0 0 auto; color: #d8ff43; font-size: 22px; }
+.pl-push-banner-main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; margin: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; }
+button.pl-push-banner-main { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.pl-push-banner-title { font-size: 13px; font-weight: 800; line-height: 18px; }
+.pl-push-banner-body { color: #bdc8d1; font-size: 12px; line-height: 17px; overflow-wrap: anywhere; }
+.pl-push-banner-hint { margin-top: 2px; font-size: 11px; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.pl-push-banner-close { display: grid; flex: 0 0 auto; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 10px; background: transparent; color: #87929a; cursor: pointer; }
+.pl-push-banner-close .material-symbols-outlined { font-size: 20px; }
+.pl-push-banner.is-sos { order: -1; border-color: #fca5a5; background: #b91c1c; color: #fff; box-shadow: 0 10px 30px rgba(185, 28, 28, .45); }
+.pl-push-banner.is-sos .pl-push-banner-icon, .pl-push-banner.is-sos .pl-push-banner-body { color: #fff; }
+.pl-push-banner-confirm { flex: 0 0 auto; min-width: 64px; min-height: 40px; padding: 0 14px; border: 0; border-radius: 10px; background: #fff; color: #b91c1c; font-size: 13px; font-weight: 800; cursor: pointer; }
+.pl-push-banner-confirm:disabled { cursor: wait; opacity: .75; }
+.pl-push-banner-error { margin-top: 4px; padding: 4px 8px; border-radius: 8px; background: rgba(0, 0, 0, .28); color: #fff; font-size: 12px; font-weight: 700; line-height: 17px; }
+.pl-push-banner.is-sos .pl-push-banner-close { color: #fff; }
+.pl-push-banner-main:focus-visible, .pl-push-banner-close:focus-visible, .pl-push-banner-confirm:focus-visible { outline: 2px solid #d8ff43; outline-offset: 2px; }
+.pl-push-banner.is-sos .pl-push-banner-main:focus-visible, .pl-push-banner-confirm:focus-visible { outline-color: #fde68a; }
+@keyframes pl-push-in { from { opacity: 0; transform: translateY(-8px); } }
+@media (prefers-reduced-motion: reduce) {
+  .pl-push-banner { animation: none; }
+  .pl-push-banner.is-leaving { transition: none; }
 }

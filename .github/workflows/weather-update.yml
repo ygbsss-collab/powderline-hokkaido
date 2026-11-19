@@ -1,0 +1,114 @@
+name: Weather update (multi-model)
+
+# Every 2 hours: Best Match + JMA MSM / ECMWF / GFS -> multi-model service JSON (scripts/weather-pipeline.mjs), stage only
+# files validated in this run (scripts/weather-ci-stage.mjs), one data commit to main (scripts/weather-ci-push.mjs,
+# never forced), then deploy ./dist of exactly that commit to GitHub Pages from THIS workflow
+# (a commit pushed with GITHUB_TOKEN does not trigger pages.yml).
+# No SLR, no bias correction, no snow-surface files. Weights / model bands: scripts/weather-multimodel-config.json.
+# Roll back to Best Match: set "primary": "best_match" in dist/data/weather-source.json.
+
+on:
+  schedule:
+    # Every 2 hours (UTC :00). Model runs appear far less often (JMA MSM every 3 h, ECMWF / GFS every 6 h, each several
+    # hours after initialisation); hours without a new forecast end without a commit or deployment
+    # (scripts/weather-ci-stage.mjs compares forecast content, not fetched_at). GitHub may start scheduled runs late or
+    # (rarely) skip one; actual start / end times are written to the job summary.
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One weather update at a time. A run that is queued while another runs waits (not cancelled); GitHub keeps only the
+# newest pending run per group, so back-to-back triggers can collapse into one run (a skipped slot is possible).
+concurrency:
+  group: weather-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    outputs:
+      pushed: ${{ steps.push.outputs.pushed }}
+      sha: ${{ steps.push.outputs.sha }}
+    steps:
+      - name: Record start
+        run: |
+          echo "WEATHER_JOB_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          echo "### Weather update" >> "$GITHUB_STEP_SUMMARY"
+          echo "event: ${{ github.event_name }} · started (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check Open-Meteo weighted API budget
+        run: node scripts/weather-api-usage.mjs --regions=15 --interval-h=2
+
+      # Per-region failures are expected to be partial (exit 1); the staging step decides what may be committed.
+      - name: Run weather pipeline (Best Match + multi-model, no snow surface)
+        id: pipeline
+        continue-on-error: true
+        run: node scripts/weather-pipeline.mjs all --no-snow-surface
+
+      - name: Stage validated data only
+        id: stage
+        run: node scripts/weather-ci-stage.mjs
+
+      - name: Commit and push (no force)
+        id: push
+        if: steps.stage.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/weather-ci-push.mjs --remote=origin --branch=main --attempts=3 \
+            --message="chore(weather): update forecasts $(date -u +%Y-%m-%dT%H:%MZ)"
+
+      - name: Record end
+        if: always()
+        run: |
+          echo "pipeline: ${{ steps.pipeline.outcome }} · changed: ${{ steps.stage.outputs.changed || 'n/a' }} · pushed: ${{ steps.push.outputs.pushed || 'false' }} · commit: ${{ steps.push.outputs.sha || '-' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "finished (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: update
+    if: needs.update.outputs.pushed == 'true' && needs.update.outputs.sha != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # Same group as pages.yml: deployments are serialized, never cancelled midway.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.update.outputs.sha }}
+      - name: Verify deployed tree is the pushed commit
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.update.outputs.sha }}"
+          test -z "$(git status --porcelain)"
+          echo "deploying commit ${{ needs.update.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Record deployment
+        run: |
+          echo "deployed (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ) · ${{ steps.deployment.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"

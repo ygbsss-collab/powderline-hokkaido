@@ -1,0 +1,73 @@
+{
+  "config_id": "multimodel-experimental-v0.1",
+  "status": "experimental_initial_settings_not_validated",
+  "service_use": false,
+  "note": "Internal validation only. Weights and thresholds are initial experimental settings; the published Best Match forecast stays the service forecast.",
+  "variables": ["temperature_2m", "precipitation", "rain", "snowfall", "wind_speed_10m"],
+  "non_negative_variables": ["precipitation", "rain", "snowfall", "wind_speed_10m"],
+  "models": {
+    "best_match":   {"endpoint": "forecast", "forecast_days": 16, "provider": "Open-Meteo Best Match"},
+    "jma_msm":      {"endpoint": "forecast", "forecast_days": 4,  "provider": "JMA MSM via Open-Meteo"},
+    "ecmwf_ifs025": {"endpoint": "ecmwf",    "forecast_days": 15, "provider": "ECMWF IFS 0.25 via Open-Meteo"},
+    "gfs_seamless": {"endpoint": "forecast", "forecast_days": 16, "provider": "NOAA GFS via Open-Meteo"}
+  },
+  "past_window_h": 72,
+  "past_source": "published Best Match file dist/data/weather/<region>.json (past_days) + JMA observations where available",
+  "bands": [
+    {"id": "d0_3",   "label": "0~3일",   "lead_h": [1, 72],    "weights": {"jma_msm": 0.65, "ecmwf_ifs025": 0.35}},
+    {"id": "d4_7",   "label": "4~7일",   "lead_h": [73, 168],  "weights": {"ecmwf_ifs025": 0.75, "gfs_seamless": 0.25}},
+    {"id": "d8_10",  "label": "8~10일",  "lead_h": [169, 240], "weights": {"ecmwf_ifs025": 1.0}},
+    {"id": "d11_16", "label": "11~16일", "lead_h": [241, 384], "weights": {"best_match": 1.0}}
+  ],
+  "transitions": [
+    {
+      "id": "d8_10_to_d11_16",
+      "from_band": "d8_10",
+      "to_band": "d11_16",
+      "start_lead_h": 223,
+      "end_lead_h": 258,
+      "shape": "linear",
+      "note": "36 h linear blend around the 240/241 h boundary: w = (1-a)·from + a·to, a = (lead - start + 1)/(end - start + 2). Smooths the model switch only; not an accuracy improvement. Both models must still provide values (missing-model policy applies)."
+    }
+  ],
+  "country_profiles": {
+    "note": "Model policy per country. JP = the bands / transitions above (unchanged). KR = Open-Meteo only (no KMA): Best Match for 0-72 h, ECMWF + GFS, ECMWF, Best Match. Past hours are Open-Meteo model values for both (never shown as observations).",
+    "JP": {"label": "일본", "bands": "default", "transitions": "default"},
+    "KR": {
+      "label": "한국",
+      "bands": [
+        {"id": "d0_3",   "label": "0~3일",   "lead_h": [1, 72],    "weights": {"best_match": 1.0}},
+        {"id": "d4_7",   "label": "4~7일",   "lead_h": [73, 168],  "weights": {"ecmwf_ifs025": 0.75, "gfs_seamless": 0.25}},
+        {"id": "d8_10",  "label": "8~10일",  "lead_h": [169, 240], "weights": {"ecmwf_ifs025": 1.0}},
+        {"id": "d11_16", "label": "11~16일", "lead_h": [241, 384], "weights": {"best_match": 1.0}}
+      ],
+      "transitions": "default"
+    }
+  },
+  "country_detection": {
+    "note": "Same coordinate boxes as the app's home country picker (dist/app.js regionCountry). Outside both boxes -> no multi-model file (the app keeps Best Match). region_country overrides the boxes.",
+    "boxes": {"KR": {"lat": [33, 38.7], "lng": [124.5, 130]}, "JP": {"lat": [30, 46], "lng": [130.5, 146]}},
+    "region_country": {}
+  },
+  "missing_model_policy": {
+    "rule": "renormalize weights over models with a real value at that hour; never treat a missing model as 0",
+    "min_available_weight": 0.6
+  },
+  "bias": {
+    "variables": ["temperature_2m", "precipitation"],
+    "excluded": {
+      "wind_speed_10m": "JMA wind is a 10-min mean at the station anemometer, not the model hourly 10 m value",
+      "snowfall": "JMA new snow = positive snow-depth change, not interchangeable with model snowfall"
+    },
+    "max_lead_day": 7,
+    "min_pairs": 48,
+    "min_wet_hours_precipitation": 12,
+    "apply_only_collocated": true,
+    "note": "Bias learned at a JMA station is applied only to the forecast computed for that same station location and elevation. Ski points (summit/mid/base) have no collocated observation, so no bias is applied there."
+  },
+  "slr_experiment": {
+    "source": "scripts/weather-dynamic-blend-kiroro.mjs calculateDynamicSlr (unchanged)",
+    "swe_proxy": "max(precipitation - rain, 0)",
+    "service_use": false
+  }
+}

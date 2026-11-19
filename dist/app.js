@@ -417,6 +417,72 @@
     routeFollowStartedOnce: false, routeFollowRouteKey: null, // route follow really started once (for this route) → restart allowed
     routeFollowCompleted: false // reached the route end: route follow ended automatically, no off-route checks after it
   };
+  // PC has no dedicated Ride HUD, so party Ride On is tracked separately for the shared SOS overlay.
+  const partyRideContext = { active: false, partyId: '' };
+  function setPartyRideContext(active, partyId = '') {
+    partyRideContext.active = Boolean(active && partyId);
+    partyRideContext.partyId = partyRideContext.active ? partyId : '';
+    if (typeof syncPartySosButton === 'function') syncPartySosButton();
+  }
+  function isPartyRideActive() {
+    return Boolean(partyRideContext.active && state.currentParty?.id === partyRideContext.partyId);
+  }
+  const fcmTokenRuntime = { token: '', syncing: false, syncedUserId: '', syncedToken: '' };
+  async function syncFcmTokenToServer(token = fcmTokenRuntime.token) {
+    if (typeof token === 'string' && token) fcmTokenRuntime.token = token;
+    const client = supabaseClient;
+    const userId = state.session?.user?.id;
+    if (!client || !userId || state.profile?.status !== 'approved' || navigator.onLine === false || !fcmTokenRuntime.token || fcmTokenRuntime.syncing) return false;
+    if (fcmTokenRuntime.syncedUserId === userId && fcmTokenRuntime.syncedToken === fcmTokenRuntime.token) return true;
+    fcmTokenRuntime.syncing = true;
+    try {
+      const { data, error } = await client.functions.invoke('register-push-token', {
+        body: { token: fcmTokenRuntime.token, platform: window.Capacitor?.getPlatform?.() || 'web' }
+      });
+      if (client !== supabaseClient || state.session?.user?.id !== userId) return false;
+      if (error || data?.ok !== true) throw error || new Error(data?.error || 'Push token registration failed');
+      fcmTokenRuntime.syncedUserId = userId;
+      fcmTokenRuntime.syncedToken = fcmTokenRuntime.token;
+      return true;
+    } catch (error) {
+      // A token is sensitive and is intentionally never included in logs.
+      console.warn('Push token server registration failed:', error?.message || error);
+      return false;
+    } finally {
+      fcmTokenRuntime.syncing = false;
+    }
+  }
+  function syncCurrentFcmToken() {
+    const token = window.PowderlinePushNotifications?.getState?.().token;
+    return syncFcmTokenToServer(typeof token === 'string' ? token : fcmTokenRuntime.token);
+  }
+  // After an approved login (once per user per app launch): Android 13+ starts with notifications off, so ask
+  // here. Already granted -> no dialog, just register(); previously denied -> no dialog. The token then arrives
+  // through 'powderline:fcm-token' and is uploaded by syncFcmTokenToServer.
+  let pushPermissionCheckedFor = '';
+  function ensurePushAfterLogin() {
+    const userId = state.session?.user?.id;
+    const push = window.PowderlinePushNotifications;
+    if (userId && push?.requestPermissionAndRegister && pushPermissionCheckedFor !== userId) {
+      pushPermissionCheckedFor = userId;
+      void push.requestPermissionAndRegister().then(() => syncCurrentFcmToken());
+    }
+    return syncCurrentFcmToken();
+  }
+  window.addEventListener('powderline:push-permission-required', event => {
+    // Only right after the user chose "deny" in the system dialog; the app keeps working without push.
+    if (event?.detail?.justDenied) toast('알림이 꺼져 있어 파티·SOS 알림을 받을 수 없습니다. 휴대폰 설정 > 앱 > POWDERLINE > 알림에서 허용할 수 있습니다.');
+  });
+  window.addEventListener('powderline:fcm-token', event => {
+    const token = event?.detail?.token;
+    if (typeof token === 'string' && token) void syncFcmTokenToServer(token);
+  });
+  window.addEventListener('powderline:push-action', event => {
+    const data = event?.detail?.action?.notification?.data;
+    if (data?.type === 'party_sos') void openPartySosFromPush(data);
+  });
+  // Foreground pushes (incl. SOS) are shown as banners by push-notifications.js; a banner tap re-emits
+  // 'powderline:push-action', handled above with the same navigation as a system-notification tap.
   let gpxFileSaverPlugin = null; // cache for getGpxFileSaverPlugin(); declared early to avoid a TDZ error
   // routeFollowPaused = the user paused route follow itself (button); followPaused = camera-only pause (map gesture).
   function startRideOnSession(source) {
@@ -481,6 +547,7 @@
       routeFollowActive: false, routeFollowPaused: false, followPaused: false, startedAt: null, source: null,
       routeFollowStartedOnce: false, routeFollowRouteKey: null, routeFollowCompleted: false
     });
+    setPartyRideContext(false);
     resetRideApproach();
     resetRideProgress();
     hideRouteFollowPrompt(); // a prompt left open must not survive the session
@@ -2551,6 +2618,15 @@ const PARTY_GPS_SEND_BACKOFF_MAX_MS = 120000;
 const PARTY_GPS_RECOVER_MIN_GAP_MS = 2000;
 let partyGpsLifecycleListenersRegistered = false;
 const partyMemberMarkers = new Map();
+const PARTY_SOS_HOLD_MS = 3000;
+const PARTY_SOS_FIX_MAX_AGE_MS = 30000;
+const partySosMarkers = new Map();
+const partySosRuntime = {
+  partyId: '', events: [], channel: null, client: null, syncSequence: 0,
+  sending: false, holdTimer: null, holdPointerId: null, suppressClick: false,
+  holdAction: '', holdSosId: '',
+  buttonResetTimer: null, pendingPush: null
+};
 const partyGpsRuntime = {
   freshFixRequesting: false,
   sendFailCount: 0,
@@ -2570,6 +2646,382 @@ const partyGpsRuntime = {
   sending: false,
   polling: false
 };
+
+function normalizePartySosEvent(row) {
+  if (!row?.id || !row?.party_id || !row?.requester_id) return null;
+  const latitude = Number(row.latitude);
+  const longitude = Number(row.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return {
+    ...row,
+    latitude,
+    longitude,
+    accuracy_m: row.accuracy_m === null || row.accuracy_m === undefined ? null : Number(row.accuracy_m),
+    status: row.status === 'resolved' ? 'resolved' : 'active'
+  };
+}
+
+function getOwnActivePartySos() {
+  const userId = state.session?.user?.id;
+  return userId ? partySosRuntime.events.find(event => event.status === 'active' && event.requester_id === userId) || null : null;
+}
+
+function formatPartySosTime(value) {
+  const time = value ? new Date(value) : null;
+  return time && Number.isFinite(time.getTime())
+    ? time.toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : '시간 정보 없음';
+}
+
+function setPartySosButtonState(status = 'idle') {
+  const button = $('#partySosButton');
+  if (!button) return;
+  clearTimeout(partySosRuntime.buttonResetTimer);
+  partySosRuntime.buttonResetTimer = null;
+  button.classList.remove('is-loading', 'is-success', 'is-error');
+  button.disabled = status === 'loading';
+  if (status === 'loading') button.classList.add('is-loading');
+  if (status === 'success') button.classList.add('is-success');
+  if (status === 'error') button.classList.add('is-error');
+  const label = button.querySelector('.party-sos-label');
+  const ownActive = getOwnActivePartySos();
+  if (label) label.textContent = status === 'loading' ? '처리 중' : status === 'success' ? '완료' : status === 'error' ? '실패' : ownActive ? 'SOS 해제' : 'SOS';
+  button.classList.toggle('is-active', Boolean(ownActive));
+  button.setAttribute('aria-label', ownActive ? 'SOS 해제: 3초간 길게 누르기' : 'SOS 요청: 3초간 길게 누르기');
+  if (status === 'success' || status === 'error') {
+    partySosRuntime.buttonResetTimer = setTimeout(() => setPartySosButtonState('idle'), 1800);
+  }
+}
+
+function syncPartySosButton() {
+  const button = $('#partySosButton');
+  if (!button) return;
+  const mobile = window.matchMedia('(max-width: 768px)').matches;
+  const onRideSurface = !mobile || document.body.dataset.mobileView === 'ride';
+  const show = isPartyRideActive() && onRideSurface && Boolean(state.currentParty?.id && state.session?.user?.id && state.profile?.status === 'approved');
+  button.hidden = !show;
+  if (!show) cancelPartySosHold();
+  setPartySosButtonState('idle');
+}
+
+function clearPartySosMarkers() {
+  for (const entry of partySosMarkers.values()) {
+    try { entry.marker.remove(); } catch {}
+  }
+  partySosMarkers.clear();
+}
+
+function syncPartySosMarkers() {
+  const partyId = state.currentParty?.id;
+  if (!partyId || partySosRuntime.partyId !== partyId) {
+    clearPartySosMarkers();
+    return;
+  }
+  const activeIds = new Set();
+  for (const event of partySosRuntime.events) {
+    if (event.status !== 'active') continue;
+    activeIds.add(event.id);
+    let entry = partySosMarkers.get(event.id);
+    if (!entry) {
+      const markerEl = document.createElement('div');
+      markerEl.className = 'party-sos-marker';
+      markerEl.setAttribute('role', 'button');
+      markerEl.setAttribute('aria-label', `${event.requester_name} SOS 위치`);
+      markerEl.innerHTML = '<span>SOS</span>';
+      const popupEl = document.createElement('div');
+      popupEl.className = 'party-sos-popup';
+      const title = document.createElement('strong');
+      title.textContent = `${event.requester_name} SOS`;
+      const time = document.createElement('span');
+      time.textContent = formatPartySosTime(event.occurred_at);
+      popupEl.append(title, time);
+      const popup = new mapboxgl.Popup({ offset: 30, closeButton: true }).setDOMContent(popupEl);
+      const marker = new mapboxgl.Marker({ element: markerEl, anchor: 'bottom' })
+        .setLngLat([event.longitude, event.latitude])
+        .setPopup(popup)
+        .addTo(map);
+      entry = { marker, event };
+      partySosMarkers.set(event.id, entry);
+    }
+  }
+  for (const [id, entry] of partySosMarkers.entries()) {
+    if (!activeIds.has(id)) {
+      try { entry.marker.remove(); } catch {}
+      partySosMarkers.delete(id);
+    }
+  }
+  syncPartySosButton();
+}
+
+function applyPartySosEvent(row) {
+  const event = normalizePartySosEvent(row);
+  if (!event || event.party_id !== partySosRuntime.partyId) return;
+  partySosRuntime.events = partySosRuntime.events.filter(item => item.id !== event.id);
+  if (event.status === 'active') partySosRuntime.events.push(event);
+  syncPartySosMarkers();
+}
+
+async function refreshActivePartySos() {
+  const party = state.currentParty;
+  const client = supabaseClient;
+  if (!party?.id || !client || !state.session?.user?.id || state.profile?.status !== 'approved') return false;
+  const sequence = ++partySosRuntime.syncSequence;
+  const { data, error } = await client.from('party_sos_events')
+    .select('id,party_id,requester_id,requester_name,latitude,longitude,accuracy_m,position_recorded_at,occurred_at,status,resolved_at')
+    .eq('party_id', party.id)
+    .eq('status', 'active')
+    .order('occurred_at', { ascending: true });
+  if (sequence !== partySosRuntime.syncSequence || client !== supabaseClient || state.currentParty?.id !== party.id) return false;
+  if (error) {
+    console.warn('Active party SOS load failed:', error.message || error);
+    return false;
+  }
+  partySosRuntime.events = (data || []).map(normalizePartySosEvent).filter(Boolean);
+  syncPartySosMarkers();
+  return true;
+}
+
+function stopPartySosRuntime({ clearMarkers = false } = {}) {
+  partySosRuntime.syncSequence += 1;
+  if (partySosRuntime.channel && partySosRuntime.client) {
+    try { void partySosRuntime.client.removeChannel(partySosRuntime.channel); } catch {}
+  }
+  partySosRuntime.channel = null;
+  partySosRuntime.client = null;
+  partySosRuntime.partyId = '';
+  partySosRuntime.events = [];
+  cancelPartySosHold();
+  if (clearMarkers) clearPartySosMarkers();
+  syncPartySosButton();
+}
+
+async function syncPartySosRuntimeForCurrentParty() {
+  const party = state.currentParty;
+  const client = supabaseClient;
+  if (!party?.id || !client || !state.session?.user?.id || state.profile?.status !== 'approved') {
+    stopPartySosRuntime({ clearMarkers: true });
+    return;
+  }
+  if (partySosRuntime.partyId !== party.id || partySosRuntime.client !== client) {
+    stopPartySosRuntime({ clearMarkers: true });
+    partySosRuntime.partyId = party.id;
+    partySosRuntime.client = client;
+  }
+  await refreshActivePartySos();
+  if (partySosRuntime.partyId !== party.id || partySosRuntime.client !== client || partySosRuntime.channel) return;
+  partySosRuntime.channel = client.channel(`party-sos:${party.id}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'party_sos_events', filter: `party_id=eq.${party.id}` }, payload => {
+      if (payload.eventType === 'DELETE') {
+        partySosRuntime.events = partySosRuntime.events.filter(item => item.id !== payload.old?.id);
+        syncPartySosMarkers();
+      } else {
+        const incoming = normalizePartySosEvent(payload.new);
+        if (incoming?.requester_id !== state.session?.user?.id) {
+          if (payload.eventType === 'INSERT' && incoming?.status === 'active') {
+            toast(`${incoming.requester_name}님의 긴급 SOS가 발생했습니다. 지도에서 위치를 확인하세요.`);
+          } else if (payload.eventType === 'UPDATE' && incoming?.status === 'resolved') {
+            toast(`${incoming.requester_name}님의 SOS가 종료되었습니다.`);
+          }
+        }
+        applyPartySosEvent(payload.new);
+      }
+    })
+    .subscribe(status => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') console.warn('Party SOS Realtime unavailable:', status);
+    });
+  if (partySosRuntime.pendingPush?.party_id === party.id) {
+    const pending = partySosRuntime.pendingPush;
+    partySosRuntime.pendingPush = null;
+    setTimeout(() => void openPartySosFromPush(pending), 0);
+  }
+}
+
+function cancelPartySosHold(pointerId = null) {
+  if (pointerId !== null && partySosRuntime.holdPointerId !== null && pointerId !== partySosRuntime.holdPointerId) return;
+  clearTimeout(partySosRuntime.holdTimer);
+  partySosRuntime.holdTimer = null;
+  partySosRuntime.holdPointerId = null;
+  partySosRuntime.holdAction = '';
+  partySosRuntime.holdSosId = '';
+  $('#partySosButton')?.classList.remove('is-holding');
+}
+
+function beginPartySosHold(pointerId = null) {
+  const button = $('#partySosButton');
+  if (!button || button.hidden || button.disabled || partySosRuntime.sending || partySosRuntime.holdTimer) return;
+  if (navigator.onLine === false || !supabaseClient) {
+    setPartySosButtonState('error');
+    toast('인터넷에 연결되어 있지 않아 SOS를 전송할 수 없습니다. 긴급 구조 기관에 직접 신고해 주세요.');
+    return;
+  }
+  const ownActive = getOwnActivePartySos();
+  partySosRuntime.holdPointerId = pointerId;
+  partySosRuntime.holdAction = ownActive ? 'resolve' : 'create';
+  partySosRuntime.holdSosId = ownActive?.id || '';
+  button.classList.add('is-holding');
+  partySosRuntime.holdTimer = setTimeout(() => {
+    const action = partySosRuntime.holdAction;
+    const sosId = partySosRuntime.holdSosId;
+    partySosRuntime.holdTimer = null;
+    partySosRuntime.holdPointerId = null;
+    partySosRuntime.holdAction = '';
+    partySosRuntime.holdSosId = '';
+    partySosRuntime.suppressClick = true;
+    button.classList.remove('is-holding');
+    if (action === 'resolve' && sosId) void resolveOwnPartySos(sosId, true);
+    else if (action === 'create') void createPartySos();
+  }, PARTY_SOS_HOLD_MS);
+}
+
+function partySosNotificationSummary(notifications) {
+  if (!notifications?.configured) return '서버 저장은 완료됐지만 FCM 서버 Secret이 없거나 인증에 실패해 푸시를 보내지 못했습니다.';
+  const sent = Number(notifications.sent) || 0;
+  const failed = Number(notifications.failed) || 0;
+  const skipped = Number(notifications.skipped) || 0;
+  return `푸시 전송 ${sent}건${failed ? `, 실패 ${failed}건` : ''}${skipped ? `, 토큰 없음 ${skipped}건` : ''}.`;
+}
+
+async function createPartySos() {
+  const party = state.currentParty;
+  const client = supabaseClient;
+  if (partySosRuntime.sending || !isPartyRideActive() || !party?.id || !client || !state.session?.user?.id) return;
+  if (navigator.onLine === false) {
+    setPartySosButtonState('error');
+    toast('인터넷에 연결되어 있지 않아 SOS를 전송할 수 없습니다.');
+    return;
+  }
+  partySosRuntime.sending = true;
+  setPartySosButtonState('loading');
+  try {
+    const fixed = await requestFreshPartyGpsFix();
+    const fix = partyGpsRuntime.lastFix;
+    const fixAge = fix ? Math.abs(Date.now() - Number(fix.timestamp)) : Infinity;
+    if (!fixed || !fix || !Number.isFinite(fixAge) || fixAge > PARTY_SOS_FIX_MAX_AGE_MS) {
+      throw new Error('최신 GPS 위치를 확보하지 못해 SOS를 전송하지 않았습니다. 위치 권한과 GPS 상태를 확인해 주세요.');
+    }
+    const clientRequestId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char => {
+        const value = Math.floor(Math.random() * 16);
+        return (char === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+      });
+    const { data, error } = await client.functions.invoke('party-sos', {
+      body: {
+        action: 'create',
+        partyId: party.id,
+        latitude: fix.lat,
+        longitude: fix.lng,
+        accuracy: fix.accuracy,
+        positionRecordedAt: new Date(Number(fix.timestamp)).toISOString(),
+        clientRequestId
+      }
+    });
+    if (client !== supabaseClient || state.currentParty?.id !== party.id) return;
+    if (error || data?.storage?.ok !== true || !data?.event) throw error || new Error(data?.error || 'SOS 서버 저장에 실패했습니다.');
+    applyPartySosEvent(data.event);
+    setPartySosButtonState('success');
+    toast(`SOS 위치가 서버에 저장되었습니다. ${partySosNotificationSummary(data.notifications)} FCM 수신은 보장되지 않으며 긴급 구조 신고를 대신하지 않습니다.`);
+  } catch (error) {
+    console.warn('Party SOS create failed:', error?.message || error);
+    setPartySosButtonState('error');
+    toast(error?.message || 'SOS 전송에 실패했습니다. 인터넷 연결을 확인하고 긴급 구조 기관에 직접 신고해 주세요.');
+  } finally {
+    partySosRuntime.sending = false;
+  }
+}
+
+async function resolveOwnPartySos(sosId, confirmedByHold = false) {
+  const ownActive = getOwnActivePartySos();
+  if (!confirmedByHold || !sosId || ownActive?.id !== sosId || partySosRuntime.sending || !supabaseClient) return;
+  if (navigator.onLine === false) {
+    setPartySosButtonState('error');
+    toast('인터넷에 연결되어 있지 않아 SOS를 해제할 수 없습니다.');
+    return;
+  }
+  const client = supabaseClient;
+  partySosRuntime.sending = true;
+  setPartySosButtonState('loading');
+  try {
+    const { data, error } = await client.functions.invoke('party-sos', { body: { action: 'resolve', sosId } });
+    if (client !== supabaseClient) return;
+    if (error || data?.storage?.ok !== true || !data?.event) throw error || new Error(data?.error || 'SOS 해제 저장에 실패했습니다.');
+    applyPartySosEvent(data.event);
+    setPartySosButtonState('success');
+    toast(`SOS가 해제되고 기록은 유지되었습니다. ${partySosNotificationSummary(data.notifications)}`);
+  } catch (error) {
+    console.warn('Party SOS resolve failed:', error?.message || error);
+    setPartySosButtonState('error');
+    toast(error?.message || 'SOS 해제에 실패했습니다. 인터넷 연결을 확인해 주세요.');
+  } finally {
+    partySosRuntime.sending = false;
+  }
+}
+
+// Returns {ok, message}. ok=true only once the map was moved to the SOS position (or for a resolved SOS).
+// `silent` = the caller shows the message itself (foreground banner), so no extra toast.
+async function openPartySosFromPush(data, { silent = false } = {}) {
+  const fail = message => { if (!silent) toast(message); return { ok: false, message }; };
+  const partyId = typeof data?.party_id === 'string' ? data.party_id : '';
+  if (!partyId) return { ok: false, message: 'SOS 정보가 올바르지 않습니다.' };
+  if (!supabaseClient || !state.session?.user?.id || state.profile?.status !== 'approved') {
+    partySosRuntime.pendingPush = data;
+    return { ok: false, message: '로그인 후 SOS 위치를 확인할 수 있습니다.' };
+  }
+  if (state.currentParty?.id !== partyId) await loadMyParties({ selectedId: partyId });
+  if (state.currentParty?.id !== partyId) return fail('이 SOS를 확인할 수 있는 파티 구성원이 아닙니다.');
+  await syncPartySosRuntimeForCurrentParty();
+  if (data.action === 'resolved') {
+    if (!silent) toast('파티원의 SOS가 종료되었습니다.');
+    return { ok: true };
+  }
+  const event = partySosRuntime.events.find(item => item.id === data.sos_id);
+  const latitude = event?.latitude ?? Number(data.latitude);
+  const longitude = event?.longitude ?? Number(data.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return fail('SOS 위치 정보를 찾을 수 없습니다.');
+  try {
+    if (window.matchMedia('(max-width: 768px)').matches) setMobileAppView(isPartyRideActive() ? 'ride' : 'map');
+    map.easeTo({ center: [longitude, latitude], zoom: Math.max(map.getZoom(), 15), duration: 700, essential: true });
+  } catch (error) {
+    console.warn('SOS map move failed:', error?.message || error);
+    return fail('지도를 SOS 위치로 이동하지 못했습니다.');
+  }
+  const marker = event ? partySosMarkers.get(event.id)?.marker : null;
+  if (marker && !marker.getPopup()?.isOpen()) marker.togglePopup();
+  return { ok: true };
+}
+// Foreground banner "위치 보기" (push-notifications.js) uses the same route as a system-notification tap.
+window.PowderlinePartySos = { openFromPush: data => openPartySosFromPush(data, { silent: true }) };
+
+function initPartySosInteractions() {
+  const button = $('#partySosButton');
+  if (!button) return;
+  button.addEventListener('contextmenu', event => event.preventDefault());
+  button.addEventListener('pointerdown', event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    event.preventDefault();
+    try { button.setPointerCapture(event.pointerId); } catch {}
+    beginPartySosHold(event.pointerId);
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    button.addEventListener(type, event => cancelPartySosHold(event.pointerId));
+  }
+  button.addEventListener('keydown', event => {
+    if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
+      event.preventDefault();
+      beginPartySosHold('keyboard');
+    }
+  });
+  button.addEventListener('keyup', event => {
+    if (event.key === ' ' || event.key === 'Enter') cancelPartySosHold('keyboard');
+  });
+  button.addEventListener('click', event => {
+    if (partySosRuntime.suppressClick) {
+      partySosRuntime.suppressClick = false;
+      event.preventDefault();
+    }
+  });
+  syncPartySosButton();
+}
 
 function sanitizePartyGpsInterval(value) {
   const num = Number(value);
@@ -2643,6 +3095,7 @@ function isMyPartyLocationSharingEnabled(party = state.currentParty) {
 
 function selectMyParty(party, { skipGps = false } = {}) {
   const previousPartyId = state.currentParty?.id;
+  if (previousPartyId && previousPartyId !== party.id) setPartyRideContext(false);
   const routeIds = Array.isArray(party.route_ids) ? party.route_ids.filter(Boolean) : [];
   const sharedCourses = resolvePartySharedCourses(party);
   const previousSelectedId = previousPartyId === party.id ? state.currentParty?.selectedRouteId : null;
@@ -2672,6 +3125,7 @@ function selectMyParty(party, { skipGps = false } = {}) {
     selectedRouteId:sharedCourse?.id || routeId || '',
     sharedCourse
   };
+  if (typeof syncPartySosRuntimeForCurrentParty === 'function') void syncPartySosRuntimeForCurrentParty();
   if (skipGps) return;
   if (typeof syncPartyGpsRuntimeForCurrentParty === 'function') {
     syncPartyGpsRuntimeForCurrentParty();
@@ -2896,6 +3350,54 @@ function saveLastRegion(id) {
   try { localStorage.setItem('powderline.lastRegion', id); } catch {}
 }
 
+// Home 2-step picker (country -> ski area). #homeRegionSelect stays the single source of truth; the country select
+// only hides/shows its options, so region ids, saved values and every programmatic .value set keep working.
+const HOME_COUNTRIES = [['JP', '일본'], ['KR', '한국']];
+function regionCountry(id) {
+  const r = regions[id];
+  if (!r) return '';
+  const c = String(r.country || '').trim().toLowerCase();
+  if (['jp', 'jpn', 'japan', '일본'].includes(c)) return 'JP';
+  if (['kr', 'kor', 'korea', 'south korea', '한국', '대한민국'].includes(c)) return 'KR';
+  // No country field in the region data: fall back to the centre point; ambiguous positions stay unclassified.
+  const [lng, lat] = Array.isArray(r.center) ? r.center.map(Number) : [NaN, NaN];
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return '';
+  if (lng >= 124.5 && lng <= 130 && lat >= 33 && lat <= 38.7) return 'KR';
+  if (lng >= 130.5 && lng <= 146 && lat >= 30 && lat <= 46) return 'JP';
+  return '';
+}
+function syncHomeCountry(fromRegion = true) {
+  const regionSel = document.getElementById('homeRegionSelect');
+  const countrySel = document.getElementById('homeCountrySelect');
+  if (!regionSel || !countrySel) return;
+  const ids = [...regionSel.options].map(o => o.value).filter(Boolean);
+  const hasOther = ids.some(id => !regionCountry(id));
+  const list = hasOther ? [...HOME_COUNTRIES, ['', '기타']] : HOME_COUNTRIES;
+  if (countrySel.dataset.built !== list.length + '') {
+    countrySel.innerHTML = `<option value="-">국가를 선택하세요</option>${list.map(([v, l]) => `<option value="${v || 'ETC'}">${l}</option>`).join('')}`;
+    countrySel.dataset.built = list.length + '';
+  }
+  const key = id => regionCountry(id) || 'ETC';
+  if (fromRegion && regionSel.value) countrySel.value = key(regionSel.value);
+  const chosen = countrySel.value;
+  for (const o of regionSel.options) {
+    if (!o.value) continue;
+    const show = chosen !== '-' && key(o.value) === chosen;
+    o.hidden = !show; o.disabled = !show;
+  }
+}
+function onHomeCountryChange() {
+  const regionSel = document.getElementById('homeRegionSelect');
+  if (!regionSel) return;
+  syncHomeCountry(false);
+  const cur = regionSel.options[regionSel.selectedIndex];
+  if (regionSel.value && cur && cur.disabled) {
+    // Selection belongs to the other country: clear the picker only (saved lastRegion is untouched; synthetic change is not saved).
+    regionSel.value = '';
+    regionSel.dispatchEvent(new Event('change'));
+  }
+}
+
 function syncRegionSelectors() {
   const active = Object.entries(regions)
     .filter(([, details]) => !details.custom && details.isActive !== false)
@@ -2919,6 +3421,7 @@ function syncRegionSelectors() {
       select.innerHTML = `<option value="">지역을 선택하세요</option>${options}`;
       const has = value => value && [...select.options].some(option => option.value === value);
       select.value = has(previous) ? previous : has(lastRegion) ? lastRegion : '';
+      syncHomeCountry();
       continue;
     }
     select.innerHTML = options;
@@ -3098,6 +3601,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     syncMobileAuthState();
   }
   if (typeof stopPartyGpsRuntime === 'function') stopPartyGpsRuntime({ clearMarkers: true });
+  if (typeof stopPartySosRuntime === 'function') stopPartySosRuntime({ clearMarkers: true });
   supabaseAuthSubscription?.unsubscribe();
   supabaseAuthSubscription=null;
   supabaseClient=null;
@@ -3150,6 +3654,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   if (session && profile?.status === 'approved') saveOfflineAccessGrant(session, profile);
   else clearOfflineAccessGrant(session?.user?.id);
   useLocalRoutes();
+  if (session && profile?.status === 'approved') void ensurePushAfterLogin();
 
   const { data } = client.auth.onAuthStateChange(async (event, nextSession) => {
     if (client !== supabaseClient) return;
@@ -3157,6 +3662,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     state.session=nextSession||null;
     if (!nextSession) {
       endRideOnSession(); // signed out (any logout path) ends the Ride On session
+      stopPartySosRuntime({ clearMarkers: true });
       await stopGpsRecordingWatcher();
       resetGpsRecordingState();
       gpsRecording.initialized=false;
@@ -3180,6 +3686,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (nextProfile) updateAuthUi(); // re-render now that verification is known (gate, header, admin menu)
     if (nextProfile?.status === 'approved') {
       saveOfflineAccessGrant(nextSession, state.profile);
+      void ensurePushAfterLogin();
       if (nextSession.user.id !== previousUserId) await loadCloudRoutes({ notify: event === 'SIGNED_IN' });
       await restoreGpsRecording();
       void syncPendingGpsRoutes();
@@ -6693,6 +7200,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       }
       document.body.dataset.mobileView = nextView;
       document.body.dataset.mobileTab = activeTab;
+      syncPartySosButton();
       mobileNavItems.forEach(item => item.classList.toggle('active', item.dataset.tab === activeTab));
       const homeScreen = $('#mobileHomeScreen');
       const routesScreen = $('#mobileRoutesScreen');
@@ -9236,7 +9744,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       rideOnButton.toggleAttribute('disabled', rideOnDisabled);
       rideOnButton.setAttribute('aria-disabled', String(rideOnDisabled));
     }
-    if (offlinePanel) offlinePanel.hidden = mobileHomeMapMode !== 'offline';
+    // Download card for the selected ski area is shown in every map mode (online / offline / none).
+    if (offlinePanel) offlinePanel.hidden = false;
     if (hint) {
       hint.classList.toggle('offline', mobileHomeMapMode === 'offline');
       hint.textContent = mobileHomeMapMode === 'online'
@@ -9255,7 +9764,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
                   : '선택 지역을 먼저 다운로드해 주세요.'
           : '지도 모드를 선택하세요.';
     }
-    if (mobileHomeMapMode === 'offline') renderOfflineRegionList();
+    renderOfflineRegionList();
   }
 
   function setMobileHomeMapMode(mode) {
@@ -9368,16 +9877,23 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   function renderOfflineRegionList() {
     const list = $('#homeOfflineRegionList');
     if (!list) return;
-    let entries = getOfflineCatalogRegions();
+    // Home card shows only the currently selected ski area (same statuses / download handler as before).
+    const selectedId = $('#homeRegionSelect')?.value || '';
+    if (!selectedId) { list.innerHTML = '<p class="home-offline-region-empty">스키장을 선택하세요.</p>'; return; }
+    let entries = getOfflineCatalogRegions().filter(([id]) => id === selectedId);
     const noNetwork = navigator.onLine === false;
     if (noNetwork) entries = entries.filter(([id]) => { const st = offlineRegionStatuses.get(id); return offlineUsable(st) || st?.loading; });
+    if (!entries.length && regions[selectedId] && !catalogRegionIds.has(selectedId) && state.offlineCatalog.phase !== 'loading' && !noNetwork) {
+      list.innerHTML = '<p class="home-offline-region-empty">선택한 스키장은 오프라인 지도 목록에 아직 없습니다. 인터넷 연결 후 다시 확인해 주세요.</p>';
+      return;
+    }
     if (!entries.length) {
       const catalog = state.offlineCatalog;
       const stillLoading = catalog.phase === 'loading' || catalog.phase === 'idle' && mobileHomeCatalogRefreshPromise;
       const message = stillLoading ? '다운로드된 지역을 확인하는 중입니다…'
         : catalog.phase === 'timeout' ? '저장된 지역 목록 조회 시간이 초과되었습니다. 지도 모드를 다시 선택해 주세요.'
         : catalog.phase === 'error' ? `저장된 지역 목록을 불러오지 못했습니다.${catalog.message ? ' (' + catalog.message + ')' : ''}`
-        : noNetwork ? '다운로드된 오프라인 지역이 없습니다. 인터넷에 연결한 뒤 지역을 다운로드해 주세요.'
+        : noNetwork ? '선택한 스키장은 다운로드되지 않아 오프라인에서 사용할 수 없습니다. 인터넷에 연결한 뒤 다운로드해 주세요.'
         : '표시할 지역이 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.';
       list.innerHTML = `<p class="home-offline-region-empty">${escapeHtml(message)}</p>`;
       return;
@@ -9392,7 +9908,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       let stateClass = 'available';
       const skiStatus = details.skiDataStatus;
       const skiNote = skiStatus === 'pending' || skiStatus === 'processing' ? ' · 리프트·슬로프 데이터 준비 중' : skiStatus === 'failed' ? ' · 리프트·슬로프 데이터 준비 실패' : '';
-      let stateLabel = androidAvailable ? '다운로드 가능' + skiNote : 'Android 앱에서 다운로드 가능';
+      let stateLabel = androidAvailable ? '다운로드 가능' + skiNote : '웹에서는 다운로드할 수 없습니다 · Powderline Android 앱에서 다운로드 가능';
       let buttonLabel = '다운로드';
       let disabled = !androidAvailable;
       if (!payload) {
@@ -9933,7 +10449,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const lastRegion = readLastRegion();
       regionSel.value = [...regionSel.options].some(o => o.value && o.value === lastRegion) ? lastRegion : '';
     }
+    syncHomeCountry();
     const region = regionSel.value;
+    window.PowderlineWeather?.setRegion(region, region ? (regions[region]?.label || regionSel.selectedOptions[0]?.textContent || region) : '');
     const prevCourse = courseSel.value;
     const courses = region ? state.saved.map((r, i) => ({ r, i })).filter(({ r }) => !r.region || r.region === region) : [];
     courseSel.innerHTML = '<option value="">코스 선택 안 함 (지역 지도만 보기)</option>' +
@@ -9941,6 +10459,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (prevCourse && courses.some(({ i }) => String(i) === prevCourse)) courseSel.value = prevCourse;
     updateMobileHomeMeta();
     updateMobileHomeMapModeUi();
+    // The download card is always visible: re-read the stored offline status whenever the selected ski area changes
+    // (any map mode; existing status/download code, no mode is forced).
+    if (region && renderMobileHome.offlineStatusRegion !== region) {
+      renderMobileHome.offlineStatusRegion = region;
+      void refreshOfflineRegionStatuses();
+    }
   }
 
   function updateMobileHomeMeta() {
@@ -9953,7 +10477,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   function applySavedRoute(item, destinationView = 'map', rideSource = 'route') {
     if (!item) return;
-    if (destinationView === 'ride') startRideOnSession(rideSource);
+    if (destinationView === 'ride') {
+      const partyRide = rideSource === 'party-member' || rideSource === 'party-leader';
+      setPartyRideContext(partyRide, partyRide ? state.currentParty?.id : '');
+      startRideOnSession(rideSource);
+    }
     pushHistory();
     state.points = prepareEditPoints(item.points);
     noteRideRouteSelected(item);
@@ -10043,13 +10571,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function initMobileHomeInteractions() {
+    $('#homeCountrySelect')?.addEventListener('change', onHomeCountryChange);
     $('#homeRegionSelect')?.addEventListener('change', event => {
       // Only user picks are remembered (offline auto-pick dispatches a synthetic change).
       if (event.isTrusted) saveLastRegion($('#homeRegionSelect').value);
       const courseSel = $('#homeCourseSelect');
       if (courseSel) courseSel.value = '';
-      renderMobileHome();
-      if (mobileHomeMapMode === 'offline') void refreshOfflineRegionStatuses();
+      renderMobileHome(); // also refreshes the selected ski area's offline status (all map modes)
     });
     $('#homeCourseSelect')?.addEventListener('change', updateMobileHomeMeta);
     document.querySelectorAll('[data-home-map-mode]').forEach(button => {
@@ -10707,6 +11235,8 @@ function recoverPartyGpsRuntime() {
   if (partyGpsRuntime.pollTimer === null || (sharing && partyGpsRuntime.sendTimer === null)) schedulePartyGpsTimer();
 
   refreshCurrentPartyMemberLocations();
+  void refreshActivePartySos();
+  void syncCurrentFcmToken();
   if (sharing) requestFreshPartyGpsFix().then(() => sendCurrentPartyGpsFix(true));
 }
 
@@ -10928,6 +11458,8 @@ async function leaveCurrentParty() {
     const { error } = await client.rpc('leave_party', { p_party_id: partyId });
     if (client !== supabaseClient || state.session?.user?.id !== userId) return;
     if (error) throw error;
+    stopPartySosRuntime({ clearMarkers: true });
+    setPartyRideContext(false);
     deletePartyCacheEntry(userId, partyId); // party shared routes only; personal courses untouched
     modal.hidden = true;
     await loadMyParties();
@@ -10966,6 +11498,8 @@ async function disbandCurrentParty() {
     const {error} = await client.rpc('disband_party', {p_party_id:partyId});
     if (client !== supabaseClient || state.session?.user?.id !== userId) return;
     if (error) throw error;
+    stopPartySosRuntime({ clearMarkers: true });
+    setPartyRideContext(false);
     deletePartyCacheEntry(userId, partyId); // party shared routes only; personal courses untouched
     modal.hidden = true;
     await loadMyParties();
@@ -12253,7 +12787,8 @@ async function startPartyMemberSelectedRideOn() {
       ['#partyJoinedLeaveModal', '#partyJoinedLeaveCloseBtn'],
       ['#partyLeaderDisbandModal', '#partyLeaderDisbandCloseBtn'],
       ['#compassCalibrationModal', '#compassCalibCancelBtn'],
-      ['#routeFollowPromptModal', '#routeFollowLaterBtn']
+      ['#routeFollowPromptModal', '#routeFollowLaterBtn'],
+      ['#weatherDetailPage', '#weatherDetailBackBtn']
     ];
     for (const [modalId, closeId] of modalCloseControls) {
       if (clickVisibleControl(modalId, closeId)) return true;
@@ -12342,7 +12877,8 @@ async function startPartyMemberSelectedRideOn() {
     const guard = () => { try { history.pushState({ plGuard: true }, ''); } catch { } };
     try { history.replaceState({ plBase: true }, ''); } catch { return; }
     guard();
-    window.addEventListener('popstate', async () => {
+    window.addEventListener('popstate', async (event) => {
+      if (event?.plWeatherHandled) return; // the weather page popped its own history entry (weather.js): guard stays as is
       const consumed = await handleAndroidBackButton(null);
       if (consumed) guard(); else history.back();
     });
@@ -12446,6 +12982,7 @@ async function startPartyMemberSelectedRideOn() {
   initMobileHomeInteractions();
   initMobileStandaloneInteractions();
   initGpsRecordingInteractions();
+  initPartySosInteractions();
   initAndroidBackButton();
   initCompassCalibration();
   initBrowserBackGuard();
