@@ -146,9 +146,16 @@ for (const miss of ['ecmwf_ifs025', 'gfs_seamless']) {
   const headWith = (bmH, mmH) => f => (f.endsWith('weather/kiroro.json') ? Buffer.from(JSON.stringify(bmH)) : f.endsWith('weather-multimodel/kiroro.json') ? Buffer.from(JSON.stringify(mmH)) : null);
   const older = (j, h) => { const x = clone(j); x.fetched_at = new Date(Date.parse(j.fetched_at) - h * HOUR).toISOString(); return x; };
   const shiftCurrent = (j, h) => { const x = clone(j); for (const p of ['summit', 'mid', 'base']) if (x.current?.[p]) x.current[p].forecast_time = new Date(Date.parse(x.current[p].forecast_time) - h * HOUR).toISOString().replace('Z', '+00:00'); return x; };
-  // identical forecast, only collection metadata (fetched_at 1 h older, current slot 1 h back) -> unchanged, no stage
-  let p = decide(summary, {...base, readHead: headWith(older(bm, 1), shiftCurrent(older(mmFixed, 1), 1))});
+  // identical forecast and identical current block, only fetched_at 1 h older -> unchanged, no stage
+  let p = decide(summary, {...base, readHead: headWith(older(bm, 1), older(mmFixed, 1))});
   check('stage.identical_forecast_not_committed', p.regions.kiroro.unchanged === true && !p.stage.some(f => f.includes('kiroro')), {r: p.regions.kiroro});
+  // same forecast but the current slot moved 1 h (new "HH:mm 기준") -> commit
+  p = decide(summary, {...base, readHead: headWith(older(bm, 1), shiftCurrent(older(mmFixed, 1), 1))});
+  check('stage.current_slot_moved_1h_committed', !p.regions.kiroro.unchanged && p.stage.includes('dist/data/weather-multimodel/kiroro.json') && p.stage.includes('dist/data/weather/kiroro.json'), {content: p.regions.kiroro.content});
+  // same forecast, same slot, but current values changed -> commit
+  { const pm = older(mmFixed, 1); pm.current.summit.temperature_2m = (pm.current.summit.temperature_2m ?? 0) + 1;
+    p = decide(summary, {...base, readHead: headWith(older(bm, 1), pm)});
+    check('stage.current_values_changed_committed', p.regions.kiroro.content === 'same forecast, time axis: current values changed' && p.stage.includes('dist/data/weather-multimodel/kiroro.json'), {content: p.regions.kiroro.content}); }
   // time axis moved >= 3 h -> commit
   p = decide(summary, {...base, readHead: headWith(older(bm, 1), shiftCurrent(older(mmFixed, 1), 3))});
   check('stage.slot_moved_3h_committed', !p.regions.kiroro.unchanged && p.stage.includes('dist/data/weather-multimodel/kiroro.json'), {content: p.regions.kiroro.content});

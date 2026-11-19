@@ -10,8 +10,9 @@ name: Weather update (multi-model)
 on:
   schedule:
     # Every 2 hours (UTC :00). Model runs appear far less often (JMA MSM every 3 h, ECMWF / GFS every 6 h, each several
-    # hours after initialisation); hours without a new forecast end without a commit or deployment
-    # (scripts/weather-ci-stage.mjs compares forecast content, not fetched_at). GitHub may start scheduled runs late or
+    # hours after initialisation). A run commits and deploys whenever the forecast OR the "current" block (the app's
+    # "HH:mm 기준" time and current values) changed, so every successful 2 h run publishes fresh data
+    # (scripts/weather-ci-stage.mjs; fetched_at alone is not compared). GitHub may start scheduled runs late or
     # (rarely) skip one; actual start / end times are written to the job summary.
     - cron: '0 */2 * * *'
   workflow_dispatch:

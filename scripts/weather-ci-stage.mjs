@@ -24,11 +24,11 @@ const mmRel = r => `dist/data/weather-multimodel/${r}.json`;
 export const SOURCE_REL = 'dist/data/weather-source.json';
 
 // ---- "Did the forecast really change?" (hourly runs often see no new model run) ----
-// Collection metadata (fetched_at, the 15-min "current" nowcast, validation timestamps) is ignored; forecast values,
-// time axes, sources, weights and model run ids are compared. The time axis still forces an update when the committed
-// file's "now" slot is >= MAX_SLOT_DRIFT_H behind, its local date is another day, or it is >= MAX_AGE_H old (stays
-// below the UI's 6 h "이전" label).
-export const MAX_SLOT_DRIFT_H = 3, MAX_AGE_H = 5;
+// fetched_at and validation timestamps are ignored; forecast values, time axes, sources, weights and model run ids are
+// compared. The committed pair is still replaced when the "current" block (the app's "HH:mm 기준" time + current
+// values) differs, its "now" slot is >= MAX_SLOT_DRIFT_H behind, its local date is another day, or it is >= MAX_AGE_H
+// old (stays below the UI's 6 h "이전" label). With the 2 h schedule every successful run therefore publishes.
+export const MAX_SLOT_DRIFT_H = 1, MAX_AGE_H = 5;
 const HOUR = 3600e3;
 export function contentSignature(json, kind) {
   const pick = kind === 'multimodel'
@@ -43,6 +43,7 @@ export function timeAxisMoved(prev, next, nowMs) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return 'current slot unknown';
   if (Math.abs(b - a) >= MAX_SLOT_DRIFT_H) return `current slot moved ${b - a} h`;
   if ((prev.current.summit.forecast_time || '').slice(0, 10) !== (next.current.summit.forecast_time || '').slice(0, 10)) return 'local date changed';
+  if (JSON.stringify(prev.current) !== JSON.stringify(next.current)) return 'current values changed';
   const age = (nowMs - Date.parse(prev.fetched_at)) / HOUR;
   if (!(age < MAX_AGE_H)) return `committed file ${Math.round(age * 10) / 10} h old`;
   return null;

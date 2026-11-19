@@ -277,9 +277,32 @@ body[data-native-android="1"] .home-weather-title { font-size: 13.5px; }
 .wx-cam-view[hidden] { display: none; }
 .wx-cam-view .weather-detail-bar h1 { flex: 0 1 auto; }
 .wx-cam-view-region { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--wx-on-surface-variant); font: 600 12px/16px var(--wx-sans); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
-.wx-cam-view-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 16px calc(20px + env(safe-area-inset-bottom, 0px)); }
-.wx-cam-content { display: flex; flex-direction: column; width: 100%; max-width: 720px; min-height: 100%; margin: 0 auto; }
+/* Fixed-height screen: header, the selected video, its name / help / source link never move; only .wx-cam-list
+   scrolls (1 … 18+ cameras). The body itself does not scroll, so nothing behind it can be dragged either. */
+.wx-cam-view-body {
+  flex: 1 1 auto; min-height: 0; overflow: hidden; overscroll-behavior: none;
+  padding: 16px max(16px, env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+}
+.wx-cam-content { display: flex; flex-direction: column; width: 100%; max-width: 720px; height: 100%; min-height: 0; margin: 0 auto; }
+.wx-cam-content > * { flex: 0 0 auto; }
+.wx-cam-empty { overflow-y: auto; overscroll-behavior: contain; } /* message-only states: tiny screens may still need it */
 .wx-cam-player { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid var(--wx-outline); border-radius: 12px; background: #050505; }
+/* Short portrait viewports: shrink the 16:9 video a little so the camera list keeps room. */
+@media (max-height: 560px) and (orientation: portrait) {
+  .wx-cam-player { align-self: center; width: min(100%, max(200px, calc((100vh - 330px) * 16 / 9))); }
+  @supports (height: 100dvh) { .wx-cam-player { width: min(100%, max(200px, calc((100dvh - 330px) * 16 / 9))); } }
+}
+/* Short landscape (phone on its side): video left, name / link / scrolling list right. Same parts, same order. */
+@media (max-height: 480px) and (orientation: landscape) {
+  .wx-cam-content:not(.wx-cam-empty) {
+    display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-rows: auto auto auto minmax(0, 1fr); column-gap: 16px; align-content: stretch;
+  }
+  .wx-cam-content:not(.wx-cam-empty) > * { grid-column: 2; }
+  .wx-cam-content > .wx-cam-player { grid-column: 1; grid-row: 1 / -1; align-self: start; width: min(100%, calc((100vh - 110px) * 16 / 9)); }
+  @supports (height: 100dvh) { .wx-cam-content > .wx-cam-player { width: min(100%, calc((100dvh - 110px) * 16 / 9)); } }
+  .wx-cam-content > .wx-cam-name { margin-top: 0; }
+  .wx-cam-content > .wx-cam-list { padding-top: 12px; }
+}
 .wx-cam-player > iframe, .wx-cam-player > img, .wx-cam-player > video { display: block; width: 100%; height: 100%; border: 0; background: #050505; object-fit: contain; }
 /* LIVE CAM open: the altitude slider / tip (z-index 10/20) would paint over the camera view (z-index 5). */
 .wx-cam-active .wx-alt-card { visibility: hidden; }
@@ -297,8 +320,15 @@ body[data-native-android="1"] .home-weather-title { font-size: 13.5px; }
 .wx-cam-open:active { background: var(--wx-surface-high); }
 .wx-cam-open:focus-visible, .wx-cam-choice:focus-visible { outline: 2px solid var(--wx-primary); outline-offset: 2px; }
 .wx-cam-open .material-symbols-outlined { font-size: 19px; }
-.wx-cam-list { display: grid; gap: 8px; margin-top: auto; padding-top: 20px; }
-.wx-cam-choice { width: 100%; min-height: 44px; padding: 9px 12px; border: 1px solid var(--wx-outline); border-radius: 10px; background: var(--wx-surface-high); color: var(--wx-on-surface); font: 600 13px/18px var(--wx-sans); text-align: left; cursor: pointer; }
+/* The only scroller. Few cameras: pushed to the bottom as before (auto margin on the first button); many cameras: the
+   auto margin collapses and the list scrolls from its first entry (never cut off at the top). */
+.wx-cam-content > .wx-cam-list {
+  display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-height: 0; padding-top: 20px;
+  overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; scrollbar-width: none;
+}
+.wx-cam-list::-webkit-scrollbar { display: none; }
+.wx-cam-list > :first-child { margin-top: auto; }
+.wx-cam-choice { flex: 0 0 auto; width: 100%; min-height: 44px; padding: 9px 12px; border: 1px solid var(--wx-outline); border-radius: 10px; background: var(--wx-surface-high); color: var(--wx-on-surface); font: 600 13px/18px var(--wx-sans); text-align: left; cursor: pointer; }
 .wx-cam-choice.is-active { border-color: var(--wx-primary); background: var(--wx-primary-container); color: var(--wx-on-primary-container, var(--wx-on-surface)); }
 .wx-cam-media-error, .wx-cam-message, .wx-cam-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; color: var(--wx-on-surface-variant); text-align: center; }
 .wx-cam-media-error { position: absolute; inset: 0; padding: 20px; background: var(--wx-surface-high); }

@@ -11,7 +11,6 @@
   // stays open does not keep an old forecast. fetch() already uses cache: 'no-cache' (revalidates with the server).
   const RELOAD_MS = 30 * 60 * 1000;
   const cacheAt = new Map(); // regionId -> ms of the request
-  let sourceConfigAt = 0;
   let livecamConfig = null;
   let livecamConfigRequest = null;
   const selectedCameraByRegion = new Map();
@@ -39,26 +38,76 @@
   // by more than 1 h. Missing / unreadable switch file -> Best Match (safe default).
   const getJson = url => fetch(new URL(url, document.baseURI), {cache: 'no-cache'})
     .then(response => (response.ok ? response.json() : null)).catch(() => null);
-  let sourceConfig = null;
-  const loadSourceConfig = () => { if (Date.now() - sourceConfigAt > RELOAD_MS) { sourceConfig = null; sourceConfigAt = Date.now(); } return (sourceConfig ||= getJson('./data/weather-source.json')
-    .then(cfg => (cfg?.primary === 'multimodel' ? 'multimodel' : 'best_match'))); };
+  // Android app (Capacitor): ./data/ is the APK copy, frozen when the APK was built. The app therefore reads the
+  // GitHub Pages copy (refreshed every 2 h by .github/workflows/weather-update.yml) first, and falls back to the APK
+  // copy when the network fails. Whatever is used, the NEWEST valid file wins (fetched_at): remote, the last good remote
+  // file saved on this device, or the APK copy, so an older remote / cached response never replaces newer data.
+  // The web build (GitHub Pages itself) already reads the deployed files through ./data/.
+  const REMOTE_BASE = 'https://ygbsss-collab.github.io/powderline-hokkaido/';
+  const REMOTE_TIMEOUT_MS = 8000;
+  const SAVED_PREFIX = 'powderline.weather.v1.';
+  const isNativeApp = () => { try { return Boolean(window.Capacitor?.isNativePlatform?.()); } catch { return false; } };
+  const getRemoteJson = url => {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), REMOTE_TIMEOUT_MS) : 0;
+    return fetch(new URL(url, REMOTE_BASE), {cache: 'no-cache', signal: ctrl?.signal})
+      .then(response => (response.ok ? response.json() : null)).catch(() => null) // 404 HTML page -> json() throws -> null
+      .finally(() => { if (timer) clearTimeout(timer); });
+  };
+  // Forecast source switch per origin (re-read after RELOAD_MS). null = file missing / unreadable.
+  const sourceConfigs = new Map(); // getter -> {at, request}
+  const loadSourceConfig = (get = getJson) => {
+    let entry = sourceConfigs.get(get);
+    if (!entry || Date.now() - entry.at > RELOAD_MS) {
+      entry = {at: Date.now(), request: get('./data/weather-source.json')
+        .then(cfg => (cfg && typeof cfg === 'object' ? (cfg.primary === 'multimodel' ? 'multimodel' : 'best_match') : null))};
+      sourceConfigs.set(get, entry);
+    }
+    return entry.request;
+  };
   const usable = (json, id) => Boolean(json && json.region_id === id && json.hourly && json.current);
+  async function loadFrom(get, id, primary) {
+    const key = encodeURIComponent(id);
+    const [bm, mm] = await Promise.all([get(`./data/weather/${key}.json`),
+      primary === 'multimodel' ? get(`./data/weather-multimodel/${key}.json`) : null]);
+    const bmOk = usable(bm, id);
+    const mmOk = usable(mm, id) && mm.data_kind === 'powderline_multimodel_service' && mm.multimodel?.validation?.ok === true
+      && JSON.stringify(Object.keys(mm.hourly.summit || {})) === JSON.stringify(Object.keys((bmOk ? bm : mm).hourly.summit || {}))
+      && (!bmOk || Date.parse(mm.fetched_at) >= Date.parse(bm.fetched_at) - 3600e3);
+    if (mmOk) return Object.assign(mm, {forecastSource: 'multimodel', forecastFallback: null});
+    if (bmOk) return Object.assign(bm, {forecastSource: 'best_match', forecastFallback: primary === 'multimodel' ? (mm ? 'multimodel_rejected' : 'multimodel_unavailable') : null});
+    return null;
+  }
+  const fetchedMs = json => { const t = Date.parse(json?.fetched_at || ''); return Number.isFinite(t) ? t : -Infinity; };
+  function readSaved(id) {
+    try { const json = JSON.parse(localStorage.getItem(SAVED_PREFIX + id) || 'null'); return usable(json, id) ? json : null; } catch { return null; }
+  }
+  function writeSaved(id, json) {
+    let text;
+    try { text = JSON.stringify(json); } catch { return; }
+    try { localStorage.setItem(SAVED_PREFIX + id, text); return; } catch { /* quota: drop other regions, try once more */ }
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k?.startsWith(SAVED_PREFIX) && k !== SAVED_PREFIX + id) localStorage.removeItem(k); }
+      localStorage.setItem(SAVED_PREFIX + id, text);
+    } catch { /* storage unavailable: remote + APK copy still work */ }
+  }
+  async function loadNative(id) {
+    const [remotePrimary, localPrimary] = await Promise.all([loadSourceConfig(getRemoteJson), loadSourceConfig(getJson)]);
+    const primary = remotePrimary || localPrimary || 'best_match'; // remote switch first, APK switch when it fails
+    const [remote, bundled] = await Promise.all([loadFrom(getRemoteJson, id, primary), loadFrom(getJson, id, primary)]);
+    const candidates = [[remote, 'remote'], [readSaved(id), 'saved'], [bundled, 'bundled']].filter(([json]) => json);
+    if (!candidates.length) return null;
+    const [best, origin] = candidates.reduce((a, b) => (fetchedMs(b[0]) > fetchedMs(a[0]) ? b : a)); // ties: remote first
+    if (origin === 'remote') writeSaved(id, best);
+    return Object.assign(best, {dataOrigin: origin});
+  }
   function load(id) {
     if (cache.has(id) && Date.now() - (cacheAt.get(id) || 0) > RELOAD_MS) cache.delete(id);
     if (!cache.has(id)) {
       cacheAt.set(id, Date.now());
-      const key = encodeURIComponent(id);
-      cache.set(id, loadSourceConfig().then(async primary => {
-        const [bm, mm] = await Promise.all([getJson(`./data/weather/${key}.json`),
-          primary === 'multimodel' ? getJson(`./data/weather-multimodel/${key}.json`) : null]);
-        const bmOk = usable(bm, id);
-        const mmOk = usable(mm, id) && mm.data_kind === 'powderline_multimodel_service' && mm.multimodel?.validation?.ok === true
-          && JSON.stringify(Object.keys(mm.hourly.summit || {})) === JSON.stringify(Object.keys((bmOk ? bm : mm).hourly.summit || {}))
-          && (!bmOk || Date.parse(mm.fetched_at) >= Date.parse(bm.fetched_at) - 3600e3);
-        if (mmOk) return Object.assign(mm, {forecastSource: 'multimodel'});
-        if (bmOk) return Object.assign(bm, {forecastSource: 'best_match', forecastFallback: primary === 'multimodel' ? (mm ? 'multimodel_rejected' : 'multimodel_unavailable') : null});
-        return null;
-      }).then(result => { if (!result) cache.delete(id); return result; })); // retry on the next selection
+      const request = isNativeApp() ? loadNative(id)
+        : loadSourceConfig(getJson).then(primary => loadFrom(getJson, id, primary || 'best_match'));
+      cache.set(id, request.then(result => { if (!result) cache.delete(id); return result; })); // retry on the next selection
     }
     return cache.get(id);
   }
@@ -215,6 +264,19 @@
     renderCard();
     if (isOpen()) renderDetail();
   }
+  // Weather page re-entry / app back in the foreground: after RELOAD_MS re-read the region in the background. The shown
+  // data stays until the new result arrives and is never replaced by an older file (fetched_at).
+  async function refreshIfDue() {
+    if (!regionId || !data || Date.now() - (cacheAt.get(regionId) || 0) <= RELOAD_MS) return;
+    const id = regionId, token = loadToken;
+    const result = await load(id);
+    if (token !== loadToken || id !== regionId || !result || result === data || fetchedMs(result) < fetchedMs(data)) return;
+    data = result;
+    renderCard();
+    if (!isOpen()) return;
+    renderHeader();
+    if (!isCamOpen() && $('wxPointSections')) rerenderPointSections();
+  }
 
   // ---- Detail page (Stitch design "기상 현황") ----
   // Only received values are shown. Missing -> "--" (never 0); a real 0 stays "0". No rating / score / snow-surface
@@ -295,7 +357,9 @@
     const fetched = data ? new Date(data.fetched_at) : null;
     time.textContent = cur?.forecast_time ? `${cur.forecast_time.slice(11, 16)} 기준${stale ? ' · 이전' : ''}` : '';
     const srcLabel = data?.forecastSource === 'multimodel' ? 'POWDERLINE 다중 모델 예보' : data ? `Best Match 예보${data.forecastFallback ? ' (다중 모델 대체)' : ''}` : '';
-    time.title = fetched && !Number.isNaN(fetched.getTime()) ? `${srcLabel} · 수집 ${fetched.toISOString().slice(0, 16).replace('T', ' ')} UTC` : '';
+    const originLabel = {remote: ' · 서버', saved: ' · 저장본', bundled: ' · 앱 내장'}[data?.dataOrigin] || '';
+    time.title = fetched && !Number.isNaN(fetched.getTime()) ? `${srcLabel} · 수집 ${fetched.toISOString().slice(0, 16).replace('T', ' ')} UTC${originLabel}` : '';
+    time.dataset.origin = data?.dataOrigin || '';
     time.classList.toggle('stale', stale);
   }
 
@@ -811,6 +875,7 @@
     if (home) home.inert = true; // home stays mounted (region / course / scroll kept) but is not reachable behind the page
     $('weatherDetailBody').scrollTop = 0;
     $('weatherDetailBackBtn')?.focus({preventScroll: true});
+    refreshIfDue();
   }
   function hidePage() {
     const el = page();
@@ -905,6 +970,7 @@
       if (event.target.closest('#wxLiveCam')) openCam();
     });
     document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDetail(); }); // closes the camera view first
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIfDue(); });
     renderCard();
   }
 
