@@ -175,7 +175,7 @@
   // "2026-11-18T16:45:00+09:00" -> "11/18 16:45" (wall time of the data's own timezone, no conversion)
   const wallTime = iso => (typeof iso === 'string' && iso.length >= 16 ? `${iso.slice(5, 7)}/${iso.slice(8, 10)} ${iso.slice(11, 16)}` : '--');
   // Final publication time of the shown file (published_at, else fetched_at: same instant), in the data's own wall
-  // time. The home banner and the detail header both show exactly this value.
+  // time. Shown only in the detail header ("HH:mm 기준"); the home banner shows no time.
   const publishedIso = json => {
     const t = Date.parse(json?.published_at || json?.fetched_at || '');
     if (!Number.isFinite(t)) return null;
@@ -296,14 +296,11 @@
     $('homeWeatherSummitTemp').textContent = `${fmt(s?.temp, 1)}°C`;
     $('homeWeatherWind').textContent = `${fmt(s?.wind, 1)}m/s`;
     const timeEl = $('homeWeatherValidTime');
-    if (timeEl) {
-      const pub = data ? publishedLabel(data) : '';
-      timeEl.textContent = s ? `${wallTime(s.time)}${pub ? ` · ${pub}` : ''}` : '--';
-      timeEl.title = pub ? `최종 게시 ${wallTime(publishedIso(data))}` : '';
-    }
+    // Home banner: no 기준 / 게시 time (shown only in the detail header).
+    if (timeEl) { timeEl.textContent = ''; timeEl.title = ''; timeEl.hidden = true; }
     const stale = data && Date.now() - Date.parse(data.fetched_at) > STALE_MS;
     card.setAttribute('aria-label', `날씨 상세 보기 · ${!regionId ? '지역을 선택하세요'
-      : data ? `${s ? wallTime(s.time) : '--'} 예보${stale ? ' · 이전 데이터' : ''}` : '이 지역의 날씨 데이터가 없습니다'}`);
+      : data ? `날씨 예보${stale ? ' · 이전 데이터' : ''}` : '이 지역의 날씨 데이터가 없습니다'}`);
     card.classList.toggle('empty', !data);
     // Shared classification of the same hourly slot (code + snowfall + rain + day/night). Missing -> cloudy bg + "--".
     const isDay = s ? isDayFrom(s.sw) : null;
@@ -364,6 +361,28 @@
     clearTimeout(dueTimer);
     dueTimer = isOpen() && document.visibilityState === 'visible' ? setTimeout(() => { if (isOpen() && document.visibilityState === 'visible') refreshIfDue(); }, Math.max(1000, ms) + 500) : null;
   }
+
+  // Hour / date change while the page stays open: at every region-local full hour the date-dependent sections (daily
+  // cards 오늘 / 내일, first hourly row) are re-rendered from the data in memory - no fetch. A "today" the user had
+  // picked becomes the new today after midnight (the old date is then 어제).
+  let clockTimer = null;
+  let renderedHour = ''; // local "YYYY-MM-DDTHH" of the last date-dependent render
+  function scheduleClockTick() {
+    clearTimeout(clockTimer);
+    clockTimer = null;
+    if (!isOpen() || document.visibilityState !== 'visible' || !data) return;
+    const ln = localNowIso();
+    const ms = ((59 - Number(ln.slice(14, 16))) * 60 + (60 - Number(ln.slice(17, 19)))) * 1000 + 500;
+    clockTimer = setTimeout(onClockTick, ms);
+  }
+  function onClockTick() {
+    if (!isOpen() || !data) return;
+    const prevToday = renderedHour.slice(0, 10);
+    if (prevToday && localToday() !== prevToday && selectedDate === prevToday) selectedDate = null;
+    if (!isCamOpen() && $('wxPointSections')) rerenderPointSections();
+    scheduleClockTick();
+  }
+  const clockChanged = () => Boolean(renderedHour) && localNowIso().slice(0, 13) !== renderedHour;
 
   // ---- Detail page (Stitch design "기상 현황") ----
   // Only received values are shown. Missing -> "--" (never 0); a real 0 stays "0". No rating / score / snow-surface
@@ -427,7 +446,7 @@
   const fillStyle = pct => `width:${pct}%;background-size:${pct > 0 ? 10000 / pct : 100}% 100%`;
 
   // Header bar: selected region name (instead of "기상 현황") + data time at the right. The elevation is shown
-  // only in the altitude card. The time is the forecast valid time of the data; collection time is in the tooltip.
+  // only in the altitude card. The time is the final publication time (published_at, "HH:mm 기준"); collection time is in the tooltip.
   function renderHeader() {
     const title = $('weatherDetailTitle');
     if (!title) return;
@@ -439,11 +458,11 @@
       time.className = 'wx-header-time';
       title.insertAdjacentElement('afterend', time);
     }
-    const cur = currentOf('summit') || currentOf(detailPoint);
     const stale = Boolean(data) && Date.now() - Date.parse(data.fetched_at) > STALE_MS;
     const fetched = data ? new Date(data.fetched_at) : null;
-    const pub = data ? publishedLabel(data) : '';
-    time.textContent = cur?.forecast_time ? `${cur.forecast_time.slice(11, 16)} 기준${stale ? ' · 이전' : ''}${pub ? ` · ${pub}` : ''}` : '';
+    // Detail header: only "HH:mm 기준" = final publication time (published_at, else fetched_at) in the region's time.
+    const pubIso = data ? publishedIso(data) : null;
+    time.textContent = pubIso ? `${pubIso.slice(11, 16)} 기준` : '';
     const srcLabel = data?.forecastSource === 'multimodel' ? 'POWDERLINE 다중 모델 예보' : data ? `Best Match 예보${data.forecastFallback ? ' (다중 모델 대체)' : ''}` : '';
     const originLabel = {remote: ' · 서버', supabase: ' · 서버(Supabase)', saved: ' · 저장본', bundled: ' · 앱 내장'}[data?.dataOrigin] || '';
     time.title = fetched && !Number.isNaN(fetched.getTime()) ? `${srcLabel} · 수집 ${fetched.toISOString().slice(0, 16).replace('T', ' ')} UTC${originLabel}` : '';
@@ -494,7 +513,11 @@
 
   const PAST_DAYS_SHOWN = 2;
   const FORECAST_DAYS_SHOWN = 16; // today … +15 (unchanged)
-  const localToday = () => (currentOf(detailPoint)?.forecast_time || '').slice(0, 10); // region local date
+  // Region-local wall clock from the REAL time and the file's own UTC offset (JP / KR resorts: utc_offset_seconds of
+  // the data, never the device time zone). Not the collection time of the data: "today" and the first hourly row move
+  // with the clock even when the shown data is hours old.
+  const localNowIso = () => new Date(Date.now() + (Number(data?.utc_offset_seconds) || 0) * 1000).toISOString(); // YYYY-MM-DDTHH:MM…
+  const localToday = () => (data ? localNowIso().slice(0, 10) : ''); // region local date
   // Calendar arithmetic on the region-local date string (no device time zone involved).
   const addDays = (date, n) => new Date(Date.parse(`${date}T00:00:00Z`) + n * 24 * HOUR_MS).toISOString().slice(0, 10);
   const pastDates = today => (today ? Array.from({length: PAST_DAYS_SHOWN}, (_, k) => addDays(today, k - PAST_DAYS_SHOWN)) : []);
@@ -586,10 +609,16 @@
     const date = activeDate();
     const times = data?.hourly?.time || [];
     const index = new Map(times.map((t, i) => [t.slice(0, 16), i]));
-    const now = nowOf(detailPoint);
+    const now = Date.now(); // real instant (times[i] carry their offset)
     const get = name => series('hourly', detailPoint, name);
     const [temp, snow, rain, wind, dir, code, sw] = ['temperature_2m', 'snowfall', 'rain', 'wind_speed_10m', 'wind_direction_10m', 'weather_code', 'shortwave_radiation'].map(get);
-    const hours = hourlyExpanded ? Array.from({length: 24}, (_, h) => h) : HOURS_SUMMARY;
+    // Today: only hours after the current local time, from the next full hour (13:47 -> 14:00; 13:00 -> 14:00), up to
+    // 23:00 (collapsed: every 2 h, at most as many rows as HOURS_SUMMARY). Other dates: unchanged.
+    const isToday = date === localToday();
+    const nextHour = Number(localNowIso().slice(11, 13)) + 1;
+    const remaining = Array.from({length: Math.max(0, 24 - nextHour)}, (_, k) => nextHour + k);
+    const hours = isToday ? (hourlyExpanded ? remaining : remaining.filter((_, k) => k % 2 === 0).slice(0, HOURS_SUMMARY.length))
+      : hourlyExpanded ? Array.from({length: 24}, (_, h) => h) : HOURS_SUMMARY;
     const rows = date ? hours.map(h => {
       const hh = String(h).padStart(2, '0');
       const i = index.get(`${date}T${hh}:00`);
@@ -614,7 +643,8 @@
     const md = date ? `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))} (${WEEKDAYS[new Date(`${date}T12:00:00Z`).getUTCDay()]})` : '--';
     return `<section class="wx-section wx-px" id="wxHourlySection"><div class="wx-section-head"><div><span class="material-symbols-outlined wx-icon-accent" aria-hidden="true">schedule</span><span>시간대별 기상</span></div>
       <div class="wx-hour-tools"><span>${md}</span><button type="button" class="wx-more-btn" id="wxHourlyToggle" aria-expanded="${hourlyExpanded}">${hourlyExpanded ? '접기' : '상세보기'}</button></div></div>
-      ${rows.length ? `<div class="wx-hours${hourlyExpanded ? ' wx-hours-scroll' : ''}" id="wxHoursList"${hourlyExpanded ? ' tabindex="0" aria-label="시간대별 기상 24시간 목록"' : ''}>${rows.join('')}</div>` : '<p class="wx-empty">데이터 없음</p>'}</section>`;
+      ${rows.length ? `<div class="wx-hours${hourlyExpanded ? ' wx-hours-scroll' : ''}" id="wxHoursList"${hourlyExpanded ? ' tabindex="0" aria-label="시간대별 기상 24시간 목록"' : ''}>${rows.join('')}</div>`
+        : `<p class="wx-empty">${date && isToday ? '오늘 남은 시간대 예보가 없습니다. 내일 카드를 선택하세요.' : '데이터 없음'}</p>`}</section>`;
   }
 
   // Fixed viewport layout (CSS): the page body is a flex column of the viewport height; the hourly section takes the
@@ -896,6 +926,7 @@
         <footer class="wx-footer">POWDERLINE&nbsp; | YK LAB - GYOHYEOK YUN</footer>`;
       return;
     }
+    renderedHour = localNowIso().slice(0, 13);
     body.innerHTML = `${sliderHtml()}<div id="wxPointSections" class="wx-stack">${pointSectionsHtml()}</div>
       ${liveCamHtml()}
       <footer class="wx-footer">POWDERLINE&nbsp; | YK LAB - GYOHYEOK YUN</footer>`;
@@ -914,6 +945,7 @@
   function rerenderPointSections() {
     const strip = document.querySelector('#weatherDetailBody .wx-days');
     const scroll = strip ? strip.scrollLeft : 0;
+    renderedHour = localNowIso().slice(0, 13);
     $('wxPointSections').innerHTML = pointSectionsHtml();
     const next = document.querySelector('#weatherDetailBody .wx-days');
     if (next) next.scrollLeft = scroll;
@@ -964,6 +996,7 @@
     $('weatherDetailBody').scrollTop = 0;
     $('weatherDetailBackBtn')?.focus({preventScroll: true});
     refreshIfDue();
+    scheduleClockTick();
   }
   function hidePage() {
     const el = page();
@@ -978,6 +1011,8 @@
     el.hidden = true;
     clearTimeout(dueTimer);
     dueTimer = null;
+    clearTimeout(clockTimer);
+    clockTimer = null;
     el.classList.remove('wx-cam-active');
     const home = $('mobileHomeScreen');
     if (home) home.inert = false;
@@ -1060,7 +1095,11 @@
       if (event.target.closest('#wxLiveCam')) openCam();
     });
     document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDetail(); }); // closes the camera view first
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshIfDue(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') { clearTimeout(clockTimer); clockTimer = null; return; }
+      refreshIfDue();
+      if (isOpen() && clockChanged()) onClockTick(); else scheduleClockTick(); // back after an hour / midnight: redraw at once
+    });
     renderCard();
   }
 

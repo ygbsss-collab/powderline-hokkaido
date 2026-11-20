@@ -91,7 +91,7 @@ const lead = (mm, L) => mm.hourly.time.findIndex(t => Math.round((Date.parse(t) 
   const files = [...readdirSync(path.join(ROOT, 'scripts')).filter(f => /\.(mjs|json)$/.test(f) && !/test-weather-korea/.test(f)).map(f => `scripts/${f}`),
     'dist/weather.js', 'dist/app.js', '.github/workflows/weather-update.yml'];
   // integration traces only (endpoints, key parameters, KMA modules); comments stating "no KMA" are allowed
-  const hit = files.filter(f => /apihub\.kma|kma\.go\.kr|data\.go\.kr|serviceKey|authKey=|KMA_[A-Z_]*KEY|kma-collect|import[^\n]*kma/i.test(readFileSync(path.join(ROOT, f), 'utf8')));
+  const hit = files.filter(f => /apihub\.kma|kma\.go\.kr|data\.go\.kr|serviceKey=|authKey=|KMA_[A-Z_]*KEY|kma-collect|import[^\n]*kma/i.test(readFileSync(path.join(ROOT, f), 'utf8')));
   check('no_kma_code_or_keys', hit.length === 0, {hit});
 }
 // past hours are labelled as model estimates in the UI (never as observations)

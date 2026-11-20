@@ -78,7 +78,12 @@ await W.setRegion('kiroro', '키로로');
 els.get('homeWeatherCard').on.click();
 check('detail_open', !page.hidden && history.state?.plWeather === true);
 check('daily_18_cards_one_selected', (body().match(/class="wx-day[ "]/g) || []).length === 18 && (body().match(/aria-pressed="true"/g) || []).length === 1);
-check('collapsed_7_rows_08_to_20_every_2h', rows() === 7 && hourTimes() === '08,10,12,14,16,18,20' && !els.get('weatherDetailBody').classList.contains('wx-hours-expanded'), {times: hourTimes()});
+// Today shows only hours after the region-local time, from the next full hour (collapsed: every 2 h, max 7 rows).
+const kiroroOffset = Number(JSON.parse(readFileSync(path.join(ROOT, 'dist/data/weather/kiroro.json'), 'utf8')).utc_offset_seconds) || 0;
+const nextHour = Number(new Date(Date.now() + kiroroOffset * 1000).toISOString().slice(11, 13)) + 1;
+const remaining = Array.from({length: Math.max(0, 24 - nextHour)}, (_, k) => String(nextHour + k).padStart(2, '0'));
+const collapsedToday = remaining.filter((_, k) => k % 2 === 0).slice(0, 7);
+check('collapsed_today_from_next_hour_every_2h', rows() === collapsedToday.length && hourTimes() === collapsedToday.join(',') && !els.get('weatherDetailBody').classList.contains('wx-hours-expanded'), {times: hourTimes(), expected: collapsedToday.join(',')});
 check('daily_subtitle_removed', !body().includes('과거 2일') && !body().includes('16일간 전망') && body().includes('일별 예보'));
 // order: WEATHER -> daily -> hourly -> LIVE CAM entry -> footer
 const iCond = body().indexOf('wx-cond-card'), iDaily = body().indexOf('class="wx-days"'), iHour = body().indexOf('id="wxHourlySection"'), iCam = body().indexOf('id="wxLiveCam"'), iFoot = body().indexOf('wx-footer');
@@ -88,7 +93,7 @@ check('cam_entry_card_centered_no_name', /videocam/.test(camCard) && /LIVE CAM/.
 check('cam_big_placeholder_removed', !/wx-cam-preview|웹캠 준비 중/.test(body()) && !/wx-cam-preview \{/.test(css));
 // expand: 24 rows rendered, list scrolls inside, body marked, footer hidden by CSS
 click('#wxHourlyToggle');
-check('expanded_24_rows', rows() === 24 && /<span class="wx-hour-time">00:00<\/span>[\s\S]*<span class="wx-hour-time">23:00<\/span>/.test(body()));
+check('expanded_today_remaining_hours', rows() === remaining.length && hourTimes() === remaining.join(','), {times: hourTimes()});
 check('expanded_mode_marked', els.get('weatherDetailBody').classList.contains('wx-hours-expanded') && />접기<\/button>/.test(body()));
 check('expanded_cam_still_after_list', body().indexOf('id="wxLiveCam"') > body().indexOf('id="wxHoursList"'));
 // date change: list re-rendered, scroll reset, mode kept

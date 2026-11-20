@@ -291,15 +291,14 @@ await test('fallback: offline -> newest saved copy (existing cache priority unch
   assert.equal(r.dataOrigin, 'saved');
   assert.equal(r.fetched_at, first.fetched_at);
 });
-await test('app: home banner and detail header use the same final publication time', () => {
+await test('app: detail header shows only "HH:mm 기준" from published_at; home banner shows no time', () => {
   const A = app({});
   const mm = JSON.parse(sbText('weather-multimodel/kiroro.json'));
-  const label = A.ctx.publishedLabel(mm);
   const wall = new Date(Date.parse(mm.published_at) + mm.utc_offset_seconds * 1000).toISOString().slice(11, 16);
-  assert.equal(label, `게시 ${wall}`);
-  assert.equal(A.ctx.publishedLabel({...mm, published_at: undefined}), label, 'falls back to fetched_at (same instant)');
-  const homeLine = src.match(/timeEl\.textContent = s \? `\$\{wallTime\(s\.time\)\}\$\{pub \?/), detailLine = src.match(/기준\$\{stale \? ' · 이전' : ''\}\$\{pub \?/);
-  assert(homeLine && detailLine, 'both render publishedLabel(data)');
+  assert.equal(A.ctx.publishedLabel(mm), `게시 ${wall}`, 'publication time in the region wall time');
+  assert.equal(A.ctx.publishedLabel({...mm, published_at: undefined}), A.ctx.publishedLabel(mm), 'falls back to fetched_at (same instant)');
+  assert(src.includes("time.textContent = pubIso ? `${pubIso.slice(11, 16)} 기준` : '';"), 'detail header: HH:mm 기준 from publishedIso');
+  assert(src.includes("if (timeEl) { timeEl.textContent = ''; timeEl.title = ''; timeEl.hidden = true; }"), 'home banner time removed');
 });
 
 for (const d of tmpDirs) rmSync(d, {recursive: true, force: true});
