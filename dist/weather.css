@@ -230,7 +230,13 @@ body[data-native-android="1"] .home-weather-title { font-size: 13.5px; }
 .wx-more-btn:active { background: var(--wx-surface-high); }
 .wx-more-btn:focus-visible { outline: 2px solid var(--wx-primary); outline-offset: 2px; }
 .wx-hours { display: flex; flex-direction: column; gap: 4px; }
-.wx-hour.past { opacity: 0.6; }
+/* Hour rows vs the region-local clock: past = grey, low saturation (text, icon, background); current hour =
+   highlighted; future = the normal colours (no class). Rows are never hidden. */
+.wx-hour.past { background: rgba(120, 128, 138, 0.10); filter: grayscale(1); opacity: 0.55; }
+.wx-hour.past .wx-hour-time, .wx-hour.past .wx-hour-cond, .wx-hour.past .wx-hour-cond .material-symbols-outlined,
+.wx-hour.past .wx-hour-temp, .wx-hour.past .wx-hour-wind { color: #8a939c; }
+.wx-hour.current { background: rgba(56, 189, 248, 0.16); box-shadow: inset 0 0 0 1.5px var(--wx-primary); }
+.wx-hour.current .wx-hour-time, .wx-hour.current .wx-hour-temp { font-weight: 800; }
 .wx-hour { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 12px; background: var(--wx-surface-container); }
 .wx-hour-left, .wx-hour-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .wx-hour-left { flex: 1 1 auto; }

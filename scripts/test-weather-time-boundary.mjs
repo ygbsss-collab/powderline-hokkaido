@@ -1,4 +1,4 @@
-// Date / hour boundary tests of the weather detail page: real dist/weather.js in a vm with a fake clock, fake timers
+// Date / hour boundary tests of the weather detail page (fixed 08-20 / 00-23 rows; past dimmed, current highlighted): real dist/weather.js in a vm with a fake clock, fake timers
 // and the small fake DOM of test-weather-detail-ui.mjs. Stored repo data only (no network). The whole file runs a
 // second time in a child process with another device time zone (TZ=America/Los_Angeles): the region's own
 // utc_offset_seconds must decide 오늘 / 내일 and the first hourly row, never the device zone.
@@ -67,6 +67,8 @@ function harness(region) {
     fireClock() { const t = this.clockTimer(); if (!t) return false; t.cleared = true; t.fn(); return true; },
     visibility: async state => { doc.visibilityState = state; for (const f of docListeners.visibilitychange || []) f(); await new Promise(r => setTimeout(r, 10)); },
     hours: () => [...body().matchAll(/<span class="wx-hour-time">(\d\d):00<\/span>/g)].map(m => m[1]).join(','),
+    // "08p,10p,12p,14f": p = past (dimmed), c = current hour (highlighted), f = future (normal colours)
+    states: () => [...body().matchAll(/<div class="wx-hour( past| current)?" data-hour="(\d\d)"/g)].map(m => `${m[2]}${m[1] ? m[1].trim()[0] : 'f'}`).join(','),
     hourDate: () => /<div class="wx-hour-tools"><span>([^<]+)<\/span>/.exec(body())?.[1],
     dayLabel: date => new RegExp(`data-wx-date="${date}"[^>]*><div class="wx-day-head"><span>([^<]+)</span>`).exec(body())?.[1],
     selected: () => /class="wx-day[^"]*" data-wx-date="([^"]+)" aria-pressed="true"/.exec(body())?.[1],
@@ -74,6 +76,7 @@ function harness(region) {
   };
 }
 const md = d => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+const span = (from, to, st) => Array.from({length: to - from + 1}, (_, k) => `${String(from + k).padStart(2, '0')}${st}`);
 const wd = d => WEEKDAYS[new Date(`${d}T12:00:00Z`).getUTCDay()];
 const addDays = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
 
@@ -87,9 +90,9 @@ for (const region of ['kiroro', 'yongpyong']) {
   check(`${region}.today_tomorrow_weekday_labels`, H.dayLabel(day) === `오늘 (${md(day)})` && H.dayLabel(addDays(day, 1)) === `내일 (${md(addDays(day, 1))})`
     && H.dayLabel(addDays(day, 2)) === `${md(addDays(day, 2))} (${wd(addDays(day, 2))})` && H.dayLabel(addDays(day, -1)) === `어제 (${md(addDays(day, -1))})` && H.selected() === day,
     {today: H.dayLabel(day), d2: H.dayLabel(addDays(day, 2))});
-  check(`${region}.13_47_starts_at_14_00_collapsed`, H.hours() === '14,16,18,20,22', {hours: H.hours()});
+  check(`${region}.13_47_collapsed_fixed_08_20_past_dimmed`, H.states() === '08p,10p,12p,14f,16f,18f,20f', {states: H.states()});
   H.click('#wxHourlyToggle');
-  check(`${region}.13_47_expanded_14_to_23`, H.hours() === '14,15,16,17,18,19,20,21,22,23', {hours: H.hours()});
+  check(`${region}.13_47_expanded_all_24_13_current`, H.states() === [...span(0, 12, 'p'), '13c', ...span(14, 23, 'f')].join(','), {states: H.states()});
   H.click('#wxHourlyToggle');
   check(`${region}.header_only_HHmm_기준_from_published_at`, /^\d\d:\d\d 기준$/.test(H.header() || '') &&
     H.header() === `${new Date(Date.parse(H.mm.published_at || H.mm.fetched_at) + H.mm.utc_offset_seconds * 1000).toISOString().slice(11, 16)} 기준`, {header: H.header()});
@@ -99,7 +102,7 @@ for (const region of ['kiroro', 'yongpyong']) {
   H.setNow(`${day}T14:00`);
   check(`${region}.clock_timer_armed`, Boolean(H.clockTimer()) && H.clockTimer().ms <= 13 * 60e3 + 2000 && H.clockTimer().ms >= 12 * 60e3);
   H.fireClock();
-  check(`${region}.14_00_starts_at_15_00`, H.hours() === '15,17,19,21,23', {hours: H.hours()});
+  check(`${region}.14_00_marks_move_rows_kept`, H.states() === '08p,10p,12p,14c,16f,18f,20f', {states: H.states()});
   // user picks today explicitly, then midnight passes with the page open
   H.click('[data-wx-date]', day);
   H.setNow(`${addDays(day, 1)}T00:00`);
@@ -108,10 +111,12 @@ for (const region of ['kiroro', 'yongpyong']) {
   check(`${region}.midnight_new_today`, H.dayLabel(d1) === `오늘 (${md(d1)})` && H.dayLabel(day) === `어제 (${md(day)})` && H.dayLabel(addDays(day, 2)) === `내일 (${md(addDays(day, 2))})`,
     {today: H.dayLabel(d1), yesterday: H.dayLabel(day)});
   check(`${region}.midnight_selected_today_moves_to_new_day`, H.selected() === d1 && H.hourDate() === `${md(d1)} (${wd(d1)})`, {selected: H.selected(), hourDate: H.hourDate()});
-  check(`${region}.midnight_no_previous_day_hours`, H.hours() === '01,03,05,07,09,11,13', {hours: H.hours()});
+  check(`${region}.midnight_new_day_rows_all_future`, H.states() === '08f,10f,12f,14f,16f,18f,20f', {states: H.states()});
+  H.click('[data-wx-date]', day);
+  check(`${region}.yesterday_rows_kept_all_dimmed`, H.hours() === '08,10,12,14,16,18,20' && H.states() === '08p,10p,12p,14p,16p,18p,20p', {states: H.states()});
   // another date stays a full day (unchanged behaviour)
   H.click('[data-wx-date]', addDays(day, 3));
-  check(`${region}.future_day_unchanged_08_20`, H.hours() === '08,10,12,14,16,18,20', {hours: H.hours()});
+  check(`${region}.future_day_08_20_normal_colours`, H.states() === '08f,10f,12f,14f,16f,18f,20f', {states: H.states()});
   H.click('[data-wx-date]', d1);
   check(`${region}.no_fetch_for_hour_and_midnight_redraws`, H.fetched.length === n0, {fetched: H.fetched.slice(n0)});
   // background -> foreground across an hour redraws at once (the existing 30 min refresh may re-read the files once)
@@ -120,11 +125,15 @@ for (const region of ['kiroro', 'yongpyong']) {
   check(`${region}.hidden_clears_clock_timer`, !H.clockTimer());
   H.setNow(`${d1}T01:05`);
   await H.visibility('visible');
-  check(`${region}.foreground_after_hour_redraws`, H.hours() === '02,04,06,08,10,12,14', {hours: H.hours()});
+  H.click('#wxHourlyToggle');
+  check(`${region}.foreground_after_hour_redraws`, H.states().startsWith('00p,01c,02f'), {states: H.states().slice(0, 30)});
+  H.click('#wxHourlyToggle');
   // 23:30: no hour left today -> explicit message, nothing from today shown
   H.setNow(`${d1}T23:30`);
   H.fireClock();
-  check(`${region}.late_evening_message`, H.hours() === '' && /오늘 남은 시간대 예보가 없습니다/.test(H.body()));
+  H.click('#wxHourlyToggle');
+  check(`${region}.late_evening_all_rows_kept`, H.hours().split(',').length === 24 && H.states() === [...span(0, 22, 'p'), '23c'].join(',') && !/남은 시간대/.test(H.body()), {states: H.states().slice(-24)});
+  H.click('#wxHourlyToggle');
   const fgFetches = H.fetched.slice(n0).filter(f => f.includes(`/${region}.json`)).length;
   check(`${region}.foreground_only_existing_30min_refresh`, fgFetches <= 2, {fetched: H.fetched.slice(n0)}); // one bm + one mm read at most
 }

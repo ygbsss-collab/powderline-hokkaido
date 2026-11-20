@@ -363,7 +363,7 @@
   }
 
   // Hour / date change while the page stays open: at every region-local full hour the date-dependent sections (daily
-  // cards 오늘 / 내일, first hourly row) are re-rendered from the data in memory - no fetch. A "today" the user had
+  // cards 오늘 / 내일, past / current / future hour marks) are re-rendered from the data in memory - no fetch. A "today" the user had
   // picked becomes the new today after midnight (the old date is then 어제).
   let clockTimer = null;
   let renderedHour = ''; // local "YYYY-MM-DDTHH" of the last date-dependent render
@@ -379,7 +379,10 @@
     if (!isOpen() || !data) return;
     const prevToday = renderedHour.slice(0, 10);
     if (prevToday && localToday() !== prevToday && selectedDate === prevToday) selectedDate = null;
+    const list = $('wxHoursList'), keep = list ? list.scrollTop : 0;
     if (!isCamOpen() && $('wxPointSections')) rerenderPointSections();
+    const next = $('wxHoursList');
+    if (next) next.scrollTop = keep; // same rows, only past / current / future marks moved
     scheduleClockTick();
   }
   const clockChanged = () => Boolean(renderedHour) && localNowIso().slice(0, 13) !== renderedHour;
@@ -609,16 +612,14 @@
     const date = activeDate();
     const times = data?.hourly?.time || [];
     const index = new Map(times.map((t, i) => [t.slice(0, 16), i]));
-    const now = Date.now(); // real instant (times[i] carry their offset)
     const get = name => series('hourly', detailPoint, name);
     const [temp, snow, rain, wind, dir, code, sw] = ['temperature_2m', 'snowfall', 'rain', 'wind_speed_10m', 'wind_direction_10m', 'weather_code', 'shortwave_radiation'].map(get);
-    // Today: only hours after the current local time, from the next full hour (13:47 -> 14:00; 13:00 -> 14:00), up to
-    // 23:00 (collapsed: every 2 h, at most as many rows as HOURS_SUMMARY). Other dates: unchanged.
-    const isToday = date === localToday();
-    const nextHour = Number(localNowIso().slice(11, 13)) + 1;
-    const remaining = Array.from({length: Math.max(0, 24 - nextHour)}, (_, k) => nextHour + k);
-    const hours = isToday ? (hourlyExpanded ? remaining : remaining.filter((_, k) => k % 2 === 0).slice(0, HOURS_SUMMARY.length))
-      : hourlyExpanded ? Array.from({length: 24}, (_, h) => h) : HOURS_SUMMARY;
+    // Fixed rows for every date (collapsed 08:00 … 20:00, expanded 00:00 … 23:00); nothing is hidden. Each row is marked
+    // against the region-local clock: past (dimmed), current hour (highlighted), future (normal colours).
+    const hours = hourlyExpanded ? Array.from({length: 24}, (_, h) => h) : HOURS_SUMMARY;
+    const today = localToday();
+    const curHour = Number(localNowIso().slice(11, 13));
+    const timeState = h => (date < today ? 'past' : date > today ? 'future' : h < curHour ? 'past' : h === curHour ? 'current' : 'future');
     const rows = date ? hours.map(h => {
       const hh = String(h).padStart(2, '0');
       const i = index.get(`${date}T${hh}:00`);
@@ -635,8 +636,8 @@
         : w.kind === 'snow' ? (w.snow == null ? ' (--)' : w.snow > 0 ? ` (${amt(w.snow, 'cm')})` : '')
         : w.kind === 'rain' || w.kind === 'thunder' ? (w.rain == null ? ' (--)' : w.rain > 0 ? ` (${amt(w.rain, 'mm')})` : '')
         : '';
-      const past = has && Number.isFinite(now) && Date.parse(times[i]) <= now; // model estimate, not a forecast
-      return `<div class="wx-hour${past ? ' past' : ''}"${past ? ' title="지난 시각 (모델 추정값)"' : ''}><div class="wx-hour-left"><span class="wx-hour-time">${hh}:00</span>
+      const st = timeState(h);
+      return `<div class="wx-hour${st === 'future' ? '' : ` ${st}`}" data-hour="${hh}"${st === 'past' ? ' title="지난 시각 (모델 추정값)"' : st === 'current' ? ' title="현재 시간대" aria-current="time"' : ''}><div class="wx-hour-left"><span class="wx-hour-time">${hh}:00</span>
         <div class="wx-hour-cond"><span class="material-symbols-outlined" aria-hidden="true">${icon}</span><span>${text}${amount}</span></div></div>
         <div class="wx-hour-right"><span class="wx-hour-temp">${has ? fmt(temp[i], 0) : '--'}°C</span><span class="wx-hour-wind">${has ? dir8Ko(dir[i]) : '--'} ${has ? fmt(wind[i], 0) : '--'}m/s</span></div></div>`;
     }) : [];
@@ -644,7 +645,7 @@
     return `<section class="wx-section wx-px" id="wxHourlySection"><div class="wx-section-head"><div><span class="material-symbols-outlined wx-icon-accent" aria-hidden="true">schedule</span><span>시간대별 기상</span></div>
       <div class="wx-hour-tools"><span>${md}</span><button type="button" class="wx-more-btn" id="wxHourlyToggle" aria-expanded="${hourlyExpanded}">${hourlyExpanded ? '접기' : '상세보기'}</button></div></div>
       ${rows.length ? `<div class="wx-hours${hourlyExpanded ? ' wx-hours-scroll' : ''}" id="wxHoursList"${hourlyExpanded ? ' tabindex="0" aria-label="시간대별 기상 24시간 목록"' : ''}>${rows.join('')}</div>`
-        : `<p class="wx-empty">${date && isToday ? '오늘 남은 시간대 예보가 없습니다. 내일 카드를 선택하세요.' : '데이터 없음'}</p>`}</section>`;
+        : '<p class="wx-empty">데이터 없음</p>'}</section>`;
   }
 
   // Fixed viewport layout (CSS): the page body is a flex column of the viewport height; the hourly section takes the
