@@ -12,8 +12,8 @@
 //   regressed     : the server reports a run OLDER than the one known -> skip (same rule as regressedModels())
 //   daily budget  : planned items are cut when their weighted cost would exceed the remaining daily budget
 // A success counts only with a stored, hash-verified original (raw); the original's own run is kept as raw.run_key.
-// Best Match is a composite without a single run (META_MODELS.best_match = []): never planned here, it keeps the
-// existing 2 h policy (.github/workflows/weather-update.yml); its usage is reserved out of the budget (watchBudget).
+// Best Match is a composite without a single run (META_MODELS.best_match = []): never planned here. The watch run
+// collects it itself with the existing collector when bestMatchDue() says so (see the Best Match section below).
 // Meta is read with the existing modelRunInfo() / fetchRunMeta(); every HTTP attempt gets a request id and is recorded
 // once (usage log, idempotent), separately from the lease-guarded state commit (runCheck).
 // Times, never mixed:
@@ -611,24 +611,51 @@ export function createMemoryStore({clock = Date.now} = {}) {
   };
 }
 
+// ---- API outage guard (one check, shared by model items and Best Match) ----
+// Open-Meteo is treated as unavailable for the rest of a check after transient failures (timeout / network / 429 /
+// 5xx, retries already exhausted) in `regions` DIFFERENT regions in a row. Any success or non-transient answer (4xx,
+// invalid data: the API answered) resets it, so a failure confined to one region never stops the others.
+export const OUTAGE_REGIONS = 3;
+export const TRANSIENT_ERROR = /HTTP (429|5\d\d)|timeout|timed out|aborted|fetch failed|socket|terminated|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR/i;
+export function createOutageGuard({regions = OUTAGE_REGIONS} = {}) {
+  let streak = new Set(), tripped = null;
+  return {
+    record(region, {ok, transient}) {
+      if (tripped) return;
+      if (ok || !transient) { streak = new Set(); return; }
+      streak.add(region);
+      if (streak.size >= regions) tripped = {regions: [...streak]};
+    },
+    get tripped() { return tripped; }
+  };
+}
+// New requests are started only within this time of the check start, so publication and the state commit still fit
+// in the workflow's timeout-minutes: 20 (per-request timeouts / attempts unchanged).
+export const CHECK_BUDGET_MS = 14 * MIN;
+
 // ---- One 30-minute check (orchestration; network only through the injected functions) ----
 // collect(item) -> {ok, body?, error?, attempts?}  (attempts = real HTTP attempts made for that item, default 1)
 // Order per item: lease renewal if due (failure -> stop issuing new requests) -> request -> usage recorded at once
 // (idempotent ids; not lease-gated) -> original uploaded + hash-verified -> result. Commit only after a final renewal.
 export async function runCheck({store, rawStore, targets, readMetaFn, collect, holder = runnerId(), clock = Date.now,
-  budgetFor = null, renewEveryMs = LEASE_RENEW_MS, ttlSeconds = LEASE_TTL_S, afterCollect = null}) {
-  // afterCollect(state, {renew, plan, results}) -> state: optional extra work under the same lease before the commit
-  // (Best Match observation, publication, alerts). It must call renew() before each external write.
+  budgetFor = null, renewEveryMs = LEASE_RENEW_MS, ttlSeconds = LEASE_TTL_S, afterCollect = null, checkBudgetMs = CHECK_BUDGET_MS}) {
+  // afterCollect(state, {renew, plan, results, guard, deadline}) -> state: optional extra work under the same lease
+  // before the commit (Best Match observation, publication, alerts). It must call renew() before each external write.
   if (!(await store.acquire(holder, ttlSeconds))) return {status: 'lease_busy', holder};
   try {
+    const deadline = clock() + checkBudgetMs;
     const state = await store.load();
     await store.usageAdd([{request_id: `${holder}:check`, day: dayOf(clock()), kind: 'check', weighted: 0, failed: false, holder}]);
     const {meta, usage: metaUsage} = await readMetaFn(holder);
     await store.usageAdd(metaUsage.log || []);
     const plan = planCollection({state, meta, targets, now: clock(), metaUsage, budget: budgetFor ? budgetFor(state) : null});
-    const results = [];
+    // Every meta request failed (same host): the first region-wide transient failure already counts as an outage.
+    const guard = createOutageGuard({regions: metaUsage?.requests && metaUsage.failed >= metaUsage.requests ? 1 : OUTAGE_REGIONS});
+    const results = [], notTried = [];
     let lastRenew = clock(), stopped = null;
     for (const item of plan.collect) {
+      // Not requested now (API down / time budget): the item is left as it was and planned again by the next check.
+      if (guard.tripped || clock() >= deadline) { notTried.push({region: item.region, model: item.model, point: item.point, reason: guard.tripped ? 'api_unavailable' : 'check_time_budget'}); continue; }
       if (clock() - lastRenew >= renewEveryMs) {
         if (!(await store.acquire(holder, ttlSeconds))) { stopped = 'lease_lost'; break; } // no new API request
         lastRenew = clock();
@@ -636,6 +663,7 @@ export async function runCheck({store, rawStore, targets, readMetaFn, collect, h
       let res;
       try { res = await collect(item); } catch (e) { res = {ok: false, error: String(e.message || e)}; }
       const attempts = Math.max(1, res.attempts ?? 1);
+      guard.record(item.region, {ok: res.ok, transient: !res.ok && (res.transient ?? TRANSIENT_ERROR.test(String(res.error || '')))});
       await store.usageAdd(forecastRequests(holder, item, attempts, clock())); // recorded even if the commit fails later
       let raw = null, error = res.ok ? null : res.error;
       if (res.ok && res.body != null) {
@@ -644,19 +672,35 @@ export async function runCheck({store, rawStore, targets, readMetaFn, collect, h
       results.push({region: item.region, model: item.model, point: item.point, ok: Boolean(raw), raw, error: raw ? null : error || 'success without a verified original', requests: attempts});
     }
     let next = applyResults(state, plan, results, clock());
-    if (afterCollect && !stopped) next = await afterCollect(next, {plan, results, renew: () => store.acquire(holder, ttlSeconds)});
-    if (!(await store.acquire(holder, ttlSeconds))) return {status: 'lease_lost_before_commit', holder, plan, results};
+    if (afterCollect && !stopped) next = await afterCollect(next, {plan, results, guard, deadline, renew: () => store.acquire(holder, ttlSeconds)});
+    if (!(await store.acquire(holder, ttlSeconds))) return {status: 'lease_lost_before_commit', holder, plan, results, not_tried: notTried, outage: guard.tripped};
     await store.save(holder, next);
-    return {status: stopped || 'committed', holder, plan, results, state: next};
+    return {status: stopped || 'committed', holder, plan, results, not_tried: notTried, outage: guard.tripped, state: next};
   } finally { await store.release(holder); }
 }
 
 
-// ---- Best Match (45 items, observed; collected by the existing 2 h pipeline) ----
-// The 2 h pipeline (and its backup slot) keeps collecting / recovering Best Match. The watch only records, per point,
-// the newest VALID published Best Match file as that item's original (run_key best_match@<fetched_at>,
-// collected_at = fetched_at), so staleness alerts and the Supabase copies cover all 162 items.
+// ---- Best Match (45 items) ----
+// The watch run collects Best Match itself (existing collector, weather-collect.mjs) when bestMatchDue(); otherwise
+// it re-reads its own last valid original from the raw store. observeBestMatch records, per point, the newest VALID
+// Best Match file as that item's original (run_key best_match@<fetched_at>, collected_at = fetched_at), so staleness
+// alerts and the Supabase copies cover all 162 items. No dependency on the 2 h GitHub files.
 export const BEST_MATCH = 'best_match';
+// Change detection: Best Match has no run in meta.json, so a region is re-collected when (a) no valid original is
+// stored, (b) it is >= BM_MAX_AGE_MS old (same cadence as the existing 2 h policy; also the retry path after a
+// failure), or (c) a watched model of that region got a new run in this check whose availability is after the stored
+// Best Match and the stored one is >= BM_MIN_GAP_MS old.
+export const BM_MAX_AGE_MS = 2 * HOUR;
+export const BM_MIN_GAP_MS = HOUR;
+export function bestMatchDue(state, target, {now = Date.now(), newRunAvailableMs = []} = {}) {
+  const items = target.points.map(p => state?.targets?.[target.region]?.[BEST_MATCH]?.[p]);
+  const at = items.map(i => Date.parse(i?.raw?.run_available_utc || ''));
+  if (!at.length || at.some(t => !Number.isFinite(t))) return {due: true, reason: 'no_stored_original'};
+  const last = Math.min(...at), age = now - last;
+  if (age >= BM_MAX_AGE_MS) return {due: true, reason: 'max_age', age_h: r2(age / HOUR)};
+  if (age >= BM_MIN_GAP_MS && newRunAvailableMs.some(t => t > last)) return {due: true, reason: 'new_model_run', age_h: r2(age / HOUR)};
+  return {due: false, reason: 'up_to_date', age_h: r2(age / HOUR)};
+}
 export const watchItems = targets => targets.flatMap(t => [...t.models, BEST_MATCH].flatMap(m => t.points.map(p => ({region: t.region, model: m, point: p}))));
 export async function observeBestMatch(state, targets, {readBmText, validate, rawStore, now = Date.now()}) {
   const next = structuredClone(state);
@@ -688,6 +732,28 @@ export async function observeBestMatch(state, targets, {readBmText, validate, ra
     }
   }
   return {state: next, changed};
+}
+
+// Best Match collection failures of the watch (refreshBestMatch report.failed) -> the items' existing error fields
+// (DB last_error / last_attempt_at / failures_total), same shape as observeBestMatch's failure branch. The last valid
+// original, its run and last_success_utc stay untouched, so the staleness alert still counts from the last success
+// (24 h rule unchanged) and carries this error; the next success (observeBestMatch) clears it.
+export function recordBestMatchFailures(state, targets, failures = [], now = Date.now()) {
+  const next = structuredClone(state);
+  const at = iso(now);
+  for (const f of failures) {
+    const t = targets.find(x => x.region === f.region);
+    if (!t) continue;
+    const mod = (((next.targets ||= {})[f.region] ||= {})[BEST_MATCH] ||= {});
+    for (const p of t.points) {
+      const prev = mod[p] || {};
+      mod[p] = {...prev, first_seen_utc: prev.first_seen_utc ?? at, status: prev.last_success_run_key ? prev.status || 'ok' : 'failed',
+        run_key: prev.run_key || `${BEST_MATCH}@unknown`, last_attempt_utc: at, error: String(f.error || 'failed').slice(0, 300),
+        failures_total: (prev.failures_total || 0) + 1, attempts: prev.attempts || 0, raw: prev.raw ?? null, pending: null,
+        last_success_run_key: prev.last_success_run_key ?? null};
+    }
+  }
+  return next;
 }
 
 // ---- Admin staleness alerts (162 items) ----

@@ -287,7 +287,8 @@ export function publishBlockedReason(output) {
   if (Number.isFinite(output.requested_points) && output.snapshots.length < output.requested_points) return 'incomplete point set';
   return null;
 }
-export async function publishRegion(output) {
+// Same service JSON without writing it (used by the 30-minute watch, which stores it in Supabase instead of dist/).
+export function buildPublishedWeather(output) {
   if (publishBlockedReason(output)) return null;
   const snapshots = output.snapshots.filter(s => ['summit', 'mid', 'base'].includes(s.point_type));
   if (!snapshots.length) return null;
@@ -317,6 +318,11 @@ export async function publishRegion(output) {
     hourly: columns(output.hourly, 'forecast_time', HOURLY_VARS),
     daily: columns(output.daily, 'forecast_date', DAILY_VARS)
   };
+  return published;
+}
+export async function publishRegion(output) {
+  const published = buildPublishedWeather(output);
+  if (!published) return null;
   await mkdir('dist/data/weather', {recursive: true});
   const file = `dist/data/weather/${output.region_id}.json`;
   await writeFile(file, JSON.stringify(published));

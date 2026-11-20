@@ -1,8 +1,9 @@
 // POWDERLINE 30-minute model watch: collection -> originals -> existing multi-model calculation -> validated
 // publication (Supabase public bucket + manifest) -> admin staleness alerts. Runs NEXT TO the existing GitHub 2 h
-// service (which keeps writing dist/data and GitHub Pages); nothing here writes dist/ or changes the formula.
+// service (which keeps writing dist/data and GitHub Pages) but does not need it: Best Match is collected here with the
+// existing collector (refreshBestMatch). Nothing here writes dist/ or changes the formula.
 //   node scripts/weather-model-watch-run.mjs [--regions=kiroro,niseko] [--store=supabase|file] [--dir=work/weather/watch-local]
-//        [--no-publish] [--plan-only]
+//        [--no-publish] [--plan-only] [--bm-source=collect|repo]   (repo = previous behaviour: read dist/data/weather)
 // Supabase: env SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (service role; never shipped to the app).
 // Request limits: every Open-Meteo request has a 30 s timeout, at most 3 attempts (transient errors only), and each
 // attempt is recorded once in the usage log (request id), whatever happens to the commit.
@@ -13,9 +14,12 @@ import {modelUrl, parseModelBody, publishRegion} from './weather-multimodel-publ
 import {loadConfig, profileConfig, profileModels} from './weather-multimodel-engine.mjs';
 import {validateWeather} from './weather-pipeline.mjs';
 import {primarySkiAreas} from './weather-points.mjs';
+import {collectRegion, buildPublishedWeather, publishBlockedReason} from './weather-collect.mjs';
+import {collectorRequest} from './weather-api-usage.mjs';
 import {regionTargets, readMeta, runCheck, runnerId, observeBestMatch, recomputeInputsDetailed, choosePublication, evaluateAlerts,
   buildManifest, MANIFEST_PATH, createFileRawStore, createSupabaseRawStore, createSupabaseStateStore, createMemoryStore,
-  createFilePublicStore, createSupabasePublicStore, rawPruneCandidates, sha256Hex, BEST_MATCH, WATCH_MODELS, watchBudget, itemCost} from './weather-model-watch.mjs';
+  createFilePublicStore, createSupabasePublicStore, rawPruneCandidates, sha256Hex, BEST_MATCH, WATCH_MODELS, watchBudget, itemCost,
+  bestMatchDue, usageDelta, createOutageGuard, recordBestMatchFailures} from './weather-model-watch.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const REQUEST_TIMEOUT_MS = 30000;
@@ -34,7 +38,7 @@ export async function collectModel(item, {readBmText = readRepoBmText, fetchImpl
   const m = profileModels(cfg)[item.model];
   const point = pointOf(bm, item.point);
   if (!m || !point) return {ok: false, attempts: 0, error: `${item.model}/${item.point}: not configured`};
-  let attempts = 0, error = null;
+  let attempts = 0, error = null, transient = false; // transient: API unreachable / overloaded (outage guard input)
   while (attempts < maxAttempts) {
     attempts++;
     try {
@@ -42,15 +46,20 @@ export async function collectModel(item, {readBmText = readRepoBmText, fetchImpl
       const body = await res.json().catch(() => null);
       if (!res.ok || body?.error) {
         error = `HTTP ${res.status}: ${body?.reason || 'invalid response'}`;
-        if (!(res.status === 429 || res.status >= 500)) break; // not transient
+        transient = res.status === 429 || res.status >= 500;
+        if (!transient) break; // not transient
       } else {
         parseModelBody(item.model, body); // same validation as the publisher (UTC, units, hourly axis); throws if bad
         return {ok: true, body, attempts};
       }
-    } catch (e) { error = String(e.message || e).slice(0, 200); if (/expected UTC|unit |non-hourly/.test(error)) break; }
+    } catch (e) {
+      error = String(e.message || e).slice(0, 200);
+      transient = !/expected UTC|unit |non-hourly/.test(error);
+      if (!transient) break;
+    }
     if (attempts < maxAttempts) await wait(800 * 2 ** (attempts - 1));
   }
-  return {ok: false, attempts, error};
+  return {ok: false, attempts, error, transient};
 }
 
 // publishRegion inputs from stored originals: confirmed + fresh only; anything else throws -> the publisher treats that
@@ -100,6 +109,77 @@ export async function publishFromStore({target, state, rawStore, publicStore, op
   return {region, published: true, files, excluded, published_at: out.published_at};
 }
 
+// ---- Best Match collected by the watch (no dependency on the 2 h GitHub files) ----
+// One region with the existing collector + service-JSON builder (weather-collect.mjs). Same rule as the 2 h pipeline:
+// only a complete point set counts. Nothing is written to dist/.
+export async function collectBestMatch(region, {collect = collectRegion, build = buildPublishedWeather} = {}) {
+  let output;
+  try { ({output} = await collect(region)); } catch (e) { return {ok: false, attempts: 0, transient: false, error: String(e?.message || e).slice(0, 200)}; }
+  const attempts = output?.network?.attempts ?? 0;
+  const blocked = publishBlockedReason(output);
+  if (blocked) {
+    const errs = output?.errors || [];
+    // Region-wide transient failure only when NO point was received and every point gave up on retries / time budget
+    // (collector rules unchanged). A partial answer means the API is reachable: a regional problem, not an outage.
+    const transient = !output?.snapshots?.length && errs.length > 0 && errs.every(e => e.gave_up === 'max_attempts' || e.gave_up === 'region_budget');
+    const detail = errs.map(e => `${String(e.point_id || '').split(':').pop()} ${e.http ? `HTTP ${e.http}` : e.code || e.kind || 'error'} ×${e.attempts ?? '?'} ${e.gave_up || ''}`.trim());
+    return {ok: false, attempts, transient, error: `${blocked} (received ${output?.snapshots?.length ?? 0}/${output?.requested_points ?? '?'}${detail.length ? `; ${detail.join(', ')}` : ''})`.slice(0, 300)};
+  }
+  const json = build(output);
+  return json ? {ok: true, attempts, text: JSON.stringify(json)} : {ok: false, attempts, transient: false, error: 'no summit / mid / base point'};
+}
+// Collects Best Match for the regions bestMatchDue() selects (after the model items: models keep budget priority) and
+// returns a reader: the freshly collected + validated file, else the last valid original from the raw store. A failed /
+// invalid collection, an API outage (shared outage guard), the check time budget or an exhausted budget keeps the last
+// valid original (nothing is replaced); other regions continue.
+export async function refreshBestMatch(state, targets, {plan, results = [], collectBm, rawStore, store, holder, renew, clock = Date.now, validate,
+  guard = createOutageGuard(), deadline = Infinity}) {
+  const fresh = new Map();
+  const report = {due: [], collected: [], failed: [], skipped: [], requests: 0, weighted: 0};
+  const avail = new Map(); // region -> availability times of the model runs collected in this check
+  for (const r of results) {
+    const t = r.ok ? Date.parse(state.targets?.[r.region]?.[r.model]?.[r.point]?.raw?.run_available_utc || '') : NaN;
+    if (Number.isFinite(t)) avail.set(r.region, [...(avail.get(r.region) || []), t]);
+  }
+  let remaining = plan?.budget ? plan.budget.limit_weighted - plan.budget.used_before - usageDelta(plan, results, clock()).forecast_weighted : Infinity;
+  for (const t of targets) {
+    const d = bestMatchDue(state, t, {now: clock(), newRunAvailableMs: avail.get(t.region) || []});
+    if (!d.due) continue;
+    report.due.push({region: t.region, reason: d.reason});
+    const cost = collectorRequest(t.country).weight;
+    if (guard.tripped) { report.skipped.push({region: t.region, reason: 'api_unavailable'}); continue; }
+    if (clock() >= deadline) { report.skipped.push({region: t.region, reason: 'check_time_budget'}); continue; }
+    if (cost * t.points.length > remaining) { report.skipped.push({region: t.region, reason: 'budget_exceeded'}); continue; }
+    if (!(await renew())) { report.skipped.push({region: t.region, reason: 'lease_lost'}); break; } // no new API request
+    const started = clock();
+    let res;
+    try { res = await collectBm(t.region); } catch (e) { res = {ok: false, attempts: 0, error: String(e?.message || e)}; }
+    const attempts = Math.max(0, res.attempts ?? 0);
+    guard.record(t.region, {ok: res.ok, transient: !res.ok && res.transient === true}); // API answered = not an outage
+    const day = new Date(clock()).toISOString().slice(0, 10);
+    await store.usageAdd(Array.from({length: attempts}, (_, k) => ({request_id: `${holder}:bm:${t.region}:${k + 1}`, day, kind: 'forecast',
+      weighted: cost, failed: !res.ok, holder})));
+    remaining -= attempts * cost; report.requests += attempts; report.weighted = Math.round((report.weighted + attempts * cost) * 100) / 100;
+    let issues = [res.error || 'collection failed'];
+    if (res.ok) { try { issues = validate(JSON.parse(res.text), t.region, started); } catch (e) { issues = [`unparsable: ${String(e.message).slice(0, 120)}`]; } }
+    if (!issues.length) { fresh.set(t.region, res.text); report.collected.push(t.region); }
+    else report.failed.push({region: t.region, requests: attempts, error: (res.ok ? `invalid: ${issues.join('; ')}` : issues.join('; ')).slice(0, 300)});
+  }
+  const stored = new Map();
+  const read = async region => {
+    if (fresh.has(region)) return fresh.get(region);
+    if (!stored.has(region)) stored.set(region, (async () => {
+      const refs = Object.values(state.targets?.[region]?.[BEST_MATCH] || {}).map(i => i?.raw).filter(Boolean);
+      const ref = refs.sort((a, b) => Date.parse(b.run_available_utc || 0) - Date.parse(a.run_available_utc || 0))[0];
+      const body = ref ? await rawStore.get(ref) : null;
+      if (!body) throw new Error(`${region}: no stored Best Match original`);
+      return typeof body === 'string' ? body : JSON.stringify(body);
+    })());
+    return stored.get(region);
+  };
+  return {fresh, read, report};
+}
+
 // ---- operations store (incidents, alerts, publication records, cleanup) ----
 export function createSupabaseOps({url, serviceKey, fetchImpl = fetch}) {
   const call = (p, init = {}) => fetchImpl(`${url}/rest/v1/${p}`, {...init,
@@ -132,14 +212,23 @@ export function createMemoryOps(store) {
 }
 
 // One full 30-minute check.
-export async function runWatch({targets, store, ops, rawStore, publicStore, readMetaFn, collect, readBmText = readRepoBmText,
-  holder = runnerId(), clock = Date.now, publish = true, budgetFor = null, renewEveryMs, ttlSeconds}) {
+// collectBm(region) -> {ok, text, attempts, error}: Best Match collected by the watch itself (refreshBestMatch).
+// Without it the previous behaviour applies (readBmText: the repo file written by the 2 h pipeline).
+export async function runWatch({targets, store, ops, rawStore, publicStore, readMetaFn, collect, readBmText: readRepo = readRepoBmText,
+  collectBm = null, holder = runnerId(), clock = Date.now, publish = true, budgetFor = null, renewEveryMs, ttlSeconds, checkBudgetMs}) {
   const report = {published: [], publish_skipped: [], alerts: 0, best_match_changed: 0, pruned: 0};
-  const afterCollect = async (state, {results, renew}) => {
+  const afterCollect = async (state, {plan, results, renew, guard, deadline}) => {
+    let readBmText = readRepo, bmTargets = targets;
+    if (collectBm) {
+      const r = await refreshBestMatch(state, targets, {plan, results, collectBm, rawStore, store, holder, renew, clock, guard, deadline,
+        validate: (json, region, startedMs) => validateWeather(json, {region, notBeforeMs: startedMs - 1000, nowMs: clock()})});
+      readBmText = r.read; bmTargets = targets.filter(t => r.fresh.has(t.region)); report.best_match = r.report;
+    }
     const now = clock();
-    const bm = await observeBestMatch(state, targets, {readBmText, rawStore, now,
+    const bm = await observeBestMatch(state, bmTargets, {readBmText, rawStore, now,
       validate: (json, region) => validateWeather(json, {region, notBeforeMs: 0, nowMs: now})});
     let next = bm.state;
+    if (collectBm) next = recordBestMatchFailures(next, targets, report.best_match.failed, now); // DB last_error
     report.best_match_changed = bm.changed.length;
     if (publish) {
       const touched = new Set([...results.filter(r => r.ok).map(r => r.region), ...bm.changed.map(c => c.region)]);
@@ -175,9 +264,26 @@ export async function runWatch({targets, store, ops, rawStore, publicStore, read
     const cfg = loadConfig(), limit = watchBudget(targets).limit_weighted;
     budgetFor = () => ({limit_weighted: limit, cost: m => itemCost(m, cfg)});
   }
-  const out = await runCheck({store, rawStore, targets, readMetaFn, collect, holder, clock, budgetFor, renewEveryMs, ttlSeconds, afterCollect});
+  const out = await runCheck({store, rawStore, targets, readMetaFn, collect, holder, clock, budgetFor, renewEveryMs, ttlSeconds, checkBudgetMs, afterCollect});
   return {...out, report};
 }
+
+// Per-region failure summary of one check (run output / job summary): what failed, why, how many requests, and what
+// was not attempted. Regions absent here had no failure in this check.
+export function failureSummary(out) {
+  const regions = {};
+  const add = (region, kind, text) => (((regions[region] ||= {})[kind] ||= []).push(text));
+  for (const r of out.results || []) if (!r.ok) add(r.region, 'models', `${r.model}/${r.point}: ${r.error} (${r.requests ?? 1} requests)`);
+  for (const s of out.not_tried || []) add(s.region, 'not_tried', `${s.model}/${s.point}: ${s.reason}`);
+  for (const f of out.report?.best_match?.failed || []) add(f.region, 'best_match', `${f.error} (${f.requests ?? 0} requests)`);
+  for (const s of out.report?.best_match?.skipped || []) add(s.region, 'best_match', `not attempted: ${s.reason}`);
+  for (const p of out.report?.publish_skipped || []) if (p.reason !== 'no_new_input') add(p.region, 'publish', `${p.reason}${p.issues?.length ? `: ${p.issues.slice(0, 3).join('; ')}` : ''} (previous file kept)`);
+  return regions;
+}
+
+// Workflow result: failures confined to some regions keep the run green (failed_regions records them); an API outage
+// (outage guard tripped) or a check that did not commit marks it red. Set only after the state commit.
+export const exitCodeFor = out => (out.status !== 'committed' || out.outage ? 1 : 0);
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const arg = (k, d) => process.argv.find(a => a.startsWith(`--${k}=`))?.slice(k.length + 3) ?? d;
@@ -207,11 +313,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       models: Object.fromEntries(WATCH_MODELS.map(m => [m, {status: plan.models[m].status, run_key: plan.models[m].run_key, settled: plan.models[m].settled}]))}, null, 1));
   } else {
     const out = await runWatch({targets, store, ops, rawStore, publicStore, holder, publish: !flag('no-publish'),
+      collectBm: arg('bm-source', 'collect') === 'repo' ? null : region => collectBestMatch(region),
       readMetaFn: h => readMeta({holder: h}), collect: item => collectModel(item, {country: countryOf[item.region]})});
     console.log(JSON.stringify({status: out.status, holder, collected: out.results?.length ?? 0, ok: out.results?.filter(r => r.ok).length ?? 0,
-      failed: (out.results || []).filter(r => !r.ok).map(r => `${r.region}/${r.model}/${r.point}: ${r.error}`), report: {...out.report,
+      failed: (out.results || []).filter(r => !r.ok).map(r => `${r.region}/${r.model}/${r.point}: ${r.error}`),
+      outage: out.outage || null, not_tried: out.not_tried?.length ?? 0, failed_regions: failureSummary(out), report: {...out.report,
         published: out.report.published.map(p => ({region: p.region, published_at: p.published_at, excluded: p.excluded.length})),
         publish_skipped: out.report.publish_skipped.map(p => ({region: p.region, reason: p.reason, issues: p.issues?.slice(0, 3)}))}}, null, 1));
-    if (out.status !== 'committed') process.exitCode = 1;
+    if (out.outage) console.error(`Open-Meteo outage: transient failures in ${out.outage.regions.join(', ')}; remaining requests not sent, last valid data kept`);
+    process.exitCode = exitCodeFor(out);
   }
 }

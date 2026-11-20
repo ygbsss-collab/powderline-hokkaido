@@ -372,7 +372,7 @@ await test('[finding 2] lease renewed while collecting; a second runner is refus
   const store = createMemoryStore({clock: () => t});
   const raw = createFileRawStore(tmp());
   let refused = null;
-  const out = await runCheck({store, rawStore: raw, targets, holder: 'A', clock: () => t,
+  const out = await runCheck({store, rawStore: raw, targets, holder: 'A', clock: () => t, checkBudgetMs: Infinity, // lease only (time budget: own test)
     readMetaFn: holder => readMeta({fetchImpl: metaFetch(T0 / 1000, T0 / 1000 + 3600), holder, now: () => t}),
     collect: async item => { t += 4 * MIN; if (refused === null && t - NOW > 26 * MIN) refused = await store.acquire('B'); return {ok: true, body: {item: key(item)}}; }});
   assert.equal(out.status, 'committed');
