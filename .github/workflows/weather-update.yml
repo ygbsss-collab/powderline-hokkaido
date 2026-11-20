@@ -7,18 +7,9 @@ name: Weather update (multi-model)
 # No SLR, no bias correction, no snow-surface files. Weights / model bands: scripts/weather-multimodel-config.json.
 # Roll back to Best Match: set "primary": "best_match" in dist/data/weather-source.json.
 
+# Scheduled 2-hour weather collection disabled after successful independent 30-minute watch validation.
+# Keep manual dispatch as a rollback option.
 on:
-  schedule:
-    # Every 2 hours (UTC :00). Model runs appear far less often (JMA MSM every 3 h, ECMWF / GFS every 6 h, each several
-    # hours after initialisation). A run commits and deploys whenever the forecast OR the "current" block (the app's
-    # "HH:mm 기준" time and current values) changed, so every successful 2 h run publishes fresh data
-    # (scripts/weather-ci-stage.mjs; fetched_at alone is not compared). GitHub may start scheduled runs late or
-    # (rarely) skip one; actual start / end times are written to the job summary.
-    - cron: '0 */2 * * *'
-    # Gap backup (same 2 h cadence, not an extra collection): fires 30 min after each main slot (UTC :30 of even hours).
-    # The "Gap guard" step skips it when a data commit already exists since the start of the current UTC 2 h slot,
-    # i.e. it only collects when the main slot was dropped or produced no commit.
-    - cron: '30 */2 * * *'
   workflow_dispatch:
 
 permissions:
