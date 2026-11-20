@@ -1,5 +1,7 @@
 {
   "primary": "multimodel",
   "note": "Forecast source switch read by dist/weather.js. \"multimodel\" = dist/data/weather-multimodel/<region>.json first, Best Match (dist/data/weather/<region>.json) on any failure. Set to \"best_match\" to roll back. Operational choice; multi-model accuracy vs Best Match is not proven.",
-  "changed_at": "2026-11-19"
+  "changed_at": "2026-11-20",
+  "supabase": true,
+  "supabase_note": "true = the app also reads the validated Supabase copy (weather-public/manifest.json, written by .github/workflows/weather-model-watch.yml); the newest fetched_at wins, so this GitHub data stays the automatic fallback. Set to false to stop reading Supabase."
 }

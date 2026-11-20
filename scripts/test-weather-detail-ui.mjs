@@ -132,7 +132,9 @@ check('browser_back_closes_weather', page.hidden === true && cam.hidden === true
 els.get('homeWeatherCard').on.click();
 await W.setRegion('niseko', '니세코');
 check('region_change_rerenders_cam_entry', /id="wxLiveCam" data-region="niseko"/.test(body()) || /데이터가 없습니다/.test(body()));
-check('no_external_requests', fetched.every(u => u.startsWith('https://x/app/data/')), {fetched: fetched.filter(u => !u.startsWith('https://x/app/data/'))});
+// Only the app's own data and (switch {"supabase": true}) the public Supabase weather bucket may be requested.
+const allowed = u => u.startsWith('https://x/app/data/') || u.startsWith('https://lxfsvhwibiaspnaduhri.supabase.co/storage/v1/object/public/weather-public/');
+check('no_external_requests', fetched.every(allowed), {fetched: fetched.filter(u => !allowed(u))});
 
 // ---- CSS: fixed layout rules ----
 check('css_point_sections_contents', /#wxPointSections \{ display: contents; \}/.test(css));

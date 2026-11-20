@@ -51,12 +51,19 @@ export function liquidRain(p, rain, showers, snow) {
 }
 
 // One model at one point: values keyed by UTC ms (liquid rain per liquidRain), plus its last valid hour per variable.
-async function fetchModel(id, m, point) {
+// Split only so the model watch can store the original response and parse it later with the SAME code (no change
+// in request or parsing).
+export function modelUrl(id, m, point) {
   const url = new URL(`https://api.open-meteo.com/v1/${m.endpoint}`);
   url.search = new URLSearchParams({latitude: String(point.latitude), longitude: String(point.longitude), elevation: String(point.elevation),
     models: id, hourly: FETCH_VARS.join(','), forecast_days: String(m.forecast_days), past_days: id === 'best_match' ? '4' : '0',
     timezone: 'UTC', wind_speed_unit: 'ms'}).toString();
-  const body = await fetchForecast(url);
+  return url;
+}
+async function fetchModel(id, m, point) {
+  return parseModelBody(id, await fetchForecast(modelUrl(id, m, point)));
+}
+export function parseModelBody(id, body) {
   if (body.utc_offset_seconds !== 0) throw new Error(`${id}: expected UTC`);
   for (const v of FETCH_VARS) if (body.hourly_units?.[v] !== UNITS[v]) throw new Error(`${id}: unit ${v}=${body.hourly_units?.[v]}`);
   const ms = body.hourly.time.map(t => Date.parse(`${t}:00Z`));

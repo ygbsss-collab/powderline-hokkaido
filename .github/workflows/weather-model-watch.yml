@@ -1,0 +1,50 @@
+name: Weather model watch (30 min)
+
+# 30-minute model-run check (scripts/weather-model-watch-run.mjs): reads Open-Meteo meta.json, collects only new runs
+# and failed items, stores verified originals in Supabase Storage, recalculates with the existing multi-model formula,
+# publishes only validated files (+ manifest) to the public bucket, queues admin alerts. Runs NEXT TO
+# weather-update.yml (2 h Best Match + GitHub Pages service), which is unchanged.
+# OFF until the repository variable WEATHER_WATCH_ENABLED is 'true' (Settings -> Variables). Needs the secrets
+# SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.
+
+on:
+  schedule:
+    - cron: '15,45 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One check at a time also on the GitHub side (the DB lease is the real guard).
+concurrency:
+  group: weather-model-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: vars.WEATHER_WATCH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Model watch
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -o pipefail
+          node scripts/weather-model-watch-run.mjs --store=supabase | tee -a "$GITHUB_STEP_SUMMARY"
+      # Queued admin alerts (24 h / 48 h / recovered) -> FCM to approved admins; each alert is sent once (claimed).
+      - name: Dispatch admin alerts
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          curl -fsS -X POST "$SUPABASE_URL/functions/v1/dispatch-weather-admin-alert" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H 'content-type: application/json' -d '{}' | tee -a "$GITHUB_STEP_SUMMARY"

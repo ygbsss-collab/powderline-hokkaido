@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.dispatch-fcm-notification]
 verify_jwt = false
+
+[functions.dispatch-weather-admin-alert]
+verify_jwt = false

@@ -57,15 +57,62 @@
       .finally(() => { if (timer) clearTimeout(timer); });
   };
   // Forecast source switch per origin (re-read after RELOAD_MS). null = file missing / unreadable.
-  const sourceConfigs = new Map(); // getter -> {at, request}
-  const loadSourceConfig = (get = getJson) => {
+  const sourceConfigs = new Map(); // getter -> {at, request: Promise<raw switch object | null>}
+  const rawSourceConfig = (get = getJson) => {
     let entry = sourceConfigs.get(get);
     if (!entry || Date.now() - entry.at > RELOAD_MS) {
-      entry = {at: Date.now(), request: get('./data/weather-source.json')
-        .then(cfg => (cfg && typeof cfg === 'object' ? (cfg.primary === 'multimodel' ? 'multimodel' : 'best_match') : null))};
+      entry = {at: Date.now(), request: get('./data/weather-source.json').then(cfg => (cfg && typeof cfg === 'object' ? cfg : null))};
       sourceConfigs.set(get, entry);
     }
     return entry.request;
+  };
+  const loadSourceConfig = (get = getJson) => rawSourceConfig(get)
+    .then(cfg => (cfg ? (cfg.primary === 'multimodel' ? 'multimodel' : 'best_match') : null));
+  // Supabase copy (scripts/weather-model-watch-run.mjs: validated files + manifest in the public bucket). Used only
+  // when the REMOTE switch file says {"supabase": true}; it is one more candidate, the newest fetched_at still wins
+  // (GitHub Pages, saved copies and the APK copy stay as they are). manifest.json lists sha256 per file: a file is
+  // downloaded only when its sha256 differs from the copy saved on this device, and is used only if it hashes to it.
+  const SUPABASE_PUBLIC = 'https://lxfsvhwibiaspnaduhri.supabase.co/storage/v1/object/public/weather-public/';
+  const SB_PREFIX = 'powderline.weather.sb.v1.';
+  let sbManifest = null; // {at, request}
+  const loadSbManifest = () => {
+    if (!sbManifest || Date.now() - sbManifest.at > RELOAD_MS) {
+      sbManifest = {at: Date.now(), request: getRemoteJson(`${SUPABASE_PUBLIC}manifest.json`)
+        .then(m => (m?.data_kind === 'powderline_weather_manifest' && m.files && typeof m.files === 'object' ? m : null))};
+    }
+    return sbManifest.request;
+  };
+  const hex = buf => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
+  const sha256Text = async text => {
+    try { return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))); } catch { return null; }
+  };
+  const readSb = rel => { try { const v = JSON.parse(localStorage.getItem(SB_PREFIX + rel) || 'null'); return v?.sha256 && v.json ? v : null; } catch { return null; } };
+  const writeSb = (rel, value) => {
+    try { localStorage.setItem(SB_PREFIX + rel, JSON.stringify(value)); return; } catch { /* quota: keep only this file */ }
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k?.startsWith(SB_PREFIX) && k !== SB_PREFIX + rel) localStorage.removeItem(k); }
+      localStorage.setItem(SB_PREFIX + rel, JSON.stringify(value));
+    } catch { /* storage unavailable: downloaded copy still used for this session */ }
+  };
+  const getRemoteText = url => {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), REMOTE_TIMEOUT_MS) : 0;
+    return fetch(url, {cache: 'no-cache', signal: ctrl?.signal}).then(r => (r.ok ? r.text() : null)).catch(() => null)
+      .finally(() => { if (timer) clearTimeout(timer); });
+  };
+  // Getter with the same contract as getJson ('./data/<rel>' -> json | null), served from the manifest.
+  const getSupabase = async url => {
+    const rel = String(url).replace(/^\.\/data\//, '');
+    const entry = (await loadSbManifest())?.files?.[rel];
+    if (!entry?.sha256) return null;
+    const saved = readSb(rel);
+    if (saved?.sha256 === entry.sha256) return structuredClone(saved.json); // unchanged: no download
+    const text = await getRemoteText(`${SUPABASE_PUBLIC}${rel}?v=${entry.sha256.slice(0, 16)}`);
+    if (text == null || (await sha256Text(text)) !== entry.sha256) return saved ? structuredClone(saved.json) : null; // partial / stale CDN copy rejected
+    let json;
+    try { json = JSON.parse(text); } catch { return null; }
+    writeSb(rel, {sha256: entry.sha256, json});
+    return json;
   };
   const usable = (json, id) => Boolean(json && json.region_id === id && json.hourly && json.current);
   async function loadFrom(get, id, primary) {
@@ -96,19 +143,30 @@
   async function loadNative(id) {
     const [remotePrimary, localPrimary] = await Promise.all([loadSourceConfig(getRemoteJson), loadSourceConfig(getJson)]);
     const primary = remotePrimary || localPrimary || 'best_match'; // remote switch first, APK switch when it fails
-    const [remote, bundled] = await Promise.all([loadFrom(getRemoteJson, id, primary), loadFrom(getJson, id, primary)]);
-    const candidates = [[remote, 'remote'], [readSaved(id), 'saved'], [bundled, 'bundled']].filter(([json]) => json);
+    const useSb = (await rawSourceConfig(getRemoteJson))?.supabase === true;
+    const [remote, bundled, sb] = await Promise.all([loadFrom(getRemoteJson, id, primary), loadFrom(getJson, id, primary),
+      useSb ? loadFrom(getSupabase, id, primary) : null]);
+    const candidates = [[remote, 'remote'], [sb, 'supabase'], [readSaved(id), 'saved'], [bundled, 'bundled']].filter(([json]) => json);
     if (!candidates.length) return null;
     const [best, origin] = candidates.reduce((a, b) => (fetchedMs(b[0]) > fetchedMs(a[0]) ? b : a)); // ties: remote first
-    if (origin === 'remote') writeSaved(id, best);
+    if (origin === 'remote' || origin === 'supabase') writeSaved(id, best);
     return Object.assign(best, {dataOrigin: origin});
+  }
+  // Web build: the deployed ./data/ files (GitHub Pages) as before; with {"supabase": true} the Supabase copy is one
+  // more candidate and the newer fetched_at wins (ties: GitHub Pages copy), so a stale / missing Supabase copy falls
+  // back to the GitHub data automatically.
+  async function loadWeb(id) {
+    const primary = (await loadSourceConfig(getJson)) || 'best_match';
+    const useSb = (await rawSourceConfig(getJson))?.supabase === true;
+    const [local, sb] = await Promise.all([loadFrom(getJson, id, primary), useSb ? loadFrom(getSupabase, id, primary) : null]);
+    if (sb && (!local || fetchedMs(sb) > fetchedMs(local))) return Object.assign(sb, {dataOrigin: 'supabase'});
+    return local;
   }
   function load(id) {
     if (cache.has(id) && Date.now() - (cacheAt.get(id) || 0) > RELOAD_MS) cache.delete(id);
     if (!cache.has(id)) {
       cacheAt.set(id, Date.now());
-      const request = isNativeApp() ? loadNative(id)
-        : loadSourceConfig(getJson).then(primary => loadFrom(getJson, id, primary || 'best_match'));
+      const request = isNativeApp() ? loadNative(id) : loadWeb(id);
       cache.set(id, request.then(result => { if (!result) cache.delete(id); return result; })); // retry on the next selection
     }
     return cache.get(id);
@@ -116,6 +174,14 @@
 
   // "2026-11-18T16:45:00+09:00" -> "11/18 16:45" (wall time of the data's own timezone, no conversion)
   const wallTime = iso => (typeof iso === 'string' && iso.length >= 16 ? `${iso.slice(5, 7)}/${iso.slice(8, 10)} ${iso.slice(11, 16)}` : '--');
+  // Final publication time of the shown file (published_at, else fetched_at: same instant), in the data's own wall
+  // time. The home banner and the detail header both show exactly this value.
+  const publishedIso = json => {
+    const t = Date.parse(json?.published_at || json?.fetched_at || '');
+    if (!Number.isFinite(t)) return null;
+    return new Date(t + (Number(json.utc_offset_seconds) || 0) * 1000).toISOString();
+  };
+  const publishedLabel = json => { const w = publishedIso(json); return w ? `게시 ${w.slice(11, 16)}` : ''; };
   const currentOf = point => data?.current?.[point] || null;
   const series = (block, point, name) => data?.[block]?.[point]?.[name] || [];
 
@@ -230,7 +296,11 @@
     $('homeWeatherSummitTemp').textContent = `${fmt(s?.temp, 1)}°C`;
     $('homeWeatherWind').textContent = `${fmt(s?.wind, 1)}m/s`;
     const timeEl = $('homeWeatherValidTime');
-    if (timeEl) timeEl.textContent = s ? wallTime(s.time) : '--';
+    if (timeEl) {
+      const pub = data ? publishedLabel(data) : '';
+      timeEl.textContent = s ? `${wallTime(s.time)}${pub ? ` · ${pub}` : ''}` : '--';
+      timeEl.title = pub ? `최종 게시 ${wallTime(publishedIso(data))}` : '';
+    }
     const stale = data && Date.now() - Date.parse(data.fetched_at) > STALE_MS;
     card.setAttribute('aria-label', `날씨 상세 보기 · ${!regionId ? '지역을 선택하세요'
       : data ? `${s ? wallTime(s.time) : '--'} 예보${stale ? ' · 이전 데이터' : ''}` : '이 지역의 날씨 데이터가 없습니다'}`);
@@ -372,9 +442,10 @@
     const cur = currentOf('summit') || currentOf(detailPoint);
     const stale = Boolean(data) && Date.now() - Date.parse(data.fetched_at) > STALE_MS;
     const fetched = data ? new Date(data.fetched_at) : null;
-    time.textContent = cur?.forecast_time ? `${cur.forecast_time.slice(11, 16)} 기준${stale ? ' · 이전' : ''}` : '';
+    const pub = data ? publishedLabel(data) : '';
+    time.textContent = cur?.forecast_time ? `${cur.forecast_time.slice(11, 16)} 기준${stale ? ' · 이전' : ''}${pub ? ` · ${pub}` : ''}` : '';
     const srcLabel = data?.forecastSource === 'multimodel' ? 'POWDERLINE 다중 모델 예보' : data ? `Best Match 예보${data.forecastFallback ? ' (다중 모델 대체)' : ''}` : '';
-    const originLabel = {remote: ' · 서버', saved: ' · 저장본', bundled: ' · 앱 내장'}[data?.dataOrigin] || '';
+    const originLabel = {remote: ' · 서버', supabase: ' · 서버(Supabase)', saved: ' · 저장본', bundled: ' · 앱 내장'}[data?.dataOrigin] || '';
     time.title = fetched && !Number.isNaN(fetched.getTime()) ? `${srcLabel} · 수집 ${fetched.toISOString().slice(0, 16).replace('T', ' ')} UTC${originLabel}` : '';
     time.dataset.origin = data?.dataOrigin || '';
     time.classList.toggle('stale', stale);
