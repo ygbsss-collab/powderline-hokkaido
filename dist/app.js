@@ -11,6 +11,11 @@
   let catalogRegionIds = new Set();
   let adminRegionRows = [];
   let adminRegionsForbiddenForUser = null;
+  let adminWeatherForbiddenForUser = null;
+  let adminWeatherOverview = null;
+  let adminWeatherFilter = 'problem';
+  let adminWeatherLoading = false;
+  const adminWeatherSelected = new Set(); // alert keys ticked for "선택 삭제"
   let adminRegionPicker = null;
   const I18N = {
     ko: {
@@ -7705,6 +7710,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (adminRegionPicker) exitAdminRegionPicker(false);
     const regionsContent = $('#pcAdminRegionsSlot .admin-courses-content');
     if (regionsContent) restoreNodeToOrigin(regionsContent);
+    const weatherContent = $('#pcAdminWeatherSlot .admin-courses-content');
+    if (weatherContent) restoreNodeToOrigin(weatherContent);
     const coursesContent = $('#pcAdminCoursesSlot .admin-courses-content');
     if (coursesContent) {
       closeAdminRoutePreview();
@@ -7720,12 +7727,13 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       return;
     }
     if (pcAdminActiveTab === 'courses' && tab !== 'courses') closeAdminRoutePreview();
-    pcAdminActiveTab = ['users', 'pending', 'courses', 'regions'].includes(tab) ? tab : 'users';
+    pcAdminActiveTab = ['users', 'pending', 'courses', 'regions', 'weather'].includes(tab) ? tab : 'users';
     const tabs = [
       ['users', '#pcAdminTabUsers', '#pcAdminPanelUsers'],
       ['pending', '#pcAdminTabPending', '#pcAdminPanelPending'],
       ['courses', '#pcAdminTabCourses', '#pcAdminPanelCourses'],
-      ['regions', '#pcAdminTabRegions', '#pcAdminPanelRegions']
+      ['regions', '#pcAdminTabRegions', '#pcAdminPanelRegions'],
+      ['weather', '#pcAdminTabWeather', '#pcAdminPanelWeather']
     ];
     for (const [key, btnSel, panelSel] of tabs) {
       const btn = $(btnSel), panel = $(panelSel);
@@ -7750,6 +7758,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const regionsContent = $('#mobileAdminRegionsView .admin-courses-content') || $('#pcAdminRegionsSlot .admin-courses-content');
       moveNodeWithOrigin(regionsContent, $('#pcAdminRegionsSlot'));
       loadAdminRegions();
+    } else if (pcAdminActiveTab === 'weather') {
+      // Same console as the Android / mobile web screen (moved into the PC tab, restored on close).
+      const weatherContent = $('#mobileAdminWeatherView .admin-courses-content') || $('#pcAdminWeatherSlot .admin-courses-content');
+      moveNodeWithOrigin(weatherContent, $('#pcAdminWeatherSlot'));
+      renderAdminWeather();
+      loadAdminWeather();
     }
   }
 
@@ -7905,6 +7919,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     map.on('pitchend', () => syncPcViewSwitch()); // also follows user tilt (drag) and region fly-to
     $('#pcAdminTabCourses')?.addEventListener('click', () => switchPcAdminTab('courses'));
     $('#pcAdminTabRegions')?.addEventListener('click', () => switchPcAdminTab('regions'));
+    $('#pcAdminTabWeather')?.addEventListener('click', () => switchPcAdminTab('weather'));
     // Redraw the profile when its PC width changes (layout, panel toggle, sidebar) — not only on window resize.
     const profileWrap = $('#profilePanel .profile-chart-wrap');
     if (profileWrap && typeof ResizeObserver === 'function') {
@@ -8657,6 +8672,161 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
   }
 
+  // ---- weather admin console (pure) ----
+  // Item state from weather_admin_overview(): 실패 = last attempt failed; 지연 = no fresh data (models: run available
+  // longer than 2 update intervals + 1 h ago, same rule as scripts/weather-model-watch.mjs freshness(); Best Match:
+  // last collection > 5 h, i.e. more than one missed 2 h run) or recovered but not yet confirmed; 정상 otherwise.
+  const WEATHER_ADMIN_MODEL_LABEL = { jma_msm: 'JMA MSM', ecmwf_ifs025: 'ECMWF', gfs_seamless: 'GFS', best_match: 'Best Match' };
+  const WEATHER_ADMIN_POINT_LABEL = { summit: '정상', mid: '중간', base: '하단' };
+  const WEATHER_ADMIN_LIMIT_H = { jma_msm: 7, ecmwf_ifs025: 13, gfs_seamless: 13, best_match: 5 };
+  const WEATHER_ADMIN_ALERT_KIND = { stale_24h: '24시간 장애', stale_48h: '48시간 재경고', recovered: '정상 복구' };
+  const WEATHER_ADMIN_SEND_STATUS = { pending: '발송 대기', processing: '발송 중', sent: '발송 완료', failed: '발송 실패', skipped: '발송 안 함' };
+  function weatherAdminItemState(item, now = Date.now()) {
+    if (item.status === 'failed') return 'failed';
+    if (item.status === 'unconfirmed') return 'delayed';
+    const base = Date.parse(item.model === 'best_match' ? item.last_success_at : (item.run_available_at || item.last_success_at));
+    if (!Number.isFinite(base)) return 'failed';
+    return now - base > (WEATHER_ADMIN_LIMIT_H[item.model] || 13) * 3600000 ? 'delayed' : 'ok';
+  }
+  function weatherAdminTime(iso) {
+    const t = Date.parse(iso || '');
+    if (!Number.isFinite(t)) return '-';
+    const d = new Date(t), p = n => String(n).padStart(2, '0');
+    const mins = Math.round((Date.now() - t) / 60000);
+    const ago = mins < 1 ? '방금' : mins < 60 ? `${mins}분 전` : mins < 2880 ? `${Math.floor(mins / 60)}시간 전` : `${Math.floor(mins / 1440)}일 전`;
+    return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())} (${ago})`;
+  }
+  // Summary, per-region rows and item rows from one overview payload (no DOM).
+  function weatherAdminModel(overview, labelOf = id => id, now = Date.now()) {
+    const items = Array.isArray(overview?.items) ? overview.items : [];
+    const publish = new Map((overview?.publish || []).map(p => [p.region_id, p.published_at]));
+    const counts = { ok: 0, delayed: 0, failed: 0 };
+    const byRegion = new Map();
+    for (const item of items) {
+      const state = weatherAdminItemState(item, now);
+      counts[state]++;
+      const r = byRegion.get(item.region_id) || { region_id: item.region_id, label: labelOf(item.region_id), counts: { ok: 0, delayed: 0, failed: 0 }, bm: null, model: null, items: [] };
+      r.counts[state]++;
+      const key = item.model === 'best_match' ? 'bm' : 'model';
+      if (item.last_success_at && (!r[key] || item.last_success_at > r[key])) r[key] = item.last_success_at;
+      r.items.push({ ...item, state });
+      byRegion.set(item.region_id, r);
+    }
+    for (const id of publish.keys()) if (!byRegion.has(id)) byRegion.set(id, { region_id: id, label: labelOf(id), counts: { ok: 0, delayed: 0, failed: 0 }, bm: null, model: null, items: [] });
+    const regions = [...byRegion.values()].map(r => ({ ...r, published_at: publish.get(r.region_id) || null })).sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+    const alerts = Array.isArray(overview?.alerts) ? overview.alerts : [];
+    return { total: items.length, counts, regions, alerts, unacknowledged: Number(overview?.unacknowledged) || 0, openIncident: overview?.open_incident || null,
+      unpublished: regions.filter(r => !r.published_at).length };
+  }
+  function weatherAdminHtml(model, filter = 'problem', selected = new Set()) {
+    const esc = escapeHtml, st = { ok: '정상', delayed: '지연', failed: '실패' };
+    const summary = model.total || model.alerts.length
+      ? `<div class="admin-course-item"><strong>미확인 알림 ${model.unacknowledged}건</strong>` +
+        `<small>감시 항목 ${model.total}개 · 정상 ${model.counts.ok} · 지연 ${model.counts.delayed} · 실패 ${model.counts.failed}</small>` +
+        `<small>게시 지역 ${model.regions.length - model.unpublished}/${model.regions.length}${model.openIncident ? ` · 진행 중인 장애 ${Number(model.openIncident.stale_items) || 0}건 (${esc(weatherAdminTime(model.openIncident.opened_at))} 시작)` : ' · 진행 중인 장애 없음'}</small></div>`
+      : '<p class="admin-weather-empty">감시 데이터가 아직 없습니다. 30분 모델 감시가 처음 실행되면 표시됩니다.</p>';
+    const alerts = model.alerts.map(a => {
+      const items = Array.isArray(a.items) ? a.items : [];
+      const list = items.slice(0, 8).map(i => `${esc(i.region)}·${esc(WEATHER_ADMIN_MODEL_LABEL[i.model] || i.model)}·${esc(WEATHER_ADMIN_POINT_LABEL[i.point] || i.point)}`).join(', ') + (items.length > 8 ? ` 외 ${items.length - 8}건` : '');
+      return `<article class="admin-course-item admin-weather-alert${a.acknowledged_at ? ' acked' : ''}" data-kind="${esc(a.kind)}"><strong>${esc(WEATHER_ADMIN_ALERT_KIND[a.kind] || a.kind)} · ${esc(a.title)}</strong>` +
+        `<small>${esc(weatherAdminTime(a.created_at))} · ${esc(WEATHER_ADMIN_SEND_STATUS[a.status] || a.status)}</small>` +
+        (a.body ? `<small>${esc(a.body)}</small>` : '') + (list ? `<small>미복구 항목: ${list}</small>` : '') +
+        (a.acknowledged_at ? `<small>확인 완료 · ${esc(a.acknowledged_by || '관리자')} · ${esc(weatherAdminTime(a.acknowledged_at))}</small>` : '') +
+        `<div class="admin-course-actions"><label class="admin-weather-select"><input type="checkbox" data-weather-select="${esc(a.alert_key)}"${selected.has(a.alert_key) ? ' checked' : ''} /> 선택</label>` +
+        (a.acknowledged_at ? '' : `<button type="button" data-weather-ack="${esc(a.alert_key)}">확인</button>`) +
+        `<button type="button" data-weather-hide="${esc(a.alert_key)}">삭제</button></div></article>`;
+    }).join('') || '<p class="admin-weather-empty">알림 이력이 없습니다.</p>';
+    const regions = model.regions.map(r => `<article class="admin-course-item"><strong>${esc(r.label)} · ${esc(r.region_id)}</strong>` +
+      `<small>게시 ${esc(weatherAdminTime(r.published_at))}</small>` +
+      `<small>모델 수집 ${esc(weatherAdminTime(r.model))} · Best Match ${esc(weatherAdminTime(r.bm))}</small>` +
+      `<small>정상 ${r.counts.ok} · 지연 ${r.counts.delayed} · 실패 ${r.counts.failed}</small></article>`).join('') || '<p class="admin-weather-empty">지역 데이터가 없습니다.</p>';
+    const shown = model.regions.flatMap(r => r.items.filter(i => filter === 'all' || i.state !== 'ok').map(i => ({ ...i, label: r.label })));
+    const items = shown.map(i => `<article class="admin-course-item admin-weather-item" data-state="${i.state}"><strong>${esc(i.label)} · ${esc(WEATHER_ADMIN_MODEL_LABEL[i.model] || i.model)} · ${esc(WEATHER_ADMIN_POINT_LABEL[i.point] || i.point)} · ${st[i.state]}</strong>` +
+      `<small>마지막 정상 ${esc(weatherAdminTime(i.last_success_at))}${i.attempts ? ` · 실패 ${Number(i.attempts)}회` : ''}${i.next_attempt_at ? ` · 다음 시도 ${esc(weatherAdminTime(i.next_attempt_at))}` : ''}</small>` +
+      (i.last_error && i.state !== 'ok' ? `<small>${esc(i.last_error)}</small>` : '') + '</article>').join('') ||
+      `<p class="admin-weather-empty">${filter === 'all' ? '감시 항목이 없습니다.' : '지연·실패 항목이 없습니다.'}</p>`;
+    return { summary, alerts, regions, items };
+  }
+  // ---- end weather admin console (pure) ----
+
+  function hasAdminWeatherAccess() { return Boolean(isApprovedAdmin() && state.session?.user?.id && adminWeatherForbiddenForUser !== state.session.user.id); }
+  function setAdminWeatherBadge(count) {
+    const badge = $('#stitchAdminWeatherUnackBadge'), pc = $('#pcAdminTabWeatherBadge');
+    if (badge) { badge.textContent = `미확인 ${count}건`; badge.hidden = !count; }
+    if (pc) { pc.textContent = String(count); pc.hidden = !count; }
+  }
+  function renderAdminWeather() {
+    const model = weatherAdminModel(adminWeatherOverview, id => regions[id]?.label || id);
+    const visible = new Set(model.alerts.map(a => a.alert_key));
+    for (const key of [...adminWeatherSelected]) if (!visible.has(key)) adminWeatherSelected.delete(key);
+    const html = weatherAdminHtml(model, adminWeatherFilter, adminWeatherSelected);
+    for (const [sel, key] of [['#stitchAdminWeatherSummary', 'summary'], ['#stitchAdminWeatherAlerts', 'alerts'], ['#stitchAdminWeatherRegions', 'regions'], ['#stitchAdminWeatherItems', 'items']]) {
+      const el = $(sel);
+      if (el) el.innerHTML = html[key];
+    }
+    document.querySelectorAll('[data-weather-filter]').forEach(b => b.classList.toggle('active', b.dataset.weatherFilter === adminWeatherFilter));
+    syncAdminWeatherHideButtons(model.alerts.length);
+  }
+  function syncAdminWeatherHideButtons(count = adminWeatherOverview?.alerts?.length || 0) {
+    const sel = $('#stitchAdminWeatherHideSelectedBtn'), all = $('#stitchAdminWeatherHideAllBtn');
+    if (sel) { sel.disabled = !adminWeatherSelected.size; sel.textContent = adminWeatherSelected.size ? `선택 삭제 (${adminWeatherSelected.size})` : '선택 삭제'; }
+    if (all) all.disabled = !count;
+  }
+  // Delete = hide for THIS admin only (weather_admin_alert_hide); the alert, its incident and its delivery record stay.
+  async function hideAdminWeatherAlerts({ keys = [], all = false } = {}) {
+    if (!hasAdminWeatherAccess() || (!all && !keys.length)) return;
+    const note = '이 관리자 화면에서만 사라지며 장애 기록과 발송 이력은 유지됩니다.';
+    const message = all ? `알림 이력을 모두 삭제하시겠습니까?\n${note}` : `알림 ${keys.length}건을 삭제하시겠습니까?\n${note}`;
+    if (!window.confirm(message)) return;
+    const { data, error } = await supabaseClient.rpc('weather_admin_alert_hide', all ? { p_all: true } : { p_alert_keys: keys });
+    if (error) { handleAdminWeatherError(error, $('#stitchAdminWeatherStatus')); return; }
+    for (const key of keys) adminWeatherSelected.delete(key);
+    if (all) adminWeatherSelected.clear();
+    toast(`알림 ${Number(data) || 0}건을 삭제했습니다.`);
+    await loadAdminWeather();
+  }
+  function handleAdminWeatherError(error, status) {
+    if (['42501', 'PGRST202'].includes(error?.code) || [401, 403].includes(error?.status) || /admin only|permission denied/i.test(error?.message || '')) {
+      adminWeatherForbiddenForUser = state.session?.user?.id;
+      adminWeatherOverview = null;
+      setAdminWeatherBadge(0);
+      if (!$('#mobileAdminWeatherView')?.hidden) setStitchAccountSubView('adminManage');
+      syncStitchAccountUI();
+      toast('시스템 관리 권한이 없습니다.');
+      return;
+    }
+    if (status) { status.classList.add('error'); status.textContent = error?.message || '날씨 시스템 상태를 불러오지 못했습니다.'; }
+  }
+  // badgeOnly: admin menu opened -> refresh the unacknowledged count without rendering the console.
+  async function loadAdminWeather({ badgeOnly = false } = {}) {
+    if (!hasAdminWeatherAccess() || !supabaseClient || adminWeatherLoading) return;
+    const status = badgeOnly ? null : $('#stitchAdminWeatherStatus');
+    if (status) { status.classList.remove('error'); status.textContent = '날씨 시스템 상태를 불러오는 중입니다…'; }
+    adminWeatherLoading = true;
+    const client = supabaseClient;
+    try {
+      const { data, error } = await client.rpc('weather_admin_overview');
+      if (client !== supabaseClient) return;
+      if (error) { handleAdminWeatherError(error, status); return; }
+      adminWeatherOverview = data || {};
+      setAdminWeatherBadge(Number(adminWeatherOverview.unacknowledged) || 0);
+      if (!badgeOnly) {
+        renderAdminWeather();
+        if (status) status.textContent = `${weatherAdminTime(adminWeatherOverview.generated_at)} 기준`;
+      }
+    } catch (error) {
+      handleAdminWeatherError(error, status);
+    } finally { adminWeatherLoading = false; }
+  }
+  async function acknowledgeAdminWeatherAlert(key, button) {
+    if (!hasAdminWeatherAccess() || !key) return;
+    if (button) button.disabled = true;
+    const { data, error } = await supabaseClient.rpc('weather_admin_alert_ack', { p_alert_key: key });
+    if (error) { if (button) button.disabled = false; handleAdminWeatherError(error, $('#stitchAdminWeatherStatus')); return; }
+    if (!data) toast('이미 삭제되었거나 없는 알림입니다.');
+    await loadAdminWeather();
+  }
+
   const REGION_ID_PATTERN = /^[a-z][a-z0-9_]*$/;
   const REGION_TEXT_MAX = 30;
   // Auto ID: "region_" + 8 base36 chars (15 chars, matches the existing id rule), unique against known regions.
@@ -9063,9 +9233,10 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const adminUsersView = $('#mobileAdminUsersView');
     const adminCoursesView = $('#mobileAdminCoursesView');
     const adminRegionsView = $('#mobileAdminRegionsView');
+    const adminWeatherView = $('#mobileAdminWeatherView');
     const deleteView = $('#mobileDeleteAccountView');
     const isAdmin = state.profile?.role === 'admin' && state.profile?.status === 'approved';
-    const nextSubview = (!isAdmin && (subview === 'adminManage' || subview === 'adminUsers' || subview === 'adminCourses' || subview === 'adminRegions')) ? 'main' : subview;
+    const nextSubview = (!isAdmin && (subview === 'adminManage' || subview === 'adminUsers' || subview === 'adminCourses' || subview === 'adminRegions' || subview === 'adminWeather')) ? 'main' : subview;
 
     if (nextSubview !== 'adminCourses') closeAdminRoutePreview();
     if (mainView) mainView.hidden = nextSubview !== 'main';
@@ -9073,10 +9244,12 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (adminUsersView) adminUsersView.hidden = nextSubview !== 'adminUsers';
     if (adminCoursesView) adminCoursesView.hidden = nextSubview !== 'adminCourses';
     if (adminRegionsView) adminRegionsView.hidden = nextSubview !== 'adminRegions';
+    if (adminWeatherView) adminWeatherView.hidden = nextSubview !== 'adminWeather';
     if (deleteView) deleteView.hidden = nextSubview !== 'deleteAccount';
 
     if (nextSubview === 'adminManage') {
       loadPendingUsers();
+      loadAdminWeather({ badgeOnly: true });
     } else if (nextSubview === 'adminUsers') {
       switchAdminTab(currentAdminTab); // tabs/sections always consistent when the screen opens
       loadAdminUsersList();
@@ -9084,6 +9257,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       loadAdminRoutes();
     } else if (nextSubview === 'adminRegions') {
       loadAdminRegions();
+    } else if (nextSubview === 'adminWeather') {
+      renderAdminWeather();
+      loadAdminWeather();
     } else if (nextSubview === 'deleteAccount') {
       resetDeleteAccountView();
     }
@@ -9134,11 +9310,16 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (adminCoursesMenu) adminCoursesMenu.hidden = !isAdmin || adminRoutesForbiddenForUser === user?.id;
     const adminRegionsMenu = $('#stitchOpenAdminRegionsBtn');
     if (adminRegionsMenu) adminRegionsMenu.hidden = !isAdmin || adminRegionsForbiddenForUser === user?.id;
+    const adminWeatherMenu = $('#stitchOpenAdminWeatherBtn');
+    if (adminWeatherMenu) adminWeatherMenu.hidden = !isAdmin || adminWeatherForbiddenForUser === user?.id;
+    const pcWeatherTab = $('#pcAdminTabWeather');
+    if (pcWeatherTab) pcWeatherTab.hidden = !isAdmin || adminWeatherForbiddenForUser === user?.id;
+    if (!isAdmin) { adminWeatherOverview = null; setAdminWeatherBadge(0); }
     if (!isAdmin && adminRegionPicker) exitAdminRegionPicker(false);
     if (!isAdmin) closeDesktopAdminRegions();
     if (!isAdmin) adminRegionRows = [];
     if (!isAdmin && adminRoutes.length) resetAdminRoutes();
-    if (!isAdmin && (!$('#mobileAdminCoursesView')?.hidden || !$('#mobileAdminRegionsView')?.hidden)) setStitchAccountSubView('main');
+    if (!isAdmin && (!$('#mobileAdminCoursesView')?.hidden || !$('#mobileAdminRegionsView')?.hidden || !$('#mobileAdminWeatherView')?.hidden)) setStitchAccountSubView('main');
 
     const count = state.pendingUsers ? state.pendingUsers.length : 0;
     if (pendingCountBadge) {
@@ -9406,6 +9587,27 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (hasAdminRegionAccess()) setStitchAccountSubView('adminRegions');
     });
     $('#desktopOpenAdminRegionsBtn')?.addEventListener('click', openDesktopAdminRegions);
+    $('#stitchOpenAdminWeatherBtn')?.addEventListener('click', () => {
+      if (hasAdminWeatherAccess()) setStitchAccountSubView('adminWeather');
+    });
+    $('#stitchAdminWeatherBackBtn')?.addEventListener('click', () => setStitchAccountSubView('adminManage'));
+    $('#stitchAdminWeatherRefreshBtn')?.addEventListener('click', () => loadAdminWeather());
+    $('#stitchAdminWeatherHideSelectedBtn')?.addEventListener('click', () => hideAdminWeatherAlerts({ keys: [...adminWeatherSelected] }));
+    $('#stitchAdminWeatherHideAllBtn')?.addEventListener('click', () => hideAdminWeatherAlerts({ all: true }));
+    document.addEventListener('change', event => {
+      const box = event.target.closest?.('[data-weather-select]');
+      if (!box) return;
+      if (box.checked) adminWeatherSelected.add(box.dataset.weatherSelect); else adminWeatherSelected.delete(box.dataset.weatherSelect);
+      syncAdminWeatherHideButtons();
+    });
+    document.addEventListener('click', event => {
+      const ack = event.target.closest?.('[data-weather-ack]');
+      if (ack) { void acknowledgeAdminWeatherAlert(ack.dataset.weatherAck, ack); return; }
+      const hide = event.target.closest?.('[data-weather-hide]');
+      if (hide) { void hideAdminWeatherAlerts({ keys: [hide.dataset.weatherHide] }); return; }
+      const filter = event.target.closest?.('[data-weather-filter]');
+      if (filter) { adminWeatherFilter = filter.dataset.weatherFilter === 'all' ? 'all' : 'problem'; renderAdminWeather(); }
+    });
     $('#stitchAdminRegionsBackBtn')?.addEventListener('click', () => {
       if (document.body.classList.contains('desktop-admin-regions-open')) closeDesktopAdminRegions();
       else setStitchAccountSubView('adminManage');
@@ -12811,6 +13013,7 @@ async function startPartyMemberSelectedRideOn() {
       const accountBackControls = [
         ['#mobileAdminCoursesView', '#stitchAdminCoursesBackBtn'],
         ['#mobileAdminRegionsView', '#stitchAdminRegionsBackBtn'],
+        ['#mobileAdminWeatherView', '#stitchAdminWeatherBackBtn'],
         ['#mobileAdminUsersView', '#stitchAdminUsersBackBtn'],
         ['#mobileAdminManageView', '#stitchAdminManageHeaderBackBtn'],
         ['#mobileDeleteAccountView', '#stitchDeleteAccountBackBtn']

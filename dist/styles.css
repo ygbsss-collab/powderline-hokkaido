@@ -7437,3 +7437,22 @@ button.pl-push-banner-main { cursor: pointer; -webkit-tap-highlight-color: trans
   .pl-push-banner { animation: none; }
   .pl-push-banner.is-leaving { transition: none; }
 }
+
+/* Admin: weather system console (4th admin card). Reuses the admin course / region list styles. */
+.stitch-account-screen .admin-weather-toolbar, .pc-admin-weather-slot .admin-weather-toolbar { display: flex; justify-content: flex-end; }
+.stitch-account-screen .admin-weather-toolbar button, .pc-admin-weather-slot .admin-weather-toolbar button,
+.stitch-account-screen .admin-weather-filter button, .pc-admin-weather-slot .admin-weather-filter button { padding: 8px 12px; border-radius: 8px; background: #363f48; color: #e0e2ea; font-size: 12px; font-weight: 700; cursor: pointer; border: 0; }
+.stitch-account-screen .admin-weather-filter, .pc-admin-weather-slot .admin-weather-filter { display: flex; gap: 8px; margin-bottom: 10px; }
+.stitch-account-screen .admin-weather-filter button.active, .pc-admin-weather-slot .admin-weather-filter button.active { background: #38bdf8; color: #00354a; }
+.stitch-account-screen .admin-weather-section, .pc-admin-weather-slot .admin-weather-section { margin-top: 18px; }
+.stitch-account-screen .admin-weather-section h2, .pc-admin-weather-slot .admin-weather-section h2 { margin: 0 0 10px; font-size: 14px; font-weight: 700; color: #e0e2ea; }
+.stitch-account-screen .admin-weather-empty, .pc-admin-weather-slot .admin-weather-empty { margin: 0; color: #bdc8d1; font-size: 13px; }
+.admin-weather-item[data-state="delayed"] { border-color: #b88a2e !important; }
+.admin-weather-item[data-state="failed"] { border-color: #c2524a !important; }
+.admin-weather-alert[data-kind="stale_24h"] strong, .admin-weather-alert[data-kind="stale_48h"] strong { color: #ffb4ab !important; }
+.admin-weather-alert[data-kind="recovered"] strong { color: #7dd3a8 !important; }
+.admin-weather-alert.acked { opacity: .75; }
+.admin-weather-select { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; color: #bdc8d1; font-size: 12px; cursor: pointer; }
+.admin-weather-select input { width: 16px; height: 16px; accent-color: #38bdf8; }
+.admin-weather-alert .admin-course-actions button[data-weather-hide] { background: #4a2a2a !important; color: #ffb4ab !important; }
+.admin-weather-alert-tools button:disabled { opacity: .5; cursor: default; }

@@ -511,7 +511,7 @@
               </span>
 </div>
 <p class="font-body-sm text-body-sm text-on-surface-variant truncate mt-0.5">
-              회원 관리 · 전체 코스 관리 · 지역 관리
+              회원 관리 · 전체 코스 관리 · 지역 관리 · 시스템 관리
             </p>
 </div>
 </div>
@@ -688,6 +688,27 @@
                   </div>
                 </div>
               </button>
+
+              <!-- Menu 4: System Management (weather system status + admin alerts) -->
+              <button id="stitchOpenAdminWeatherBtn" class="group relative flex flex-col p-space-md rounded-xl bg-surface-container-high text-left border-0 w-full cursor-pointer" type="button">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-space-sm min-w-0">
+                    <div class="w-10 h-10 rounded-xl bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
+                      <span class="material-symbols-outlined text-[22px]">cloud_sync</span>
+                    </div>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-space-xs">
+                        <span class="font-headline-md text-headline-md text-on-surface truncate">시스템 관리</span>
+                        <span id="stitchAdminWeatherUnackBadge" class="inline-flex items-center px-2 py-0.5 rounded-full bg-tertiary-container/30 text-tertiary text-label-sm font-label-sm" hidden>미확인 0건</span>
+                      </div>
+                      <p class="font-body-sm text-body-sm text-on-surface-variant truncate mt-0.5">날씨 수집·게시 상태, 감시 항목, 관리자 알림</p>
+                    </div>
+                  </div>
+                  <div class="w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 text-outline">
+                    <span class="material-symbols-outlined text-[18px]">arrow_forward</span>
+                  </div>
+                </div>
+              </button>
             </div>
           </div>
         </main>
@@ -711,6 +732,24 @@
             <p id="stitchAdminRegionFormError" class="admin-courses-status error" role="alert"></p>
             <div class="admin-region-form-actions"><button id="stitchAdminRegionSaveBtn" type="submit">저장</button><button id="stitchAdminRegionCancelBtn" type="button">새 지역 입력</button></div>
           </form>
+        </main>
+      </div>
+
+      <!-- Administrator system console: weather status + alerts (admin-only RPCs weather_admin_overview / _alert_ack / _alert_hide). -->
+      <div id="mobileAdminWeatherView" class="stitch-subview" hidden>
+        <header class="admin-courses-header"><button id="stitchAdminWeatherBackBtn" type="button" aria-label="관리자 관리로 돌아가기"><span class="material-symbols-outlined">arrow_back</span></button><h1>시스템 관리</h1></header>
+        <main class="admin-courses-content">
+          <p>30분 모델 감시와 2시간 Best Match 수집의 상태입니다. 24시간 이상 갱신되지 않은 항목은 관리자에게 알림이 발송됩니다.</p>
+          <div class="admin-weather-toolbar"><button id="stitchAdminWeatherRefreshBtn" type="button">새로고침</button></div>
+          <p id="stitchAdminWeatherStatus" class="admin-courses-status" role="status" aria-live="polite"></p>
+          <section class="admin-weather-section" aria-labelledby="adminWeatherSummaryTitle"><h2 id="adminWeatherSummaryTitle">요약</h2><div id="stitchAdminWeatherSummary" class="admin-weather-summary"></div></section>
+          <section class="admin-weather-section" aria-labelledby="adminWeatherAlertsTitle"><h2 id="adminWeatherAlertsTitle">알림 이력</h2>
+            <div class="admin-weather-filter admin-weather-alert-tools"><button id="stitchAdminWeatherHideSelectedBtn" type="button" disabled>선택 삭제</button><button id="stitchAdminWeatherHideAllBtn" type="button" disabled>전체 삭제</button></div>
+            <div id="stitchAdminWeatherAlerts" class="admin-courses-list"></div></section>
+          <section class="admin-weather-section" aria-labelledby="adminWeatherRegionsTitle"><h2 id="adminWeatherRegionsTitle">지역별 수집·게시</h2><div id="stitchAdminWeatherRegions" class="admin-courses-list"></div></section>
+          <section class="admin-weather-section" aria-labelledby="adminWeatherItemsTitle"><h2 id="adminWeatherItemsTitle">감시 항목</h2>
+            <div class="admin-weather-filter" role="group" aria-label="감시 항목 필터"><button type="button" data-weather-filter="problem" class="active">지연·실패</button><button type="button" data-weather-filter="all">전체</button></div>
+            <div id="stitchAdminWeatherItems" class="admin-courses-list"></div></section>
         </main>
       </div>
 
@@ -1271,6 +1310,7 @@
           <button id="pcAdminTabPending" type="button" class="pc-admin-tab" role="tab" aria-selected="false" data-tab="pending">가입 요청 관리 <span id="pcAdminTabPendingBadge" class="pc-badge" hidden>0</span></button>
           <button id="pcAdminTabCourses" type="button" class="pc-admin-tab" role="tab" aria-selected="false" data-tab="courses">전체 코스</button>
           <button id="pcAdminTabRegions" type="button" class="pc-admin-tab" role="tab" aria-selected="false" data-tab="regions">지역 등록·수정</button>
+          <button id="pcAdminTabWeather" type="button" class="pc-admin-tab" role="tab" aria-selected="false" data-tab="weather">시스템 관리 <span id="pcAdminTabWeatherBadge" class="pc-badge" hidden>0</span></button>
         </div>
         <div class="pc-modal-body pc-admin-body">
           <section id="pcAdminPanelUsers" class="pc-admin-tab-panel" role="tabpanel">
@@ -1299,6 +1339,9 @@
           </section>
           <section id="pcAdminPanelRegions" class="pc-admin-tab-panel" role="tabpanel" hidden>
             <div id="pcAdminRegionsSlot" class="pc-admin-regions-slot"></div>
+          </section>
+          <section id="pcAdminPanelWeather" class="pc-admin-tab-panel" role="tabpanel" hidden>
+            <div id="pcAdminWeatherSlot" class="pc-admin-regions-slot pc-admin-weather-slot"></div>
           </section>
         </div>
       </div>
