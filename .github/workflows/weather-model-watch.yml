@@ -1,4 +1,7 @@
 name: Weather model watch (30 min)
+run-name: >-
+  ${{ inputs.scheduler_slot != '' && format('weather-watch:{0}', inputs.scheduler_slot)
+      || format('weather-watch:manual:{0}', github.run_number) }}
 
 # 30-minute model-run check (scripts/weather-model-watch-run.mjs): reads Open-Meteo meta.json, collects only new runs
 # and failed items, stores verified originals in Supabase Storage, recalculates with the existing multi-model formula,
@@ -6,11 +9,15 @@ name: Weather model watch (30 min)
 # weather-update.yml (2 h Best Match + GitHub Pages service), which is unchanged.
 # OFF until the repository variable WEATHER_WATCH_ENABLED is 'true' (Settings -> Variables). Needs the secrets
 # SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.
+# After approved cutover, Supabase Cron owns the :15/:45 schedule and passes a correlation UUID.
 
 on:
-  schedule:
-    - cron: '15,45 * * * *'
   workflow_dispatch:
+    inputs:
+      scheduler_slot:
+        description: Supabase scheduler correlation UUID
+        required: false
+        type: string
 
 permissions:
   contents: read
