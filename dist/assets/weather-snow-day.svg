@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 140" width="500" height="140">
+  <defs>
+    <!-- Background Gradient for Snow (눈 - 파우더스노우 강조 버전) -->
+    <linearGradient id="snowSkyGradV2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c2340" />
+      <stop offset="50%" stop-color="#13385e" />
+      <stop offset="100%" stop-color="#0a1d35" />
+    </linearGradient>
+
+    <!-- Vibrant Cyan-Blue Northern Light & Powder Glow -->
+    <radialGradient id="snowGlowV2" cx="80%" cy="25%" r="65%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.45" />
+      <stop offset="45%" stop-color="#60a5fa" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#0c2340" stop-opacity="0" />
+    </radialGradient>
+
+    <linearGradient id="snowPeakGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#93c5fd" stop-opacity="0.5" />
+      <stop offset="100%" stop-color="#0c2340" stop-opacity="0.1" />
+    </linearGradient>
+
+    <!-- Dot Pattern -->
+    <pattern id="snowGridV2" x="0" y="0" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#e0f2fe" fill-opacity="0.15" />
+    </pattern>
+
+    <!-- Intricate 6-arm Snowflake Template -->
+    <g id="crystalFlake">
+      <line x1="-9" y1="0" x2="9" y2="0" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+      <line x1="0" y1="-9" x2="0" y2="9" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+      <line x1="-6.3" y1="-6.3" x2="6.3" y2="6.3" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+      <line x1="-6.3" y1="6.3" x2="6.3" y2="-6.3" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" />
+      <!-- Branch ticks on the crystal -->
+      <path d="M-5 -2 L-7 0 L-5 2 M5 -2 L7 0 L5 2 M-2 -5 L0 -7 L2 -5 M-2 5 L0 7 L2 5" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round" fill="none" />
+      <circle cx="0" cy="0" r="1.5" fill="#e0f2fe" />
+    </g>
+
+    <!-- Soft Star Snowflake Template -->
+    <g id="starFlake">
+      <line x1="-5" y1="0" x2="5" y2="0" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round" />
+      <line x1="0" y1="-5" x2="0" y2="5" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round" />
+      <line x1="-3.5" y1="-3.5" x2="3.5" y2="3.5" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round" />
+      <line x1="-3.5" y1="3.5" x2="3.5" y2="-3.5" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round" />
+    </g>
+  </defs>
+
+  <!-- Container Box -->
+  <rect x="1" y="1" width="498" height="138" rx="20" fill="url(#snowSkyGradV2)" stroke="#7dd3fc" stroke-width="1.5" stroke-opacity="0.6" />
+  <rect x="2" y="2" width="496" height="136" rx="19" fill="url(#snowGridV2)" />
+  <rect x="2" y="2" width="496" height="136" rx="19" fill="url(#snowGlowV2)" />
+
+  <!-- Alpine Snow Peaks with Heavy Snow Cover -->
+  <path d="M100 140 L210 55 L280 92 L380 32 L470 95 L500 70 L500 140 Z" fill="url(#snowPeakGrad)" />
+  <!-- Crisp Brilliant White Powder Snowcaps -->
+  <polygon points="210,55 228,74 212,80 196,72" fill="#ffffff" fill-opacity="0.9" filter="drop-shadow(0 0 4px #7dd3fc)" />
+  <polygon points="380,32 406,60 384,68 360,58" fill="#ffffff" fill-opacity="0.95" filter="drop-shadow(0 0 6px #38bdf8)" />
+  <polygon points="500,70 500,90 482,85" fill="#ffffff" fill-opacity="0.8" />
+
+  <!-- Smooth Snow Drift Slopes at Base -->
+  <path d="M0 140 Q 120 115 250 130 T 500 120 L 500 140 Z" fill="#e0f2fe" fill-opacity="0.22" />
+  <path d="M0 140 Q 180 125 360 136 T 500 132 L 500 140 Z" fill="#ffffff" fill-opacity="0.15" />
+
+  <!-- Large Vivid Geometric Snow Crystals (Eye-catching & crisp) -->
+  <use href="#crystalFlake" x="430" y="32" opacity="0.95" transform="scale(1.3)" />
+  <use href="#crystalFlake" x="330" y="58" opacity="0.85" transform="scale(1.05)" />
+  <use href="#crystalFlake" x="250" y="25" opacity="0.8" transform="scale(0.9)" />
+  <use href="#crystalFlake" x="470" y="82" opacity="0.9" transform="scale(1.15)" />
+  <use href="#crystalFlake" x="160" y="38" opacity="0.75" transform="scale(0.85)" />
+
+  <!-- Secondary Star Snowflakes -->
+  <use href="#starFlake" x="385" y="88" opacity="0.9" transform="scale(1.1)" />
+  <use href="#starFlake" x="290" y="80" opacity="0.8" transform="scale(0.95)" />
+  <use href="#starFlake" x="200" y="90" opacity="0.7" transform="scale(0.8)" />
+  <use href="#starFlake" x="105" y="48" opacity="0.8" transform="scale(0.9)" />
+  <use href="#starFlake" x="50" y="75" opacity="0.75" transform="scale(0.85)" />
+
+  <!-- Swirling Powder Snow Bokeh & Dots (Rich depth & storm density) -->
+  <!-- Bright near powder flakes -->
+  <circle cx="410" cy="20" r="3.5" fill="#ffffff" fill-opacity="0.95" filter="drop-shadow(0 0 3px #ffffff)" />
+  <circle cx="455" cy="55" r="4.5" fill="#e0f2fe" fill-opacity="0.5" filter="blur(1px)" />
+  <circle cx="360" cy="18" r="3" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="310" cy="38" r="2.5" fill="#ffffff" fill-opacity="0.85" />
+  <circle cx="270" cy="65" r="3.5" fill="#ffffff" fill-opacity="0.5" filter="blur(1px)" />
+  <circle cx="230" cy="105" r="2" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="175" cy="72" r="3" fill="#ffffff" fill-opacity="0.85" />
+  <circle cx="130" cy="25" r="2.5" fill="#ffffff" fill-opacity="0.8" />
+  <circle cx="85" cy="40" r="3" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="35" cy="30" r="2" fill="#ffffff" fill-opacity="0.75" />
+  <circle cx="485" cy="115" r="2.8" fill="#ffffff" fill-opacity="0.85" />
+  <circle cx="340" cy="110" r="3" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="120" cy="110" r="2.2" fill="#ffffff" fill-opacity="0.8" />
+</svg>

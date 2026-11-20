@@ -207,6 +207,8 @@ export function buildDaily(bm, hourly) {
   return daily;
 }
 
+const MAX_TAIL_MISSING_H = 24;
+
 export function validateService(mm, bm) {
   const issues = [];
   if (mm.data_kind !== DATA_KIND || mm.region_id !== bm.region_id) issues.push('kind/region');
@@ -220,9 +222,17 @@ export function validateService(mm, bm) {
     for (const k of NON_NEG) if (h[k].some(v => v != null && v < 0)) issues.push(`${p}.${k} negative`);
     const contra = h.rain.filter((r, i) => r != null && h.precipitation[i] != null && r > h.precipitation[i] + 0.05).length;
     if (contra) issues.push(`${p}: rain > precipitation in ${contra} h`);
-    if (mm.multimodel.hourly_source[p].includes('missing')) issues.push(`${p}: hours without any value`);
-    // weights actually applied must sum to 1 in every hour (mixed new/previous runs, fallbacks, transitions)
-    const badW = mm.multimodel.hourly_weights[p].filter(w => !w || Math.abs(Object.values(w).reduce((a, b) => a + b, 0) - 1) > 0.002).length;
+    // Hours without any value in any source stay null (never invented). Only a trailing run (forecast end, where the
+    // models' horizons end) of at most MAX_TAIL_MISSING_H hours is tolerated; a gap anywhere else rejects the file.
+    const src = mm.multimodel.hourly_source[p];
+    const firstTail = src.length - (() => { let n = 0; while (n < src.length && src[src.length - 1 - n] === 'missing') n++; return n; })();
+    const tail = src.length - firstTail;
+    if (src.slice(0, firstTail).includes('missing')) issues.push(`${p}: hours without any value`);
+    else if (tail > MAX_TAIL_MISSING_H) issues.push(`${p}: ${tail} trailing hours without any value (> ${MAX_TAIL_MISSING_H})`);
+    else if (tail === src.length) issues.push(`${p}: no hour has a value`);
+    // weights actually applied must sum to 1 in every hour (mixed new/previous runs, fallbacks, transitions); hours
+    // without any value (tolerated tail above) carry no weights
+    const badW = mm.multimodel.hourly_weights[p].filter((w, i) => src[i] !== 'missing' && (!w || Math.abs(Object.values(w).reduce((a, b) => a + b, 0) - 1) > 0.002)).length;
     if (badW) issues.push(`${p}: weights do not sum to 1 in ${badW} h`);
     if (!mm.current[p]) issues.push(`current.${p} missing`);
     // daily = hourly sums over the same local day

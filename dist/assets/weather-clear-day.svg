@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 140" width="500" height="140">
+  <defs>
+    <!-- Background Gradient for Clear/Sunny Ski Resort -->
+    <linearGradient id="clearSkyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f2b46" />
+      <stop offset="40%" stop-color="#143e66" />
+      <stop offset="100%" stop-color="#0b1b2d" />
+    </linearGradient>
+
+    <radialGradient id="sunGlow" cx="85%" cy="30%" r="50%">
+      <stop offset="0%" stop-color="#ffdd55" stop-opacity="0.6" />
+      <stop offset="35%" stop-color="#ff9900" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#ffaa00" stop-opacity="0" />
+    </radialGradient>
+
+    <linearGradient id="mountainFar" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#387aa3" stop-opacity="0.35" />
+      <stop offset="100%" stop-color="#0f2b46" stop-opacity="0" />
+    </linearGradient>
+
+    <linearGradient id="mountainNear" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#5ca9d6" stop-opacity="0.3" />
+      <stop offset="100%" stop-color="#143e66" stop-opacity="0" />
+    </linearGradient>
+
+    <!-- Dot Pattern like the original UI -->
+    <pattern id="dotGrid" x="0" y="0" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#ffffff" fill-opacity="0.12" />
+    </pattern>
+  </defs>
+
+  <!-- Container Box with Rounded Corners & Border matching UI -->
+  <rect x="1" y="1" width="498" height="138" rx="20" fill="url(#clearSkyGrad)" stroke="#38bdf8" stroke-width="1.5" stroke-opacity="0.4" />
+
+  <!-- Subtle Tech Dot Grid Overlay -->
+  <rect x="2" y="2" width="496" height="136" rx="19" fill="url(#dotGrid)" />
+
+  <!-- Sun Glow & Core on Upper Right -->
+  <circle cx="410" cy="40" r="90" fill="url(#sunGlow)" />
+  <circle cx="410" cy="40" r="22" fill="#fff5cc" fill-opacity="0.9" filter="drop-shadow(0 0 10px #f59e0b)" />
+  <!-- Sun Rays Flare -->
+  <path d="M410 8 L410 16 M410 64 L410 72 M378 40 L386 40 M434 40 L442 40 M387 17 L393 23 M427 57 L433 63 M387 63 L393 57 M427 23 L433 17" stroke="#fef08a" stroke-width="2" stroke-linecap="round" stroke-opacity="0.75" />
+
+  <!-- Alpine Mountains Silhouette -->
+  <!-- Far Mountain Ridge -->
+  <path d="M120 140 L220 70 L280 100 L370 45 L460 110 L500 85 L500 140 Z" fill="url(#mountainFar)" />
+  <!-- Snow peak highlights -->
+  <path d="M220 70 L235 82 L215 88 Z" fill="#ffffff" fill-opacity="0.25" />
+  <path d="M370 45 L388 62 L362 68 Z" fill="#ffffff" fill-opacity="0.3" />
+
+  <!-- Near Mountain Ridge -->
+  <path d="M0 140 L40 105 L110 140 L260 85 L350 140 Z" fill="url(#mountainNear)" />
+  <path d="M260 85 L275 102 L245 106 Z" fill="#ffffff" fill-opacity="0.2" />
+
+  <!-- Subtle Light Streak at the bottom / border highlight -->
+  <path d="M20 138 Q 250 132 480 138" stroke="#38bdf8" stroke-width="1" stroke-opacity="0.3" fill="none" />
+</svg>

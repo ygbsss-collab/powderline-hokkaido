@@ -66,8 +66,25 @@ body[data-native-android="1"] .home-mode-card .home-offline-regions-panel[hidden
 .home-weather-hero[data-wx-group="cloudy"] { --wx-overlay: linear-gradient(135deg, rgba(30, 41, 59, .94), rgba(15, 30, 52, .9)); }
 .home-weather-hero[data-wx-group="snow"] { --wx-overlay: radial-gradient(rgba(255, 255, 255, .35) 1px, transparent 1.6px) 0 0 / 14px 14px, linear-gradient(135deg, rgba(71, 105, 145, .92), rgba(14, 45, 80, .9)); border-color: rgba(224, 242, 254, .6); }
 .home-weather-hero[data-wx-group="rain"] { --wx-overlay: repeating-linear-gradient(105deg, rgba(148, 163, 184, .16) 0 1px, transparent 1px 9px), linear-gradient(135deg, rgba(15, 30, 55, .95), rgba(30, 41, 59, .92)); border-color: rgba(100, 116, 139, .7); }
+/* Stitch weather scenes are complete backgrounds; this override removes the shared legacy mountain layer. */
+.home-weather-hero[data-wx-group$="-day"],
+.home-weather-hero[data-wx-group$="-night"] {
+  background: var(--wx-scene) center / cover no-repeat;
+}
+.home-weather-hero[data-wx-group$="-day"] > *,
+.home-weather-hero[data-wx-group$="-night"] > * { text-shadow: 0 1px 3px rgba(0, 0, 0, .85); }
+.home-weather-hero[data-wx-group="clear-day"] { --wx-scene: url("./assets/weather-clear-day.svg"); border-color: rgba(56, 189, 248, .4); }
+.home-weather-hero[data-wx-group="clear-night"] { --wx-scene: url("./assets/weather-clear-night.svg"); border-color: rgba(56, 189, 248, .45); }
+.home-weather-hero[data-wx-group="cloudy-day"] { --wx-scene: url("./assets/weather-cloudy-day.svg"); border-color: rgba(100, 116, 139, .4); }
+.home-weather-hero[data-wx-group="cloudy-night"] { --wx-scene: url("./assets/weather-cloudy-night.svg"); border-color: rgba(100, 116, 139, .5); }
+.home-weather-hero[data-wx-group="snow-day"] { --wx-scene: url("./assets/weather-snow-day.svg"); border-color: rgba(125, 211, 252, .6); }
+.home-weather-hero[data-wx-group="snow-night"] { --wx-scene: url("./assets/weather-snow-night.svg"); border-color: rgba(125, 211, 252, .55); }
+.home-weather-hero[data-wx-group="rain-day"] { --wx-scene: url("./assets/weather-rain-day.svg"); border-color: rgba(56, 189, 248, .5); }
+.home-weather-hero[data-wx-group="rain-night"] { --wx-scene: url("./assets/weather-rain-night.svg"); border-color: rgba(56, 189, 248, .45); }
 .home-weather-hero[data-wx-group="clear"] .home-weather-head,
-.home-weather-hero[data-wx-group="snow"] .home-weather-head { color: #e0f2fe; }
+.home-weather-hero[data-wx-group="snow"] .home-weather-head,
+.home-weather-hero[data-wx-group^="clear-"] .home-weather-head,
+.home-weather-hero[data-wx-group^="snow-"] .home-weather-head { color: #e0f2fe; }
 body[data-native-android="1"] .home-weather-hero { min-height: 0; }
 
 /* Android home fits the screen without scrolling: the weather card keeps its own (small) height. */

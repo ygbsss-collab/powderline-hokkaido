@@ -11,6 +11,8 @@
   // stays open does not keep an old forecast. fetch() already uses cache: 'no-cache' (revalidates with the server).
   const RELOAD_MS = 30 * 60 * 1000;
   const cacheAt = new Map(); // regionId -> ms of the request
+  let dueTimer = null; // re-read timer while the detail page stays open
+  let refreshing = false; // a background refresh is already running
   let livecamConfig = null;
   let livecamConfigRequest = null;
   const selectedCameraByRegion = new Map();
@@ -195,13 +197,15 @@
     if (!precipBasis && kind === 'mixed') precipBasis = 'mixed_amounts';
     return {kind, label, icon, snow: s, rain: r, code: num(code), precipBasis};
   }
-  // Home card background (4 groups, unchanged look): from the classified kind; mixed keeps its code group.
-  function bgGroup(w) {
-    if (w.kind === 'clear' || w.kind === 'partly') return w.code === 2 ? 'cloudy' : 'clear';
-    if (w.kind === 'snow') return 'snow';
-    if (w.kind === 'rain' || w.kind === 'thunder') return 'rain';
-    if (w.kind === 'mixed') return wmoInfo(w.code).kind === 'snow' ? 'snow' : 'rain';
-    return 'cloudy';
+  // Home card background: keep the legacy 4 groups when day/night is unknown; otherwise use a local Stitch SVG.
+  function bgGroup(w, isDay = null) {
+    let group;
+    if (w.kind === 'clear' || w.kind === 'partly') group = w.code === 2 ? 'cloudy' : 'clear';
+    else if (w.kind === 'snow') group = 'snow';
+    else if (w.kind === 'rain' || w.kind === 'thunder') group = 'rain';
+    else if (w.kind === 'mixed') group = wmoInfo(w.code).kind === 'snow' ? 'snow' : 'rain';
+    else group = 'cloudy';
+    return isDay == null ? group : `${group}-${isDay ? 'day' : 'night'}`;
   }
   // Day/night from the hour's real shortwave radiation (W/m², mean of the preceding hour): > 0 day, 0 night, missing unknown.
   const isDayFrom = sw => (num(sw) == null ? null : sw > 0);
@@ -232,9 +236,10 @@
       : data ? `${s ? wallTime(s.time) : '--'} 예보${stale ? ' · 이전 데이터' : ''}` : '이 지역의 날씨 데이터가 없습니다'}`);
     card.classList.toggle('empty', !data);
     // Shared classification of the same hourly slot (code + snowfall + rain + day/night). Missing -> cloudy bg + "--".
-    const w = s ? classifyWeather({code: s.code, snow: s.snow, rain: s.rain, isDay: isDayFrom(s.sw)}, `home|summit|${s.time}`)
+    const isDay = s ? isDayFrom(s.sw) : null;
+    const w = s ? classifyWeather({code: s.code, snow: s.snow, rain: s.rain, isDay}, `home|summit|${s.time}`)
       : {kind: 'missing', icon: 'remove', label: '--', code: null};
-    card.dataset.wxGroup = bgGroup(w);
+    card.dataset.wxGroup = bgGroup(w, isDay);
     const text = w.kind === 'missing' ? '--'
       : w.kind === 'mixed' ? `눈 ${fmt(w.snow, 1)}cm · 비 ${fmt(w.rain, 1)}mm`
       : w.kind === 'snow' ? `눈 ${fmt(w.snow, 1)}cm`
@@ -267,15 +272,27 @@
   // Weather page re-entry / app back in the foreground: after RELOAD_MS re-read the region in the background. The shown
   // data stays until the new result arrives and is never replaced by an older file (fetched_at).
   async function refreshIfDue() {
-    if (!regionId || !data || Date.now() - (cacheAt.get(regionId) || 0) <= RELOAD_MS) return;
+    if (!regionId || !data || refreshing) return;
+    const age = Date.now() - (cacheAt.get(regionId) || 0);
+    if (age <= RELOAD_MS) { scheduleDue(RELOAD_MS - age); return; }
+    refreshing = true;
     const id = regionId, token = loadToken;
-    const result = await load(id);
+    let result = null;
+    try { result = await load(id); } finally { refreshing = false; }
+    scheduleDue(RELOAD_MS);
     if (token !== loadToken || id !== regionId || !result || result === data || fetchedMs(result) < fetchedMs(data)) return;
     data = result;
     renderCard();
     if (!isOpen()) return;
     renderHeader();
     if (!isCamOpen() && $('wxPointSections')) rerenderPointSections();
+  }
+
+  // While the detail page stays open (no re-entry / visibility event), re-check when the 30 min deadline is reached.
+  // Only while the app is visible; back in the foreground, visibilitychange -> refreshIfDue applies the same deadline.
+  function scheduleDue(ms) {
+    clearTimeout(dueTimer);
+    dueTimer = isOpen() && document.visibilityState === 'visible' ? setTimeout(() => { if (isOpen() && document.visibilityState === 'visible') refreshIfDue(); }, Math.max(1000, ms) + 500) : null;
   }
 
   // ---- Detail page (Stitch design "기상 현황") ----
@@ -888,6 +905,8 @@
       if (body) body.innerHTML = ''; // stop iframe / image work while Weather is closed
     }
     el.hidden = true;
+    clearTimeout(dueTimer);
+    dueTimer = null;
     el.classList.remove('wx-cam-active');
     const home = $('mobileHomeScreen');
     if (home) home.inert = false;

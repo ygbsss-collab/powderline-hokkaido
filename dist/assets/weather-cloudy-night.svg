@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 140" width="500" height="140">
+  <defs>
+    <!-- Background Gradient for Cloudy Night (흐린 밤) -->
+    <linearGradient id="cloudyNightSky" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06101e" />
+      <stop offset="50%" stop-color="#0e1d2f" />
+      <stop offset="100%" stop-color="#050a14" />
+    </linearGradient>
+
+    <!-- Cloud layers in night -->
+    <linearGradient id="cloudLayerNight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#334155" stop-opacity="0.75" />
+      <stop offset="100%" stop-color="#1e293b" stop-opacity="0.25" />
+    </linearGradient>
+
+    <!-- Luminous Moon Halo through Clouds -->
+    <radialGradient id="cloudyMoonGlow" cx="82%" cy="32%" r="50%">
+      <stop offset="0%" stop-color="#67e8f9" stop-opacity="0.38" />
+      <stop offset="40%" stop-color="#38bdf8" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#06101e" stop-opacity="0" />
+    </radialGradient>
+
+    <pattern id="cloudyNightGrid" x="0" y="0" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#94a3b8" fill-opacity="0.1" />
+    </pattern>
+  </defs>
+
+  <!-- Container Box -->
+  <rect x="1" y="1" width="498" height="138" rx="20" fill="url(#cloudyNightSky)" stroke="#64748b" stroke-width="1.5" stroke-opacity="0.5" />
+  <rect x="2" y="2" width="496" height="136" rx="19" fill="url(#cloudyNightGrid)" />
+  <rect x="2" y="2" width="496" height="136" rx="19" fill="url(#cloudyMoonGlow)" />
+
+  <!-- Mountain Silhouette in Night Mist -->
+  <path d="M120 140 L230 76 L310 114 L410 62 L500 108 L500 140 Z" fill="#0f1b2b" fill-opacity="0.8" />
+  <path d="M230 76 L242 88" stroke="#475569" stroke-width="1.2" stroke-opacity="0.4" fill="none" />
+
+  <!-- Visible Moon with Moonlit Cloud Cover -->
+  <g filter="drop-shadow(0 0 10px rgba(103, 232, 249, 0.6))">
+    <!-- Moon Body clearly defined -->
+    <circle cx="410" cy="38" r="26" fill="#38bdf8" fill-opacity="0.15" />
+    <path d="M 421 21 A 18 18 0 1 0 421 55 A 14 14 0 1 1 421 21 Z" fill="#f0f9ff" />
+    <path d="M 419 23 A 16 16 0 1 0 419 53 A 13 13 0 1 1 419 23 Z" fill="#ffffff" fill-opacity="0.9" />
+  </g>
+
+  <!-- Volumetric Night Overcast Clouds partially crossing in front of the Moon -->
+  <ellipse cx="440" cy="42" rx="75" ry="30" fill="url(#cloudLayerNight)" />
+  <ellipse cx="340" cy="34" rx="65" ry="26" fill="url(#cloudLayerNight)" />
+  <ellipse cx="240" cy="22" rx="55" ry="22" fill="url(#cloudLayerNight)" opacity="0.7" />
+
+  <!-- Atmospheric Fog and Mist Trails illuminated by Moonlight -->
+  <path d="M60 52 Q 200 42 350 56" stroke="#94a3b8" stroke-width="1.3" stroke-opacity="0.3" fill="none" stroke-dasharray="14 10" />
+  <path d="M110 82 Q 260 72 440 86" stroke="#64748b" stroke-width="1.5" stroke-opacity="0.35" fill="none" stroke-dasharray="18 12" />
+  <path d="M20 114 Q 180 100 360 118" stroke="#475569" stroke-width="1.2" stroke-opacity="0.25" fill="none" stroke-dasharray="22 14" />
+</svg>

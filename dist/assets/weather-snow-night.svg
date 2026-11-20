@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 140" width="500" height="140">
+  <defs>
+    <!-- Background Gradient for Snowy Night (눈 내리는 밤) -->
+    <linearGradient id="snowNightSky" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#051226" />
+      <stop offset="50%" stop-color="#0c2344" />
+      <stop offset="100%" stop-color="#040d1c" />
+    </linearGradient>
+
+    <!-- Moonlight & Northern Light Glow -->
+    <radialGradient id="snowMoonGlow" cx="82%" cy="30%" r="60%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.4" />
+      <stop offset="45%" stop-color="#60a5fa" stop-opacity="0.18" />
+      <stop offset="100%" stop-color="#051226" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Dot Pattern -->
+    <pattern id="snowNightGrid" x="0" y="0" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#bae6fd" fill-opacity="0.12" />
+    </pattern>
+
+    <!-- Geometric Snowflake Template -->
+    <g id="nightFlake">
+      <line x1="-8" y1="0" x2="8" y2="0" stroke="#ffffff" stroke-width="1.4" stroke-linecap="round" />
+      <line x1="0" y1="-8" x2="0" y2="8" stroke="#ffffff" stroke-width="1.4" stroke-linecap="round" />
+      <line x1="-5.6" y1="-5.6" x2="5.6" y2="5.6" stroke="#ffffff" stroke-width="1.4" stroke-linecap="round" />
+      <line x1="-5.6" y1="5.6" x2="5.6" y2="-5.6" stroke="#ffffff" stroke-width="1.4" stroke-linecap="round" />
+      <circle cx="0" cy="0" r="1.3" fill="#bae6fd" />
+    </g>
+  </defs>
+
+  <!-- Container Box -->
+  <rect x="1" y="1" width="498" height="138" rx="20" fill="url(#snowNightSky)" stroke="#7dd3fc" stroke-width="1.5" stroke-opacity="0.55" />
+  <rect x="2" y="2" width="496" height="136" rx="19" fill="url(#snowNightGrid)" />
+  <rect x="2" y="2" width="496" height="136" rx="19" fill="url(#snowMoonGlow)" />
+
+  <!-- Mountain Silhouette with Moonlit Snow Cap -->
+  <path d="M100 140 L210 60 L280 96 L375 36 L465 100 L500 75 L500 140 Z" fill="#0d233e" fill-opacity="0.75" />
+  <!-- Glowing Snow Caps -->
+  <polygon points="375,36 398,60 378,66 358,56" fill="#e0f2fe" fill-opacity="0.9" filter="drop-shadow(0 0 5px #38bdf8)" />
+  <polygon points="210,60 225,76 210,82 196,74" fill="#bae6fd" fill-opacity="0.8" />
+
+  <!-- Prominent Moon with Lunar Glow behind Fluttering Snow -->
+  <g filter="drop-shadow(0 0 14px rgba(56, 189, 248, 0.8))">
+    <circle cx="420" cy="36" r="28" fill="#38bdf8" fill-opacity="0.2" />
+    <path d="M 432 19 A 19 19 0 1 0 432 55 A 15 15 0 1 1 432 19 Z" fill="#f0f9ff" />
+    <path d="M 430 21 A 17 17 0 1 0 430 53 A 14 14 0 1 1 430 21 Z" fill="#ffffff" />
+  </g>
+
+  <!-- Crystalline Snowflakes illuminated by the Moon -->
+  <use href="#nightFlake" x="425" y="32" opacity="0.95" transform="scale(1.2)" />
+  <use href="#nightFlake" x="325" y="58" opacity="0.85" transform="scale(1)" />
+  <use href="#nightFlake" x="245" y="28" opacity="0.8" transform="scale(0.85)" />
+  <use href="#nightFlake" x="465" y="82" opacity="0.9" transform="scale(1.1)" />
+  <use href="#nightFlake" x="155" y="42" opacity="0.75" transform="scale(0.8)" />
+
+  <!-- Swirling Powder Snow Bokeh & Flakes in Moonlight -->
+  <circle cx="400" cy="20" r="3.2" fill="#ffffff" fill-opacity="0.95" filter="drop-shadow(0 0 3px #ffffff)" />
+  <circle cx="445" cy="56" r="4" fill="#7dd3fc" fill-opacity="0.5" filter="blur(1px)" />
+  <circle cx="360" cy="18" r="2.8" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="305" cy="36" r="2.4" fill="#ffffff" fill-opacity="0.85" />
+  <circle cx="270" cy="68" r="3.2" fill="#e0f2fe" fill-opacity="0.6" filter="blur(1px)" />
+  <circle cx="225" cy="102" r="2" fill="#ffffff" fill-opacity="0.85" />
+  <circle cx="170" cy="74" r="2.5" fill="#ffffff" fill-opacity="0.8" />
+  <circle cx="120" cy="30" r="2.2" fill="#ffffff" fill-opacity="0.8" />
+  <circle cx="75" cy="48" r="2.8" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="485" cy="115" r="2.5" fill="#ffffff" fill-opacity="0.85" />
+
+  <!-- Soft Moonlit Snow Drifts Base -->
+  <path d="M0 140 Q 140 122 280 134 T 500 126 L 500 140 Z" fill="#bae6fd" fill-opacity="0.18" />
+</svg>

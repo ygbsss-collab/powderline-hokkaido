@@ -15,6 +15,10 @@ on:
     # (scripts/weather-ci-stage.mjs; fetched_at alone is not compared). GitHub may start scheduled runs late or
     # (rarely) skip one; actual start / end times are written to the job summary.
     - cron: '0 */2 * * *'
+    # Gap backup (same 2 h cadence, not an extra collection): fires 30 min after each main slot (UTC :30 of even hours).
+    # The "Gap guard" step skips it when a data commit already exists since the start of the current UTC 2 h slot,
+    # i.e. it only collects when the main slot was dropped or produced no commit.
+    - cron: '30 */2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -51,22 +55,40 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Gap guard (backup slot runs only when the main slot was missed)
+        id: guard
+        run: |
+          # Backup is identified by the cron entry that fired (not by the start time: scheduled runs often start late).
+          # Main ('0 */2 * * *') and manual (workflow_dispatch) runs are never skipped.
+          skip=false
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" = "30 */2 * * *" ]; then
+            last=$(git log -1 --format=%ct -- dist/data/weather-multimodel 2>/dev/null || true)
+            now=$(date -u +%s)
+            slot=$(( now / 7200 * 7200 ))
+            if [ -n "$last" ] && [ "$last" -ge "$slot" ]; then skip=true; fi
+            echo "backup slot: last data commit $(date -u -d "@${last:-0}" +%H:%MZ), slot start $(date -u -d "@$slot" +%H:%MZ) -> skip=$skip" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
       - name: Check Open-Meteo weighted API budget
+        if: steps.guard.outputs.skip != 'true'
         run: node scripts/weather-api-usage.mjs --regions=15 --interval-h=2
 
       # Per-region failures are expected to be partial (exit 1); the staging step decides what may be committed.
       - name: Run weather pipeline (Best Match + multi-model, no snow surface)
         id: pipeline
+        if: steps.guard.outputs.skip != 'true'
         continue-on-error: true
         run: node scripts/weather-pipeline.mjs all --no-snow-surface
 
       - name: Stage validated data only
         id: stage
+        if: steps.guard.outputs.skip != 'true'
         run: node scripts/weather-ci-stage.mjs
 
       - name: Commit and push (no force)
         id: push
-        if: steps.stage.outputs.changed == 'true'
+        if: steps.guard.outputs.skip != 'true' && steps.stage.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -79,9 +101,19 @@ jobs:
           echo "pipeline: ${{ steps.pipeline.outcome }} · changed: ${{ steps.stage.outputs.changed || 'n/a' }} · pushed: ${{ steps.push.outputs.pushed || 'false' }} · commit: ${{ steps.push.outputs.sha || '-' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "finished (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_STEP_SUMMARY"
 
+      # Partial pipeline failures are tolerated for staging/push above, but the run must not show green: fail it last,
+      # after validated data was pushed (deploy below still runs for that push).
+      - name: Fail run if pipeline failed
+        if: always() && steps.pipeline.outcome == 'failure'
+        run: |
+          echo "::error::weather pipeline exited non-zero (some regions or models failed); see the pipeline step log"
+          exit 1
+
   deploy:
     needs: update
-    if: needs.update.outputs.pushed == 'true' && needs.update.outputs.sha != ''
+    # !cancelled(): a pushed data commit is deployed even when the update job is red because of the pipeline failure
+    # above, but not when the run was cancelled.
+    if: ${{ !cancelled() && needs.update.outputs.pushed == 'true' && needs.update.outputs.sha != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
