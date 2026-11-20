@@ -1,7 +1,11 @@
 // Sends queued weather admin alerts (public.weather_admin_alerts, written by scripts/weather-model-watch-run.mjs)
-// to the devices of approved admins. NOT deployed yet: deploy only after approval
+// to the devices of approved admins. Deployed with
 //   supabase functions deploy dispatch-weather-admin-alert --use-api --no-verify-jwt
-// and call it with the secret key (POST {}), e.g. from the watch workflow after a check that queued alerts.
+// and called by the watch workflow after each check (POST {}, apikey header).
+// Caller must hold the SERVICE ROLE: either the new secret key (sb_secret_...) or the legacy service_role JWT (what
+// the watch workflow's SUPABASE_SERVICE_ROLE_KEY may contain; @supabase/server auth 'secret' only knows the new keys,
+// which caused HTTP 401). The key is checked by the platform itself: it must be able to read weather_watch_lease,
+// which anon / authenticated / publishable keys cannot (privileges revoked). Nothing else is accepted.
 // Duplicate protection: an alert is claimed with a conditional update (pending -> processing); only the claimer sends
 // it, once. A row left in 'processing' (crash after claim) is never re-sent automatically.
 import { withSupabase } from 'npm:@supabase/server@1.9.2'
@@ -10,11 +14,23 @@ import { getFcmAccessToken, parseServiceAccount, sendFcmMessage } from '../_shar
 type Alert = { alert_key: string; kind: string; title: string; body: string; attempts: number }
 const fail = (status: number, error: string) => Response.json({ ok: false, error }, { status })
 
+async function callerHasServiceRole(request: Request): Promise<boolean> {
+  const key = request.headers.get('apikey') || (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
+  if (!key) return false
+  const headers: Record<string, string> = { apikey: key }
+  if (key.startsWith('eyJ')) headers.authorization = `Bearer ${key}` // legacy JWT key: PostgREST role from the token
+  try {
+    const r = await fetch(`${Deno.env.get('SUPABASE_URL')}/rest/v1/weather_watch_lease?select=id&limit=1`, { headers })
+    return r.ok
+  } catch { return false }
+}
+
 export default {
   fetch: withSupabase(
-    { auth: 'secret' },
+    { auth: 'none' }, // authorization is callerHasServiceRole() below (both service key formats)
     async (request, { supabaseAdmin }) => {
       if (request.method !== 'POST') return fail(405, 'POST required')
+      if (!(await callerHasServiceRole(request))) return fail(401, 'Service role key required')
       const { data: pending, error } = await supabaseAdmin.from('weather_admin_alerts')
         .select('alert_key').eq('status', 'pending').order('created_at').limit(10)
       if (error) return fail(500, 'Alert lookup failed')
