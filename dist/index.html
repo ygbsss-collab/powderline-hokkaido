@@ -124,7 +124,7 @@
       </aside>
       <section class="map-panel profile-open">
         <div id="map"></div>
-        <button id="partySosButton" class="party-sos-control" type="button" aria-label="SOS 요청: 3초간 길게 누르기" aria-describedby="partySosSafety" hidden>
+        <button id="partySosButton" class="party-sos-control" type="button" aria-label="SOS" aria-haspopup="dialog" aria-describedby="partySosSafety" hidden>
           <svg class="party-sos-progress" viewBox="0 0 52 52" aria-hidden="true"><circle class="party-sos-progress-track" cx="26" cy="26" r="23"></circle><circle class="party-sos-progress-value" cx="26" cy="26" r="23"></circle></svg>
           <span class="party-sos-label">SOS</span>
         </button>
@@ -1179,6 +1179,7 @@
         </div></main>
       </section>
     </div>
+    <div id="partySosConfirmModal" class="party-sos-confirm" hidden><div class="party-sos-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="partySosConfirmTitle" aria-describedby="partySosConfirmText"><h2 id="partySosConfirmTitle">SOS</h2><p id="partySosConfirmText"></p><small>FCM 알림 수신은 보장되지 않으며 긴급 구조 신고를 대신하지 않습니다.</small><div class="party-sos-confirm-actions"><button id="partySosConfirmCancel" type="button">취소</button><button id="partySosConfirmOk" type="button"></button></div></div></div>
     <div id="gpsRecordingFinishModal" class="modal-backdrop gps-recording-finish-modal" hidden>
       <div class="modal-dialog gps-recording-finish-dialog" role="dialog" aria-modal="true" aria-labelledby="gpsRecordingFinishTitle" aria-describedby="gpsRecordingFinishSummary">
         <h3 id="gpsRecordingFinishTitle">경로 기록 종료</h3>

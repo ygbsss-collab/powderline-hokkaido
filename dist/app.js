@@ -2636,13 +2636,11 @@ const PARTY_GPS_SEND_BACKOFF_MAX_MS = 120000;
 const PARTY_GPS_RECOVER_MIN_GAP_MS = 2000;
 let partyGpsLifecycleListenersRegistered = false;
 const partyMemberMarkers = new Map();
-const PARTY_SOS_HOLD_MS = 3000;
 const PARTY_SOS_FIX_MAX_AGE_MS = 30000;
 const partySosMarkers = new Map();
 const partySosRuntime = {
   partyId: '', events: [], channel: null, client: null, syncSequence: 0,
-  sending: false, holdTimer: null, holdPointerId: null, suppressClick: false,
-  holdAction: '', holdSosId: '',
+  sending: false, confirmBusy: false, confirmAction: '', confirmSosId: '',
   buttonResetTimer: null, pendingPush: null
 };
 const partyGpsRuntime = {
@@ -2703,22 +2701,42 @@ function setPartySosButtonState(status = 'idle') {
   if (status === 'error') button.classList.add('is-error');
   const label = button.querySelector('.party-sos-label');
   const ownActive = getOwnActivePartySos();
-  if (label) label.textContent = status === 'loading' ? '처리 중' : status === 'success' ? '완료' : status === 'error' ? '실패' : ownActive ? 'SOS 해제' : 'SOS';
+  if (label) label.textContent = status === 'loading' ? '처리 중' : status === 'success' ? '완료' : status === 'error' ? '실패' : 'SOS'; // active state = dark red + yellow ring (36px tool size has no room for a longer label)
   button.classList.toggle('is-active', Boolean(ownActive));
-  button.setAttribute('aria-label', ownActive ? 'SOS 해제: 3초간 길게 누르기' : 'SOS 요청: 3초간 길게 누르기');
+  button.setAttribute('aria-label', ownActive ? 'SOS 해제' : 'SOS 요청');
   if (status === 'success' || status === 'error') {
     partySosRuntime.buttonResetTimer = setTimeout(() => setPartySosButtonState('idle'), 1800);
   }
 }
 
+// Position only: the SOS button is the last item of the visible right map toolbar (PC web #pcMapControls, mobile
+// ride .ride-map-controls, otherwise the Mapbox top-right stack), so it always sits directly under it. Same element
+// and listeners; nothing about the SOS action changes.
+function placePartySosButton(button = $('#partySosButton')) {
+  if (!button) return;
+  // Original place kept on the element itself: safe however early a layout sync runs.
+  button.plSosHome ||= { parent: button.parentNode, next: button.nextSibling };
+  const pcControls = $('#pcMapControls');
+  const target = document.body.dataset.pcWeb === 'true' && pcControls && !pcControls.hidden ? pcControls
+    : window.matchMedia('(max-width: 768px)').matches ? $('.ride-map-controls')
+    : $('#map .mapboxgl-ctrl-top-right');
+  if (target) {
+    if (button.parentNode !== target || button.nextElementSibling) target.appendChild(button);
+    return;
+  }
+  const home = button.plSosHome;
+  if (button.parentNode !== home.parent) home.parent.insertBefore(button, home.next?.parentNode === home.parent ? home.next : null);
+}
+
 function syncPartySosButton() {
   const button = $('#partySosButton');
   if (!button) return;
+  placePartySosButton(button);
   const mobile = window.matchMedia('(max-width: 768px)').matches;
   const onRideSurface = !mobile || document.body.dataset.mobileView === 'ride';
   const show = isPartyRideActive() && onRideSurface && Boolean(state.currentParty?.id && state.session?.user?.id && state.profile?.status === 'approved');
   button.hidden = !show;
-  if (!show) cancelPartySosHold();
+  if (!show) closePartySosConfirm(true);
   setPartySosButtonState('idle');
 }
 
@@ -2808,7 +2826,7 @@ function stopPartySosRuntime({ clearMarkers = false } = {}) {
   partySosRuntime.client = null;
   partySosRuntime.partyId = '';
   partySosRuntime.events = [];
-  cancelPartySosHold();
+  closePartySosConfirm(true);
   if (clearMarkers) clearPartySosMarkers();
   syncPartySosButton();
 }
@@ -2854,41 +2872,53 @@ async function syncPartySosRuntimeForCurrentParty() {
   }
 }
 
-function cancelPartySosHold(pointerId = null) {
-  if (pointerId !== null && partySosRuntime.holdPointerId !== null && pointerId !== partySosRuntime.holdPointerId) return;
-  clearTimeout(partySosRuntime.holdTimer);
-  partySosRuntime.holdTimer = null;
-  partySosRuntime.holdPointerId = null;
-  partySosRuntime.holdAction = '';
-  partySosRuntime.holdSosId = '';
-  $('#partySosButton')?.classList.remove('is-holding');
+// Tap on the SOS button opens a confirmation modal; nothing is sent until the confirm button is pressed.
+function closePartySosConfirm(force = false) {
+  if (partySosRuntime.confirmBusy && !force) return;
+  const modal = $('#partySosConfirmModal');
+  if (modal) modal.hidden = true;
+  partySosRuntime.confirmAction = '';
+  partySosRuntime.confirmSosId = '';
 }
 
-function beginPartySosHold(pointerId = null) {
+function openPartySosConfirm() {
   const button = $('#partySosButton');
-  if (!button || button.hidden || button.disabled || partySosRuntime.sending || partySosRuntime.holdTimer) return;
+  const modal = $('#partySosConfirmModal');
+  if (!button || !modal || button.hidden || button.disabled || partySosRuntime.sending || partySosRuntime.confirmBusy) return;
   if (navigator.onLine === false || !supabaseClient) {
     setPartySosButtonState('error');
     toast('인터넷에 연결되어 있지 않아 SOS를 전송할 수 없습니다. 긴급 구조 기관에 직접 신고해 주세요.');
     return;
   }
   const ownActive = getOwnActivePartySos();
-  partySosRuntime.holdPointerId = pointerId;
-  partySosRuntime.holdAction = ownActive ? 'resolve' : 'create';
-  partySosRuntime.holdSosId = ownActive?.id || '';
-  button.classList.add('is-holding');
-  partySosRuntime.holdTimer = setTimeout(() => {
-    const action = partySosRuntime.holdAction;
-    const sosId = partySosRuntime.holdSosId;
-    partySosRuntime.holdTimer = null;
-    partySosRuntime.holdPointerId = null;
-    partySosRuntime.holdAction = '';
-    partySosRuntime.holdSosId = '';
-    partySosRuntime.suppressClick = true;
-    button.classList.remove('is-holding');
-    if (action === 'resolve' && sosId) void resolveOwnPartySos(sosId, true);
-    else if (action === 'create') void createPartySos();
-  }, PARTY_SOS_HOLD_MS);
+  partySosRuntime.confirmAction = ownActive ? 'resolve' : 'create';
+  partySosRuntime.confirmSosId = ownActive?.id || '';
+  $('#partySosConfirmTitle').textContent = ownActive ? 'SOS 해제' : 'SOS 요청';
+  $('#partySosConfirmText').textContent = ownActive ? '현재 SOS 요청을 해제하시겠습니까?' : '긴급 SOS 요청을 전송하시겠습니까?';
+  const ok = $('#partySosConfirmOk');
+  const cancel = $('#partySosConfirmCancel');
+  ok.textContent = ownActive ? 'SOS 해제' : 'SOS 요청';
+  ok.disabled = false;
+  cancel.disabled = false;
+  modal.hidden = false;
+  cancel.focus();
+}
+
+async function confirmPartySosAction() {
+  if (partySosRuntime.confirmBusy || !partySosRuntime.confirmAction) return;
+  const action = partySosRuntime.confirmAction;
+  const sosId = partySosRuntime.confirmSosId;
+  if (action === 'create' && getOwnActivePartySos()) { closePartySosConfirm(); return; } // already active meanwhile: never send a second one
+  partySosRuntime.confirmBusy = true;
+  $('#partySosConfirmOk').disabled = true;
+  $('#partySosConfirmCancel').disabled = true;
+  try {
+    if (action === 'resolve' && sosId) await resolveOwnPartySos(sosId, true);
+    else if (action === 'create') await createPartySos();
+  } finally {
+    partySosRuntime.confirmBusy = false;
+    closePartySosConfirm();
+  }
 }
 
 function partySosNotificationSummary(notifications) {
@@ -3013,31 +3043,10 @@ window.PowderlinePartySos = { openFromPush: data => openPartySosFromPush(data, {
 function initPartySosInteractions() {
   const button = $('#partySosButton');
   if (!button) return;
-  button.addEventListener('contextmenu', event => event.preventDefault());
-  button.addEventListener('pointerdown', event => {
-    if (!event.isPrimary || event.button !== 0) return;
-    event.preventDefault();
-    try { button.setPointerCapture(event.pointerId); } catch {}
-    beginPartySosHold(event.pointerId);
-  });
-  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-    button.addEventListener(type, event => cancelPartySosHold(event.pointerId));
-  }
-  button.addEventListener('keydown', event => {
-    if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
-      event.preventDefault();
-      beginPartySosHold('keyboard');
-    }
-  });
-  button.addEventListener('keyup', event => {
-    if (event.key === ' ' || event.key === 'Enter') cancelPartySosHold('keyboard');
-  });
-  button.addEventListener('click', event => {
-    if (partySosRuntime.suppressClick) {
-      partySosRuntime.suppressClick = false;
-      event.preventDefault();
-    }
-  });
+  button.addEventListener('click', event => { event.preventDefault(); openPartySosConfirm(); });
+  $('#partySosConfirmCancel')?.addEventListener('click', () => closePartySosConfirm());
+  $('#partySosConfirmOk')?.addEventListener('click', () => { void confirmPartySosAction(); });
+  $('#partySosConfirmModal')?.addEventListener('keydown', event => { if (event.key === 'Escape') closePartySosConfirm(); });
   syncPartySosButton();
 }
 
@@ -7585,6 +7594,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       [brandHeader, regionSelect, styleSwitch, ...mapNavNodes, authPanel, ...settingsNodes, profileTooltip].forEach(restoreNodeToOrigin);
     }
     syncPcViewSwitch();
+    placePartySosButton(); // SOS follows the right map toolbar of the new layout
     if (wasActive !== active) renderSaved(); // folder tree (PC) ↔ flat list (others)
     applyPcEditorLabels();
     updateRouteEndpoints();
@@ -11813,7 +11823,7 @@ document.addEventListener("click", event => {
 
 // ---- Party map markers: size by zoom, names hidden when crowded ----
 // Zoom bands from the existing map: regions open at ~10.5-11, "my location" zooms to >= 15.
-//   < 12 far: 20 px, no names | 12 - 14.5 normal: 26 px, names | >= 14.5 near: 32 px, names
+//   < 12 far: 24 px, no names | 12 - 14.5 normal: 31.2 px, names | >= 14.5 near: 38.4 px, names
 function partyMarkerZoomBand(zoom) { return zoom < 12 ? 'far' : zoom < 14.5 ? 'mid' : 'near'; }
 function updatePartyMarkerZoomBand() {
   if (!map?.getContainer) return;
@@ -11836,7 +11846,7 @@ function declutterPartyMarkerNames() {
     let crowded = false;
     try {
       const p = map.project([entry.lng, entry.lat]);
-      crowded = kept.some(q => Math.abs(q.x - p.x) < 64 && Math.abs(q.y - p.y) < 30);
+      crowded = kept.some(q => Math.abs(q.x - p.x) < 77 && Math.abs(q.y - p.y) < 36);
       if (!crowded) kept.push(p);
     } catch { }
     entry.el.classList.toggle('name-hidden', crowded && !entry.el.classList.contains('selected'));
