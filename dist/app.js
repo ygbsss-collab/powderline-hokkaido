@@ -16,6 +16,17 @@
   let adminWeatherFilter = 'problem';
   let adminWeatherLoading = false;
   const adminWeatherSelected = new Set(); // alert keys ticked for "선택 삭제"
+  // Profile image / party marker state (declared early: used by functions that may run during start-up)
+  const PROFILE_AVATAR_IDS = [1, 2, 3, 4, 5, 6, 7, 8];
+  const PROFILE_PHOTO_BUCKET = 'profile-photos';
+  const PROFILE_PHOTO_OUT = 256; // uploaded square size in px (circle = inscribed circle)
+  const PROFILE_MEMBER_CACHE_MS = 5 * 60 * 1000;
+  const PARTY_MARKER_COLORS = ['#38bdf8', '#f472b6', '#facc15', '#4ade80', '#a78bfa', '#fb923c', '#2dd4bf', '#f87171'];
+  const profileImageState = { supported: null, mine: null, signed: new Map(), members: new Map(), membersAt: 0, membersKey: '' };
+  const profileEditor = { mode: 'edit', panel: null, avatarId: null, choice: null, current: null, img: null, zoom: 1, ox: 0, oy: 0, pointers: new Map(), pinch: null, saving: false, built: false };
+  const PIM_CANVAS = 512; // crop canvas resolution (CSS scales it)
+  let profileCropRenderQueued = false;
+  let partyMarkerZoomBound = false;
   let adminRegionPicker = null;
   const I18N = {
     ko: {
@@ -2431,13 +2442,15 @@ geolocateControl.on('error', (e) => {
       });
       if (error) {
         toast(error.message);
-        return;
+        return false;
       }
       toast(newStatus === 'approved' ? t('toastUserApproved') : t('toastUserRejected'));
       await loadPendingUsers();
+      return true;
     } catch (e) {
       console.error('set_user_status error:', e);
       toast(e.message || 'Failed to update user status');
+      return false;
     }
   }
 
@@ -3065,6 +3078,9 @@ function normalizePartyMemberRow(row, partyIntervalSeconds = PARTY_GPS_DEFAULT_I
     user_id: row.user_id,
     role: row.role || 'member',
     nickname: row.nickname || row.name || '이름 없음',
+    avatar_id: row.avatar_id ?? null,
+    photo_path: row.photo_path ?? null,
+    photo_version: row.photo_version ?? 0,
     locationSharingEnabled: sharingEnabled,
     gpsIntervalSeconds: intervalSeconds,
     lat,
@@ -3144,7 +3160,7 @@ async function fetchMyPartyMemberRows(client, partyId = null) {
   try {
     const { data, error } = await client.rpc('list_my_party_member_locations', { p_party_id: partyId });
     if (!error) {
-      return { rows: data || [], hasLocationRpc: true };
+      return { rows: await attachPartyMemberProfiles(client, data || []), hasLocationRpc: true };
     }
     if (!['PGRST202', '42883'].includes(error.code)) {
       console.warn('list_my_party_member_locations error:', error);
@@ -3155,7 +3171,7 @@ async function fetchMyPartyMemberRows(client, partyId = null) {
   const { data: fallbackRows, error: fallbackError } = await client.rpc('list_my_party_members');
   if (fallbackError) throw fallbackError;
   return {
-    rows: (fallbackRows || []).filter(row => !partyId || row.party_id === partyId),
+    rows: await attachPartyMemberProfiles(client, (fallbackRows || []).filter(row => !partyId || row.party_id === partyId)),
     hasLocationRpc: false
   };
 }
@@ -3592,6 +3608,7 @@ function activateOfflineAccess(client, error) {
     renderPartyMain();
     setPartyCreateAvailability();
   }
+  if (offlineAccessActive) enforceOfflineProfileSetupGate(); // new member without server-confirmed setup: no offline entry
   authInitializationComplete = true;
   updateAuthUi(offlineAccessActive ? '오프라인 모드 · 로컬 기능만 사용할 수 있습니다.' : (error?.message || '온라인 인증이 필요합니다.'));
   if (offlineAccessActive) scheduleOfflineRevalidation();
@@ -3660,6 +3677,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   else clearOfflineAccessGrant(session?.user?.id);
   useLocalRoutes();
   if (session && profile?.status === 'approved') void ensurePushAfterLogin();
+  if (session && profile?.status === 'approved') void refreshMyProfileImage();
 
   const { data } = client.auth.onAuthStateChange(async (event, nextSession) => {
     if (client !== supabaseClient) return;
@@ -3677,6 +3695,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       }
       onlineAuthVerified=false;
       state.profile=null;
+      resetProfileImageState();
       updateAuthUi();
       useLocalRoutes();
       return;
@@ -3692,6 +3711,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (nextProfile?.status === 'approved') {
       saveOfflineAccessGrant(nextSession, state.profile);
       void ensurePushAfterLogin();
+      void refreshMyProfileImage();
       if (nextSession.user.id !== previousUserId) await loadCloudRoutes({ notify: event === 'SIGNED_IN' });
       await restoreGpsRecording();
       void syncPendingGpsRoutes();
@@ -7602,6 +7622,73 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   // ---- PC 회원탈퇴 (UI + safe client call). The account is deleted ONLY by the server-side Edge Function 'delete-my-account'
   // (JWT-verified, password re-auth, atomic DB function). The browser never holds a service key and never sends a user id. ----
   let pcWithdrawBusy = false;
+  const accountDeletionRequests = new Map();
+  function accountDeletionRequestId(key) {
+    if (!accountDeletionRequests.has(key)) accountDeletionRequests.set(key, crypto.randomUUID());
+    return accountDeletionRequests.get(key);
+  }
+  async function invokeAccountDeletion(functionName, body) {
+    const { data, error } = await supabaseClient.functions.invoke(functionName, { body });
+    if (error || data?.ok !== true) {
+      let code = data?.code || (error?.name === 'FunctionsFetchError' ? 'NETWORK' : 'REQUEST_UNCERTAIN');
+      if (error?.context && typeof error.context.json === 'function') {
+        try { code = (await error.context.json())?.code || code; } catch { }
+      }
+      if (error?.context?.status === 404 && code === 'REQUEST_UNCERTAIN') code = 'NOT_DEPLOYED';
+      throw Object.assign(new Error(withdrawErrorMessage(code)), { code });
+    }
+    return data;
+  }
+  function accountDeletionMessage(result) {
+    if (result.cleanup_pending) return state.lang === 'ko'
+      ? '계정은 삭제되었습니다. 프로필 이미지 정리가 대기 중이므로 관리자에게 문의해 주세요.'
+      : 'Account deleted. Profile photo cleanup is pending; please contact an administrator.';
+    return state.lang === 'ko' ? '회원탈퇴가 완료되었습니다.' : 'Your account has been deleted.';
+  }
+  async function finishOwnAccountDeletion(uid) {
+    clearOfflineAccessGrant(uid);
+    for (const prefix of [GPS_RECORDING_STORAGE_PREFIX, GPS_PENDING_ROUTES_PREFIX, CLOUD_ROUTES_CACHE_PREFIX]) {
+      try { localStorage.removeItem(`${prefix}${uid}`); } catch { }
+    }
+    // A different account may have signed in while the request was in flight.
+    if (state.session?.user?.id !== uid) return;
+    try { await supabaseClient.auth.signOut({ scope: 'local' }); } catch { }
+    if (state.session?.user && state.session.user.id !== uid) return;
+    state.session = null; state.profile = null; state.pendingUsers = [];
+    updateAuthUi(); useLocalRoutes();
+  }
+  function confirmAccountDeletion(targetEmail, admin = false) {
+    return new Promise(resolve => {
+      const dialog = document.createElement('dialog');
+      dialog.setAttribute('aria-label', admin ? '서비스 계정 영구 삭제 확인' : '회원탈퇴 본인 확인');
+      dialog.style.cssText = 'max-width:420px;width:calc(100% - 32px);padding:24px;border-radius:16px;background:#172028;color:#fff;border:1px solid #64748b';
+      dialog.innerHTML = `<form><h3>${admin ? '서비스 계정 영구 삭제' : '회원탈퇴 본인 확인'}</h3>
+        <p>계정과 개인 데이터가 영구 삭제됩니다. 다른 멤버가 남은 파티나 공유 코스가 있으면 삭제가 차단됩니다.</p>
+        ${admin ? `<p>${escapeHtml(targetEmail)}</p><label>삭제 대상 이메일을 다시 입력하세요<input name="email" type="email" required autocomplete="off" style="display:block;width:100%;color:#111"></label>` : ''}
+        <label>${admin ? '관리자 본인' : '본인'} 비밀번호<input name="password" type="password" required maxlength="256" autocomplete="current-password" style="display:block;width:100%;color:#111"></label>
+        <p><label><input name="confirm" type="checkbox" required> 영구 삭제됨을 확인했습니다.</label></p>
+        <button type="button" data-cancel>취소</button> <button type="submit">영구 삭제</button></form>`;
+      let settled = false;
+      const finish = value => { if (settled) return; settled = true; dialog.close(); dialog.remove(); resolve(value); };
+      dialog.addEventListener('cancel', event => { event.preventDefault(); finish(null); });
+      dialog.querySelector('[data-cancel]').addEventListener('click', () => finish(null));
+      dialog.querySelector('form').addEventListener('submit', event => {
+        event.preventDefault();
+        const form = dialog.querySelector('form');
+        if (!form.reportValidity()) return;
+        const values = new FormData(form);
+        const email = String(values.get('email') || '').trim();
+        if (admin && email.toLowerCase() !== targetEmail.toLowerCase()) {
+          dialog.querySelector('[name="email"]').setCustomValidity('삭제 대상 이메일과 일치해야 합니다.');
+          form.reportValidity(); return;
+        }
+        finish({ password: String(values.get('password')), confirmation_email: email });
+      });
+      dialog.querySelector('[name="email"]')?.addEventListener('input', event => event.target.setCustomValidity(''));
+      document.body.append(dialog); dialog.showModal();
+      dialog.querySelector('input').focus();
+    });
+  }
   function withdrawText() { return state.lang === 'ko' ? {
     title: '회원탈퇴',
     info: '<p><strong>탈퇴하면 계정이 영구 삭제되며 복구할 수 없습니다.</strong></p><p>삭제되는 데이터</p><ul><li>계정 정보(이메일, 닉네임, 승인 상태)</li><li>내가 클라우드에 저장한 모든 코스</li><li>내 파티 멤버십·초대 기록, 그리고 나 혼자 남은 내 파티</li><li>이 브라우저에 저장된 내 계정의 로컬 캐시와 로그인 세션</li></ul><p>삭제되지 않는 것: 다른 회원의 데이터와 공유 데이터(지역·스키장 정보). 다른 멤버가 있는 파티의 리더이거나 마지막 관리자라면 탈퇴할 수 없으며, 정리 후 다시 시도해야 합니다.</p>',
@@ -7638,12 +7725,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       PASSWORD_INVALID: ko ? '비밀번호가 올바르지 않습니다.' + untouched : 'Incorrect password.' + untouched,
       PARTY_LEADER: ko ? '다른 멤버가 있는 파티의 리더입니다. 파티를 해산하거나 멤버를 정리한 뒤 다시 시도해 주세요.' + untouched : 'You lead a party that has other members. Disband it or remove the members first.' + untouched,
       LAST_ADMIN: ko ? '마지막 관리자 계정은 탈퇴할 수 없습니다. 다른 관리자를 지정한 뒤 시도해 주세요.' + untouched : 'The last administrator cannot be deleted. Appoint another administrator first.' + untouched,
+      PARTY_HISTORY: ko ? '다른 회원의 파티 기록이 남아 있어 삭제가 차단되었습니다. 관리자에게 문의해 주세요.' + untouched : 'Other members have party history. Contact an administrator.' + untouched,
+      ADMIN_TARGET: ko ? '관리자 계정은 이 기능으로 삭제할 수 없습니다.' + untouched : 'Administrator accounts cannot be deleted here.' + untouched,
+      FORBIDDEN: ko ? '승인된 관리자 권한이 필요합니다.' : 'Approved administrator access is required.',
+      CONFIRM_REQUIRED: ko ? '삭제 대상과 영구 삭제 동의를 다시 확인해 주세요.' : 'Confirm the target account and permanent deletion.',
+      REQUEST_CONFLICT: ko ? '이전 삭제 요청과 대상이 다릅니다. 계정 상태를 확인해 주세요.' : 'Conflicting deletion request. Verify the account status.',
+      NOT_FOUND: ko ? '삭제 대상 계정을 찾지 못했습니다. 계정 상태를 확인해 주세요.' : 'Account not found. Verify the account status.',
       ROUTE_IN_USE: ko ? '내 코스가 다른 회원의 파티에서 사용 중입니다. 해당 파티에서 코스를 변경한 뒤 다시 시도해 주세요.' + untouched : 'One of your courses is used by another member\'s party. Change it there first.' + untouched,
       UNAUTHORIZED: ko ? '로그인이 만료되었습니다. 다시 로그인한 뒤 시도해 주세요.' : 'Your session expired. Sign in again and retry.',
       NOT_DEPLOYED: ko ? '회원탈퇴 서버 기능이 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.' + untouched : 'The account deletion service is not set up yet. Please contact the administrator.' + untouched,
       NETWORK: ko ? '서버 응답을 확인하지 못했습니다. 로그아웃 후 다시 로그인해 계정 상태를 확인해 주세요.' : 'No response from the server. Sign out and back in to check the account status.',
     };
-    return map[code] || (ko ? '회원탈퇴에 실패했습니다.' + untouched : 'Account deletion failed.' + untouched);
+    return map[code] || (ko ? '서버에서 삭제 완료를 확인하지 못했습니다. 계정 상태를 확인해 주세요.' : 'Deletion could not be confirmed. Verify the account status.');
   }
   async function submitPcWithdraw(event) {
     event.preventDefault();
@@ -7652,34 +7745,20 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (!supabaseClient || !uid || !password || !$('#pcWithdrawAck').checked) return;
     const errEl = $('#pcWithdrawError'); errEl.hidden = true;
     pcWithdrawBusy = true; syncPcWithdrawSubmit(); $('#pcWithdrawSubmitBtn').textContent = withdrawText().busy;
-    let failure = null;
+    let failure = null, result = null;
     try {
-      // Only the password and an explicit confirmation are sent; the server takes the user id from the verified JWT.
-      const { data, error } = await supabaseClient.functions.invoke('delete-my-account', { body: { password, confirm: true } });
-      if (error) {
-        let code = '';
-        const res = error.context;
-        if (res && typeof res.json === 'function') { try { code = (await res.json())?.code || ''; } catch { } }
-        if (!code) code = res && res.status === 404 ? 'NOT_DEPLOYED' : (res && res.status === 401 ? 'UNAUTHORIZED' : (error.name === 'FunctionsFetchError' ? 'NETWORK' : 'FAILED'));
-        failure = code;
-      } else if (data?.ok !== true) failure = data?.code || 'FAILED';
-    } catch (e) { failure = 'NETWORK'; }
+      result = await invokeAccountDeletion('delete-my-account', { password, confirm: true,
+        request_id: accountDeletionRequestId(`self:${uid}`) });
+    } catch (e) { failure = e.code || 'NETWORK'; }
     pcWithdrawBusy = false; $('#pcWithdrawSubmitBtn').textContent = withdrawText().submit; syncPcWithdrawSubmit();
     $('#pcWithdrawPassword').value = ''; syncPcWithdrawSubmit();
     if (failure) { // nothing local is touched when the server did not confirm the deletion
       errEl.textContent = withdrawErrorMessage(failure); errEl.hidden = false; return;
     }
     // Server confirmed: remove this user's local caches and the session, then back to the login screen.
-    try {
-      clearOfflineAccessGrant(uid);
-      for (const prefix of [GPS_RECORDING_STORAGE_PREFIX, GPS_PENDING_ROUTES_PREFIX, CLOUD_ROUTES_CACHE_PREFIX]) localStorage.removeItem(`${prefix}${uid}`);
-      try { await supabaseClient.auth.signOut({ scope: 'local' }); } catch { }
-    } finally {
-      state.session = null; state.profile = null; state.pendingUsers = [];
-      closePcWithdrawModal(); closePcAccountModal(); closePcAdminModal();
-      updateAuthUi(); useLocalRoutes();
-      toast(state.lang === 'ko' ? '회원탈퇴가 완료되었습니다.' : 'Your account has been deleted.');
-    }
+    await finishOwnAccountDeletion(uid);
+    closePcWithdrawModal(); closePcAccountModal(); closePcAdminModal();
+    toast(accountDeletionMessage(result));
   }
 
   function openPcAccountModal() {
@@ -9284,6 +9363,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
     if (nickEl) nickEl.textContent = nickname;
     if (emailEl) emailEl.textContent = email;
+    renderAccountProfileImage();
 
     if (approvedBadge) {
       if (isApproved) {
@@ -9478,9 +9558,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
                 <span class="material-symbols-outlined text-[16px]">undo</span>
                 <span>승인 취소</span>
               </button>
-              <button class="flex items-center justify-center gap-1 h-10 rounded-lg bg-error-container text-on-error-container font-body-sm font-medium hover:bg-error-container/80 transition-colors active:scale-98" data-user-action="reject" data-user-id="${u.id}">
+              <button class="flex items-center justify-center gap-1 h-10 rounded-lg bg-error-container text-on-error-container font-body-sm font-medium hover:bg-error-container/80 transition-colors active:scale-98" data-user-action="delete-account" data-user-id="${u.id}">
                 <span class="material-symbols-outlined text-[16px]">person_remove</span>
-                <span>강제 탈퇴</span>
+                <span>서비스 계정 영구 삭제</span>
               </button>
             </div>` : ''}
           </div>
@@ -9849,12 +9929,24 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
       btn.disabled = true;
       try {
-        await handleSetUserStatus(userId, action === 'approve' ? 'approved' : 'rejected');
+        if (action === 'delete-account') {
+          if (state.profile?.role !== 'admin' || state.profile.status !== 'approved') throw new Error('관리자 권한이 필요합니다.');
+          const target = adminUsersCache.find(user => user.id === userId);
+          if (!target?.email || target.role === 'admin' || userId === state.session?.user?.id) throw new Error('삭제할 수 없는 계정입니다.');
+          const confirmation = await confirmAccountDeletion(target.email, true);
+          if (!confirmation) return;
+          const result = await invokeAccountDeletion('admin-delete-account', { ...confirmation, confirm: true,
+            target_user_id: userId, request_id: accountDeletionRequestId(`admin:${state.session.user.id}:${userId}`) });
+          await loadAdminUsersList();
+          toast(result.cleanup_pending ? '계정은 삭제되었습니다. 이미지 정리는 재처리가 필요합니다.' : '서비스 계정이 영구 삭제되었습니다.');
+          return;
+        }
+        if (!['approve', 'reject'].includes(action)) return;
+        if (!await handleSetUserStatus(userId, action === 'approve' ? 'approved' : 'rejected')) return;
         await loadAdminUsersList();
-        toast(action === 'approve' ? '회원이 승인되었습니다.' : '회원이 거절/취소 처리되었습니다.');
       } catch (err) {
         console.error('Admin action error:', err);
-        toast('처리에 실패했습니다.');
+        toast(err.message || '처리에 실패했습니다.');
       } finally {
         btn.disabled = false;
       }
@@ -9874,7 +9966,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
           const iconSpan = confirmDeleteBtn.querySelector('.material-symbols-outlined');
           if (iconSpan) iconSpan.textContent = 'warning';
           if (inputHint) {
-            inputHint.textContent = '확인 완료: 회원 탈퇴 버튼을 누르면 즉시 모든 데이터가 삭제됩니다.';
+            inputHint.textContent = '확인 완료: 회원 탈퇴 버튼을 누르면 비밀번호 본인 확인 후 삭제합니다.';
             inputHint.className = 'font-label-sm text-label-sm text-secondary px-1';
           }
         } else {
@@ -9890,19 +9982,21 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
       confirmDeleteBtn.addEventListener('click', async () => {
         if (confirmDeleteBtn.disabled) return;
+        const uid = state.session?.user?.id;
+        if (!supabaseClient || !uid) return toast(withdrawErrorMessage('UNAUTHORIZED'));
         confirmDeleteBtn.disabled = true;
         confirmDeleteBtn.innerHTML = '<span class="material-symbols-outlined animate-spin text-[20px]">sync</span> 처리 중...';
 
         try {
-          clearOfflineAccessGrant();
-          if (supabaseClient) {
-            await supabaseClient.auth.signOut();
-          }
-          alert('POWDERLINE 회원 탈퇴가 완료되었습니다.');
+          const confirmation = await confirmAccountDeletion(state.session.user.email);
+          if (!confirmation) { resetDeleteAccountView(); return; }
+          const result = await invokeAccountDeletion('delete-my-account', { password: confirmation.password, confirm: true,
+            request_id: accountDeletionRequestId(`self:${uid}`) });
+          await finishOwnAccountDeletion(uid);
+          alert(accountDeletionMessage(result));
           location.reload();
         } catch (err) {
-          console.error('Delete account error:', err);
-          alert('탈퇴 처리 중 오류가 발생했습니다.');
+          alert(err.message || withdrawErrorMessage('NETWORK'));
           resetDeleteAccountView();
         }
       });
@@ -11053,8 +11147,705 @@ function renderPartyMemberRowHtml(member, isJoinedView = false) {
     : '';
   const rowClass = isJoinedView ? 'party-joined-member' : 'party-leader-member';
   const iconHtml = isJoinedView ? '' : '<span class="material-symbols-outlined" aria-hidden="true">person</span>';
-  return `<div class="${rowClass}"><div class="party-member-main">${iconHtml}<strong>${escapeHtml(name)}</strong>${roleBadge}</div><div class="party-member-telemetry"><span class="party-member-telemetry-status ${statusClass}">${statusLabel}</span>${metaHtml}</div></div>`;
+  const avatarHtml = typeof member === 'string' ? '' : profileImageHtml(member, name, member?.user_id, 'pl-avatar-member');
+  return `<div class="${rowClass}"><div class="party-member-main">${avatarHtml || iconHtml}<strong>${escapeHtml(name)}</strong>${roleBadge}</div><div class="party-member-telemetry"><span class="party-member-telemetry-status ${statusClass}">${statusLabel}</span>${metaHtml}</div></div>`;
 }
+
+// ==== Profile image: own photo or one of 8 default avatars; party list + party map markers ===========================
+// Server (supabase/deferred/20261121000000_add_profile_images.sql): get_my_profile_image / set_my_profile_image /
+// list_my_party_member_profiles + private bucket 'profile-photos' ("<uid>/<file>"). Until that migration is applied
+// the RPCs are missing (PGRST202): nothing is forced, every member shows the nickname initial, saving explains why.
+// Default avatars are static files (offline); only their id (1..8) is stored.
+
+function profileAvatarSrc(id) { return `./assets/avatars/avatar-${String(id).padStart(2, '0')}.webp`; } // 256 px WebP
+function profileMineKey(uid) { return `powderline.profileImage.v1.${uid}`; }
+function profileOwnPhotoKey(uid) { return `powderline.profilePhoto.v1.${uid}`; }
+function profileInitial(nickname) {
+  const ch = Array.from(String(nickname || '').trim())[0];
+  return ch ? ch.toUpperCase() : '?';
+}
+function partyMarkerColor(userId) {
+  let h = 0;
+  for (const c of String(userId || '')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return PARTY_MARKER_COLORS[h % PARTY_MARKER_COLORS.length];
+}
+function readOwnPhotoCache(uid) {
+  try { const v = JSON.parse(localStorage.getItem(profileOwnPhotoKey(uid)) || 'null'); return v?.path && v?.dataUrl ? v : null; } catch { return null; }
+}
+function writeOwnPhotoCache(uid, path, dataUrl) {
+  try { if (path && dataUrl) localStorage.setItem(profileOwnPhotoKey(uid), JSON.stringify({ path, dataUrl })); else localStorage.removeItem(profileOwnPhotoKey(uid)); } catch { /* quota: signed URL still works online */ }
+}
+// Last profile state CONFIRMED BY THE SERVER, per user id (key and stored uid must both match: another account's
+// state is never reused). Without it nothing is assumed: the member is neither "existing" nor "new" until checked.
+function readMineCache(uid) {
+  try {
+    const v = JSON.parse(localStorage.getItem(profileMineKey(uid)) || 'null');
+    return v && v.uid === uid && v.checked_at ? v : null;
+  } catch { return null; }
+}
+function writeMineCache(uid, mine, source = 'server') {
+  try {
+    if (uid && mine) localStorage.setItem(profileMineKey(uid), JSON.stringify({ uid, checked_at: new Date().toISOString(), source,
+      avatar_id: mine.avatar_id ?? null, photo_path: mine.photo_path ?? null, photo_version: mine.photo_version ?? 0,
+      setup_required: mine.setup_required === true, setup_completed_at: mine.setup_completed_at ?? null }));
+  } catch { }
+}
+function isProfileSetupPending(mine) { return Boolean(mine?.setup_required) && !mine?.setup_completed_at; }
+// 'allow' (setup not required, or completed) | 'setup' (new member, not completed) | 'unknown' (never confirmed)
+// Offline start (cached sign-in grant): existing members confirmed once keep their offline use; a new member without
+// completed setup sees the setup sheet (saving needs the network); never confirmed on this device -> gate.
+function enforceOfflineProfileSetupGate() {
+  const uid = state.session?.user?.id;
+  if (!uid || !offlineAccessActive) return;
+  const confirmed = readMineCache(uid);
+  if (confirmed) profileImageState.mine = confirmed;
+  const decision = profileGateDecision(confirmed);
+  applyProfileGateDecision(decision);
+  if (decision === 'setup') showProfileEditorError('오프라인 상태입니다. 프로필 등록이 완료되지 않아 네트워크에 연결된 상태에서 저장해야 POWDERLINE을 이용할 수 있습니다.');
+}
+function profileGateDecision(confirmed) {
+  if (!confirmed) return 'unknown';
+  return isProfileSetupPending(confirmed) ? 'setup' : 'allow';
+}
+
+// Blocking screen while the server state is not confirmed: "checking" or a server / network error with retry.
+// (Profile registration itself is the separate setup sheet with its own wording.)
+let profileGateBuilt = false;
+function buildProfileGate() {
+  if (profileGateBuilt) return;
+  profileGateBuilt = true;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `<div id="profileGateScreen" class="pim-backdrop pim-gate" hidden role="alertdialog" aria-modal="true" aria-labelledby="profileGateTitle" aria-describedby="profileGateText">
+  <div class="pim-dialog pim-gate-dialog">
+    <span class="material-symbols-outlined pim-gate-icon" id="profileGateIcon" aria-hidden="true">sync</span>
+    <h2 id="profileGateTitle">프로필 상태 확인 중</h2>
+    <p id="profileGateText" class="pim-intro"></p>
+    <footer class="pim-actions"><button id="profileGateLogoutBtn" type="button" class="pim-secondary">로그아웃</button><button id="profileGateRetryBtn" type="button" class="pim-primary">다시 시도</button></footer>
+  </div>
+</div>`;
+  document.body.appendChild(wrap.firstElementChild);
+  document.getElementById('profileGateRetryBtn').addEventListener('click', () => {
+    if (offlineAccessActive || !supabaseClient) { showProfileGate('checking'); void revalidateOfflineAccess(); }
+    else void refreshMyProfileImage();
+  });
+  document.getElementById('profileGateLogoutBtn').addEventListener('click', () => void signOutFromProfileGate());
+}
+function isProfileGateOpen() { const g = document.getElementById('profileGateScreen'); return Boolean(g && !g.hidden); }
+function showProfileGate(kind) {
+  buildProfileGate();
+  const offline = offlineAccessActive || !supabaseClient || navigator.onLine === false;
+  const texts = {
+    checking: ['sync', '프로필 상태 확인 중', '서버에서 프로필 등록 상태를 확인하고 있습니다. 잠시만 기다려 주세요.'],
+    error: ['cloud_off', '프로필 상태를 확인할 수 없습니다', offline
+      ? '오프라인 상태라 서버에서 프로필 등록 상태를 확인할 수 없습니다. 이 기기에서 아직 한 번도 확인되지 않아 일반 화면을 열 수 없습니다. 네트워크에 연결한 뒤 다시 시도해 주세요.'
+      : '서버 오류로 프로필 등록 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요. (프로필 등록 여부와는 관계없는 일시적인 오류입니다.)']
+  }[kind] || [];
+  document.getElementById('profileGateIcon').textContent = texts[0];
+  document.getElementById('profileGateTitle').textContent = texts[1];
+  document.getElementById('profileGateText').textContent = texts[2];
+  document.getElementById('profileGateRetryBtn').hidden = kind === 'checking';
+  document.getElementById('profileGateRetryBtn').disabled = false;
+  const g = document.getElementById('profileGateScreen');
+  g.hidden = false;
+  g.dataset.kind = kind;
+  document.body.classList.add('profile-image-open');
+}
+function hideProfileGate() {
+  const g = document.getElementById('profileGateScreen');
+  if (!g || g.hidden) return;
+  g.hidden = true;
+  if (!isProfileImageEditorOpen()) document.body.classList.remove('profile-image-open');
+}
+// Sign-out from a blocking screen. Offline start: no server sign-out possible -> drop this device's offline grant and
+// reload to the login screen (closing the screen alone would let the member in).
+async function signOutFromProfileGate() {
+  if (!supabaseClient) {
+    try { clearOfflineAccessGrant(state.session?.user?.id); } catch { }
+    location.reload();
+    return;
+  }
+  try { await supabaseClient.auth.signOut(); } catch { }
+  hideProfileGate();
+  closeProfileImageEditor(true);
+}
+// Applies a decision: allow -> nothing blocks; setup -> setup sheet (registration wording); unknown -> gate (error).
+function applyProfileGateDecision(decision, { serverError = false } = {}) {
+  if (decision === 'allow') {
+    hideProfileGate();
+    if (isProfileSetupBlocking()) closeProfileImageEditor(true);
+    return;
+  }
+  if (decision === 'setup') {
+    hideProfileGate();
+    openProfileImageEditor({ mode: 'setup' });
+    if (serverError) showProfileEditorError('서버에 연결하지 못해 최신 등록 상태를 확인하지 못했습니다. 마지막 확인 결과 프로필 등록이 필요합니다. 연결 후 저장해 주세요.');
+    return;
+  }
+  if (isProfileSetupBlocking()) closeProfileImageEditor(true);
+  showProfileGate('error');
+}
+
+// Image source of a profile ({avatar_id, photo_path}) or '' (-> nickname initial). Photos: own cached copy, else a
+// signed URL already fetched by ensureProfileSignedUrls(); a new path per upload, so URLs never show an old image.
+function profileImageSrc(profile, userId) {
+  if (!profile) return '';
+  if (profile.photo_path) {
+    const uid = state.session?.user?.id;
+    if (uid && String(userId) === String(uid)) {
+      const own = readOwnPhotoCache(uid);
+      if (own?.path === profile.photo_path) return own.dataUrl;
+    }
+    const s = profileImageState.signed.get(profile.photo_path);
+    return s && s.exp > Date.now() ? s.url : '';
+  }
+  const id = Number(profile.avatar_id);
+  return PROFILE_AVATAR_IDS.includes(id) ? profileAvatarSrc(id) : '';
+}
+function profileImageHtml(profile, nickname, userId, cls = '') {
+  const src = profileImageSrc(profile, userId);
+  return `<span class="pl-avatar ${cls}" aria-hidden="true"><span class="pl-avatar-initial">${escapeHtml(profileInitial(nickname))}</span>` +
+    (src ? `<img class="pl-avatar-img" src="${escapeHtml(src)}" alt="" draggable="false" />` : '') + '</span>';
+}
+// A broken image (expired / deleted / offline) falls back to the initial underneath.
+document.addEventListener('error', event => {
+  const img = event.target;
+  if (img?.classList?.contains('pl-avatar-img')) img.closest('.pl-avatar')?.classList.add('failed');
+}, true);
+
+async function ensureProfileSignedUrls(paths) {
+  const client = supabaseClient;
+  const now = Date.now();
+  const need = [...new Set(paths.filter(Boolean))].filter(p => !(profileImageState.signed.get(p)?.exp > now + 60000));
+  if (!client || !need.length) return;
+  try {
+    const { data, error } = await client.storage.from(PROFILE_PHOTO_BUCKET).createSignedUrls(need, 3600);
+    if (error) return;
+    for (const row of data || []) if (row?.signedUrl && row.path) profileImageState.signed.set(row.path, { url: row.signedUrl, exp: now + 55 * 60000 });
+  } catch { /* offline: initials */ }
+}
+async function cacheOwnPhoto(uid, path) {
+  if (!uid || !path || readOwnPhotoCache(uid)?.path === path) return;
+  await ensureProfileSignedUrls([path]);
+  const s = profileImageState.signed.get(path);
+  if (!s) return;
+  try {
+    const blob = await (await fetch(s.url)).blob();
+    const dataUrl = await new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); });
+    writeOwnPhotoCache(uid, path, dataUrl);
+  } catch { /* keep the signed URL only */ }
+}
+
+// Called once an approved session is verified (startup and every sign-in). The decision uses only what the server says
+// now, or - if the server cannot be reached - the last state the server confirmed for THIS user id. A user never
+// confirmed on this device is held at the gate until the check succeeds (no guessing "existing" or "new").
+// Missing RPC (PGRST202) = migration not applied: the server confirms that nobody has a setup duty.
+async function refreshMyProfileImage() {
+  const client = supabaseClient;
+  const uid = state.session?.user?.id;
+  if (!client || !uid || state.profile?.status !== 'approved') return;
+  if (profileImageState.mine && profileImageState.mine.uid !== uid) profileImageState.mine = null; // other account
+  const confirmed = readMineCache(uid);
+  if (!profileImageState.mine && confirmed) profileImageState.mine = confirmed;
+  if (profileGateDecision(confirmed) === 'unknown') showProfileGate('checking');
+  else if (profileGateDecision(confirmed) === 'setup') applyProfileGateDecision('setup');
+  let data = null, error = null;
+  try {
+    // a hanging request must not keep the member on "checking": after 15 s it counts as a server error (retry)
+    ({ data, error } = await Promise.race([client.rpc('get_my_profile_image'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Profile state check timed out')), 15000))]));
+  } catch (e) { error = e; }
+  if (client !== supabaseClient || state.session?.user?.id !== uid) return;
+  if (error && ['PGRST202', '42883'].includes(error.code)) {
+    profileImageState.supported = false;
+    const exempt = { setup_required: false, setup_completed_at: null, avatar_id: null, photo_path: null, photo_version: 0 };
+    writeMineCache(uid, exempt, 'not_migrated');
+    profileImageState.mine = { ...exempt, uid };
+    renderAccountProfileImage();
+    applyProfileGateDecision('allow');
+    return;
+  }
+  if (error || !data) {
+    // Server / network error: fall back to the last confirmed state of this user only (distinct wording).
+    renderAccountProfileImage();
+    applyProfileGateDecision(profileGateDecision(confirmed), { serverError: true });
+    return;
+  }
+  profileImageState.supported = true;
+  profileImageState.mine = { ...data, uid };
+  writeMineCache(uid, data);
+  if (data.photo_path) await cacheOwnPhoto(uid, data.photo_path);
+  else writeOwnPhotoCache(uid, null, null);
+  renderAccountProfileImage();
+  if (typeof renderPartyMain === 'function' && state.currentParty) renderPartyMain();
+  // existing member / completed -> enter now; new member not completed -> setup sheet (next sign-in shows it again)
+  applyProfileGateDecision(profileGateDecision(readMineCache(uid)));
+}
+
+function renderAccountProfileImage() {
+  const uid = state.session?.user?.id;
+  const nickname = state.profile?.nickname || '';
+  const mine = profileImageState.mine || (uid ? readMineCache(uid) : null);
+  for (const id of ['stitchAccountAvatar', 'pcAccountAvatar']) {
+    const host = document.getElementById(id);
+    if (host) host.innerHTML = profileImageHtml(mine, nickname, uid, 'pl-avatar-account');
+  }
+}
+
+// Party members: image fields come from list_my_party_member_profiles and are merged into the member rows by
+// user_id (the existing member / location RPCs are untouched). Cached 5 min or until the member set changes.
+async function attachPartyMemberProfiles(client, rows) {
+  if (!client || !Array.isArray(rows) || !rows.length || profileImageState.supported === false) return rows;
+  const key = [...new Set(rows.map(r => `${r.party_id}:${r.user_id}`))].sort().join(',');
+  if (key !== profileImageState.membersKey || Date.now() - profileImageState.membersAt > PROFILE_MEMBER_CACHE_MS) {
+    try {
+      const { data, error } = await client.rpc('list_my_party_member_profiles');
+      if (error) {
+        if (['PGRST202', '42883'].includes(error.code)) profileImageState.supported = false;
+        return rows;
+      }
+      profileImageState.members = new Map((data || []).map(p => [String(p.user_id), p]));
+      profileImageState.membersKey = key;
+      profileImageState.membersAt = Date.now();
+    } catch { return rows; }
+  }
+  await ensureProfileSignedUrls([...profileImageState.members.values()].map(p => p.photo_path));
+  return rows.map(row => {
+    const p = profileImageState.members.get(String(row.user_id));
+    return p ? { ...row, avatar_id: p.avatar_id, photo_path: p.photo_path, photo_version: p.photo_version } : row;
+  });
+}
+function invalidatePartyMemberProfiles() { profileImageState.membersAt = 0; }
+
+// ---- Editor: first-login setup (mode 'setup', cannot be dismissed) and account change (mode 'edit') ----
+
+// Layout (mobile first, one column): title [+ 로그아웃 in setup] -> 1. 닉네임 등록 (setup only; existing nickname
+// form logic) -> 2. 프로필 사진 등록 ([사진 업로드] [아바타 설정], one panel open at a time, each with 선택 저장) ->
+// 3. 지도 표시 미리보기 (real marker size / ring + nickname) -> 프로필 저장 (the only server save of the image; the
+// first successful one completes the setup). 선택 저장 only confirms the choice locally.
+function buildProfileImageEditor() {
+  if (profileEditor.built) return;
+  profileEditor.built = true;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `<div id="profileImageModal" class="pim-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="pimTitle">
+  <div class="pim-dialog">
+    <header class="pim-header"><h2 id="pimTitle">프로필 설정</h2>
+      <button id="pimLogoutBtn" type="button" class="pim-text-btn" hidden><span class="material-symbols-outlined" aria-hidden="true">logout</span>로그아웃</button>
+      <button id="pimCloseBtn" type="button" class="pim-icon-btn" aria-label="닫기"><span class="material-symbols-outlined">close</span></button></header>
+    <p id="pimIntro" class="pim-intro" hidden>닉네임과 프로필 사진을 등록하면 POWDERLINE을 시작할 수 있습니다.</p>
+    <section id="pimNicknameSection" class="pim-section" aria-labelledby="pimNicknameTitle">
+      <h3 id="pimNicknameTitle" class="pim-section-title">닉네임 등록</h3>
+      <div class="pim-row"><input id="pimNicknameInput" type="text" minlength="1" maxlength="50" autocomplete="nickname" aria-labelledby="pimNicknameTitle" /><button id="pimNicknameSaveBtn" type="button" class="pim-secondary">저장</button></div>
+      <small id="pimNicknameStatus" class="pim-status" role="status" aria-live="polite"></small>
+    </section>
+    <section class="pim-section" aria-labelledby="pimImageTitle">
+      <h3 id="pimImageTitle" class="pim-section-title">프로필 사진 등록</h3>
+      <div class="pim-choice-btns"><button type="button" class="pim-secondary" data-pim-panel="photo" aria-expanded="false"><span class="material-symbols-outlined" aria-hidden="true">add_a_photo</span>사진 업로드</button><button type="button" class="pim-secondary" data-pim-panel="avatar" aria-expanded="false"><span class="material-symbols-outlined" aria-hidden="true">face</span>아바타 설정</button></div>
+      <input id="pimFileInput" type="file" accept="image/*" hidden />
+      <div id="pimPhotoPane" class="pim-panel" hidden>
+        <div id="pimCrop" class="pim-crop" hidden><canvas id="pimCanvas" width="${PIM_CANVAS}" height="${PIM_CANVAS}"></canvas><div class="pim-crop-mask" aria-hidden="true"></div></div>
+        <label id="pimZoomRow" class="pim-zoom" hidden><span class="material-symbols-outlined">zoom_out</span><input id="pimZoom" type="range" min="1" max="4" step="0.01" value="1" aria-label="확대·축소" /><span class="material-symbols-outlined">zoom_in</span></label>
+        <small id="pimPhotoHint" class="pim-hint" hidden>드래그로 이동 · 슬라이더, 두 손가락 또는 휠로 확대·축소. 원 안이 프로필이 됩니다.</small>
+        <div class="pim-panel-actions"><button id="pimPickBtn" type="button" class="pim-secondary">사진 선택</button><button id="pimPhotoConfirmBtn" type="button" class="pim-primary" disabled>선택 저장</button></div>
+      </div>
+      <div id="pimAvatarPane" class="pim-panel" hidden>
+        <div class="pim-avatar-grid">${PROFILE_AVATAR_IDS.map(id => `<button type="button" class="pim-avatar-option" data-pim-avatar="${id}" aria-label="아바타 ${id}" aria-pressed="false"><img src="${profileAvatarSrc(id)}" alt="" draggable="false" /></button>`).join('')}</div>
+        <div class="pim-panel-actions"><button id="pimAvatarConfirmBtn" type="button" class="pim-primary" disabled>선택 저장</button></div>
+      </div>
+      <small id="pimChoiceStatus" class="pim-status" role="status" aria-live="polite"></small>
+    </section>
+    <section class="pim-section pim-section-preview" aria-labelledby="pimPreviewTitle">
+      <h3 id="pimPreviewTitle" class="pim-section-title">지도 표시 미리보기</h3>
+      <div class="pim-map-strip"><div class="party-gps-marker pim-marker-sample" id="pimPreviewMarker"><span class="pgm-avatar"></span><span class="pgm-name"></span></div></div>
+    </section>
+    <p id="pimError" class="pim-error" role="alert" hidden></p>
+    <button id="pimSaveBtn" type="button" class="pim-primary pim-save-main">프로필 저장</button>
+  </div>
+</div>`;
+  document.body.appendChild(wrap.firstElementChild);
+  const $id = id => document.getElementById(id);
+  $id('pimCloseBtn').addEventListener('click', () => closeProfileImageEditor());
+  $id('pimSaveBtn').addEventListener('click', () => void saveProfileImage());
+  $id('pimLogoutBtn').addEventListener('click', () => void signOutFromProfileGate());
+  $id('pimNicknameInput').addEventListener('input', () => { $id('pimNicknameStatus').textContent = ''; renderProfileEditor(); });
+  $id('pimNicknameSaveBtn').addEventListener('click', () => void saveProfileEditorNickname());
+  document.querySelectorAll('[data-pim-panel]').forEach(b => b.addEventListener('click', () => {
+    const panel = b.dataset.pimPanel;
+    profileEditor.panel = profileEditor.panel === panel ? null : panel;
+    if (profileEditor.panel === 'photo' && !profileEditor.img) $id('pimFileInput').click(); // straight to the picker
+    renderProfileEditor();
+  }));
+  document.querySelectorAll('[data-pim-avatar]').forEach(b => b.addEventListener('click', () => {
+    profileEditor.avatarId = Number(b.dataset.pimAvatar);
+    renderProfileEditor();
+  }));
+  $id('pimAvatarConfirmBtn').addEventListener('click', () => {
+    if (!PROFILE_AVATAR_IDS.includes(profileEditor.avatarId)) return;
+    profileEditor.choice = { kind: 'avatar', id: profileEditor.avatarId, src: profileAvatarSrc(profileEditor.avatarId) };
+    profileEditor.panel = null; // fold the list again
+    $id('pimChoiceStatus').textContent = `아바타 ${profileEditor.avatarId}을(를) 선택했습니다. 아래 [프로필 저장]으로 저장됩니다.`;
+    renderProfileEditor();
+  });
+  $id('pimPhotoConfirmBtn').addEventListener('click', () => void confirmProfileEditorPhoto());
+  $id('pimPickBtn').addEventListener('click', () => $id('pimFileInput').click());
+  $id('pimFileInput').addEventListener('change', event => { const f = event.target.files?.[0]; event.target.value = ''; if (f) void loadProfileEditorPhoto(f); });
+  $id('pimZoom').addEventListener('input', event => { setProfileEditorZoom(Number(event.target.value)); });
+  const canvas = $id('pimCanvas');
+  canvas.addEventListener('pointerdown', onProfileCropPointerDown);
+  canvas.addEventListener('pointermove', onProfileCropPointerMove);
+  for (const t of ['pointerup', 'pointercancel', 'pointerleave']) canvas.addEventListener(t, onProfileCropPointerUp);
+  canvas.addEventListener('wheel', event => { event.preventDefault(); setProfileEditorZoom(profileEditor.zoom * Math.exp(-event.deltaY * 0.0015)); }, { passive: false });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && isProfileImageEditorOpen() && profileEditor.mode !== 'setup') closeProfileImageEditor();
+  });
+}
+function isProfileImageEditorOpen() { const m = document.getElementById('profileImageModal'); return Boolean(m && !m.hidden); }
+function isProfileSetupBlocking() { return isProfileImageEditorOpen() && profileEditor.mode === 'setup'; }
+
+function openProfileImageEditor({ mode = 'edit' } = {}) {
+  buildProfileImageEditor();
+  const uid = state.session?.user?.id;
+  const mine = profileImageState.mine || (uid ? readMineCache(uid) : null);
+  const currentSrc = profileImageSrc(mine, uid);
+  Object.assign(profileEditor, { mode, avatarId: mine?.avatar_id ?? null, img: null, zoom: 1, ox: 0, oy: 0, saving: false, panel: null,
+    // the image already on the server (edit mode) is shown, but only a NEW confirmed choice can be saved
+    choice: null, current: currentSrc ? { kind: mine?.photo_path ? 'photo' : 'avatar', src: currentSrc } : null });
+  profileEditor.pointers.clear();
+  const modal = document.getElementById('profileImageModal');
+  modal.hidden = false;
+  document.body.classList.add('profile-image-open');
+  const setup = mode === 'setup';
+  document.getElementById('pimTitle').textContent = setup ? '프로필 설정' : '프로필 이미지 변경';
+  document.getElementById('pimIntro').hidden = !setup;
+  document.getElementById('pimCloseBtn').hidden = setup;
+  document.getElementById('pimLogoutBtn').hidden = !setup; // setup: the only way out besides saving
+  document.getElementById('pimNicknameSection').hidden = !setup; // account screen keeps its own nickname edit
+  document.getElementById('pimNicknameInput').value = state.profile?.nickname || '';
+  document.getElementById('pimNicknameStatus').textContent = '';
+  document.getElementById('pimChoiceStatus').textContent = '';
+  document.getElementById('pimSaveBtn').textContent = setup ? '프로필 저장' : '저장';
+  showProfileEditorError('');
+  renderProfileEditor();
+}
+function closeProfileImageEditor(force = false) {
+  const modal = document.getElementById('profileImageModal');
+  if (!modal || modal.hidden) return;
+  if (profileEditor.mode === 'setup' && !force) return; // setup: only a successful 프로필 저장 (or sign-out) closes it
+  modal.hidden = true;
+  if (!isProfileGateOpen()) document.body.classList.remove('profile-image-open');
+  profileEditor.img = null;
+  profileEditor.choice = null;
+  profileEditor.pointers.clear();
+}
+function showProfileEditorError(message) {
+  const el = document.getElementById('pimError');
+  if (!el) return;
+  el.textContent = message || '';
+  el.hidden = !message;
+}
+function profileEditorNickname() {
+  const input = document.getElementById('pimNicknameInput');
+  return (profileEditor.mode === 'setup' && input ? input.value : state.profile?.nickname || '').trim();
+}
+// Image shown in the preview: confirmed choice, else the image already saved (edit), else none (initial).
+function profileEditorChoiceSrc() {
+  return profileEditor.choice?.src || profileEditor.current?.src || '';
+}
+function renderProfileEditor() {
+  if (!profileEditor.built) return;
+  const panel = profileEditor.panel;
+  document.querySelectorAll('[data-pim-panel]').forEach(b => {
+    const on = b.dataset.pimPanel === panel;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-expanded', String(on));
+    b.classList.toggle('chosen', profileEditor.choice?.kind === b.dataset.pimPanel);
+  });
+  document.getElementById('pimPhotoPane').hidden = panel !== 'photo';
+  document.getElementById('pimAvatarPane').hidden = panel !== 'avatar';
+  document.querySelectorAll('[data-pim-avatar]').forEach(b => {
+    const on = Number(b.dataset.pimAvatar) === profileEditor.avatarId;
+    b.classList.toggle('selected', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  const hasPhoto = Boolean(profileEditor.img);
+  document.getElementById('pimCrop').hidden = !hasPhoto;
+  document.getElementById('pimZoomRow').hidden = !hasPhoto;
+  document.getElementById('pimPhotoHint').hidden = !hasPhoto;
+  document.getElementById('pimPickBtn').textContent = hasPhoto ? '다른 사진 선택' : '사진 선택';
+  document.getElementById('pimPhotoConfirmBtn').disabled = !hasPhoto || profileEditor.saving;
+  document.getElementById('pimAvatarConfirmBtn').disabled = !PROFILE_AVATAR_IDS.includes(profileEditor.avatarId) || profileEditor.saving;
+  if (hasPhoto && panel === 'photo') drawProfileCrop();
+  // map preview: same marker element / size (26 px) / colour ring as the party map, image + nickname update live
+  const nickname = profileEditorNickname() || '닉네임';
+  const src = profileEditorChoiceSrc();
+  const marker = document.getElementById('pimPreviewMarker');
+  marker.style.setProperty('--pgm-color', partyMarkerColor(state.session?.user?.id || 'me'));
+  marker.querySelector('.pgm-avatar').innerHTML = `<span class="pl-avatar"><span class="pl-avatar-initial">${escapeHtml(profileInitial(nickname))}</span>${src ? `<img class="pl-avatar-img" src="${escapeHtml(src)}" alt="" />` : ''}</span>`;
+  marker.querySelector('.pgm-name').textContent = nickname;
+  const nickOk = profileEditor.mode !== 'setup' || (profileEditorNickname().length >= 1 && profileEditorNickname().length <= 50);
+  document.getElementById('pimSaveBtn').disabled = profileEditor.saving || !profileEditor.choice || !nickOk;
+}
+// 선택 저장 (photo): the current crop becomes the confirmed choice (kept in memory, uploaded by 프로필 저장).
+async function confirmProfileEditorPhoto() {
+  if (!profileEditor.img) return;
+  const blob = await renderProfileCropBlob();
+  if (!blob) { showProfileEditorError('사진을 처리하지 못했습니다. 다른 사진을 선택해 주세요.'); return; }
+  const src = await blobToDataUrl(blob).catch(() => null);
+  profileEditor.choice = { kind: 'photo', blob, src };
+  profileEditor.panel = null;
+  document.getElementById('pimChoiceStatus').textContent = '사진을 선택했습니다. 아래 [프로필 저장]으로 저장됩니다.';
+  renderProfileEditor();
+}
+// 닉네임 저장: runs the EXISTING account nickname form (#stitchNicknameForm: validation, profiles update, auth
+// metadata sync, messages) and reports its result here. Returns true when the nickname is saved.
+async function saveProfileEditorNickname() {
+  const status = document.getElementById('pimNicknameStatus');
+  const nickname = document.getElementById('pimNicknameInput').value.trim();
+  if (nickname === (state.profile?.nickname || '')) { status.textContent = '현재 닉네임입니다.'; return true; }
+  const form = document.getElementById('stitchNicknameForm');
+  const input = document.getElementById('stitchNicknameInput');
+  const feedback = document.getElementById('stitchNicknameFeedback');
+  const submit = form?.querySelector('[type="submit"]');
+  if (!form || !input || !feedback || !submit) { status.textContent = '닉네임을 저장할 수 없습니다.'; return false; }
+  if (nickname.length < 1 || nickname.length > 50) { status.textContent = '닉네임은 1~50자로 입력해 주세요.'; return false; }
+  const saveBtn = document.getElementById('pimNicknameSaveBtn');
+  saveBtn.disabled = true;
+  status.textContent = '저장 중…';
+  input.value = nickname;
+  feedback.textContent = '';
+  form.requestSubmit();
+  // the existing handler disables its submit button while saving; wait for it (max 20 s)
+  const started = Date.now();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  while (submit.disabled && Date.now() - started < 20000) await new Promise(resolve => setTimeout(resolve, 100));
+  saveBtn.disabled = false;
+  const ok = state.profile?.nickname === nickname && !feedback.textContent;
+  status.textContent = ok ? '닉네임을 저장했습니다.' : (feedback.textContent || '닉네임을 저장하지 못했습니다.');
+  renderProfileEditor();
+  return ok;
+}
+
+// ---- Photo crop: drag to move, slider / wheel / pinch to zoom; the image always covers the circle ----
+async function loadProfileEditorPhoto(file) {
+  showProfileEditorError('');
+  if (!/^image\//.test(file.type || '') && !/\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(file.name || '')) { showProfileEditorError('이미지 파일을 선택해 주세요.'); return; }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = url; });
+    // Very large camera photos are reduced once (memory); EXIF orientation is applied by the browser.
+    const max = 2048, scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    Object.assign(profileEditor, { img: c, zoom: 1, ox: 0, oy: 0, panel: 'photo' });
+    document.getElementById('pimZoom').value = '1';
+    renderProfileEditor();
+  } catch {
+    showProfileEditorError('이 사진을 열 수 없습니다. JPG·PNG·WebP 사진을 선택해 주세요.');
+  } finally { URL.revokeObjectURL(url); }
+}
+function profileCropBaseScale() {
+  const img = profileEditor.img;
+  return img ? PIM_CANVAS / Math.min(img.width, img.height) : 1; // zoom 1 = image just covers the square
+}
+function clampProfileCrop() {
+  const img = profileEditor.img;
+  if (!img) return;
+  const s = profileCropBaseScale() * profileEditor.zoom;
+  const maxX = Math.max(0, (img.width * s - PIM_CANVAS) / 2), maxY = Math.max(0, (img.height * s - PIM_CANVAS) / 2);
+  profileEditor.ox = Math.min(maxX, Math.max(-maxX, profileEditor.ox));
+  profileEditor.oy = Math.min(maxY, Math.max(-maxY, profileEditor.oy));
+}
+function drawProfileCropOn(ctx, size) {
+  const img = profileEditor.img;
+  const k = size / PIM_CANVAS;
+  const s = profileCropBaseScale() * profileEditor.zoom * k;
+  const w = img.width * s, h = img.height * s;
+  ctx.clearRect(0, 0, size, size);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, size / 2 + profileEditor.ox * k - w / 2, size / 2 + profileEditor.oy * k - h / 2, w, h);
+}
+function drawProfileCrop() {
+  clampProfileCrop();
+  drawProfileCropOn(document.getElementById('pimCanvas').getContext('2d'), PIM_CANVAS);
+}
+function queueProfileEditorRender() {
+  if (profileCropRenderQueued) return;
+  profileCropRenderQueued = true;
+  requestAnimationFrame(() => { profileCropRenderQueued = false; renderProfileEditor(); });
+}
+function setProfileEditorZoom(z) {
+  profileEditor.zoom = Math.min(4, Math.max(1, Number.isFinite(z) ? z : 1));
+  const slider = document.getElementById('pimZoom');
+  if (slider) slider.value = String(profileEditor.zoom);
+  queueProfileEditorRender();
+}
+function profileCropPoint(event) {
+  const r = document.getElementById('pimCanvas').getBoundingClientRect();
+  const k = PIM_CANVAS / (r.width || PIM_CANVAS);
+  return { x: (event.clientX - r.left) * k, y: (event.clientY - r.top) * k };
+}
+function onProfileCropPointerDown(event) {
+  if (!profileEditor.img) return;
+  event.preventDefault();
+  event.target.setPointerCapture?.(event.pointerId);
+  profileEditor.pointers.set(event.pointerId, profileCropPoint(event));
+  profileEditor.pinch = null;
+}
+function onProfileCropPointerMove(event) {
+  const prev = profileEditor.pointers.get(event.pointerId);
+  if (!prev) return;
+  event.preventDefault();
+  const p = profileCropPoint(event);
+  profileEditor.pointers.set(event.pointerId, p);
+  const pts = [...profileEditor.pointers.values()];
+  if (pts.length >= 2) {
+    const [a, b] = pts;
+    const dist = Math.hypot(a.x - b.x, a.y - b.y), mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    if (profileEditor.pinch && profileEditor.pinch.dist > 0) {
+      profileEditor.zoom = Math.min(4, Math.max(1, profileEditor.zoom * dist / profileEditor.pinch.dist));
+      profileEditor.ox += mid.x - profileEditor.pinch.mid.x;
+      profileEditor.oy += mid.y - profileEditor.pinch.mid.y;
+      document.getElementById('pimZoom').value = String(profileEditor.zoom);
+    }
+    profileEditor.pinch = { dist, mid };
+  } else {
+    profileEditor.ox += p.x - prev.x;
+    profileEditor.oy += p.y - prev.y;
+  }
+  queueProfileEditorRender();
+}
+function onProfileCropPointerUp(event) {
+  profileEditor.pointers.delete(event.pointerId);
+  profileEditor.pinch = null;
+}
+async function renderProfileCropBlob() {
+  const c = document.createElement('canvas');
+  c.width = c.height = PROFILE_PHOTO_OUT;
+  drawProfileCropOn(c.getContext('2d'), PROFILE_PHOTO_OUT);
+  const toBlob = (type, q) => new Promise(resolve => c.toBlob(resolve, type, q));
+  let blob = await toBlob('image/webp', 0.85);
+  if (!blob || blob.type !== 'image/webp') blob = await toBlob('image/jpeg', 0.88); // WebP encoder missing (older WebView / Safari)
+  return blob;
+}
+function blobToDataUrl(blob) { return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = reject; r.readAsDataURL(blob); }); }
+
+// Save: photo = upload a NEW object into the own folder, then set_my_profile_image(path); a failed RPC removes the
+// new object again and the previous image stays. The previous photo object is deleted only after success.
+async function saveProfileImage() {
+  if (profileEditor.saving) return;
+  const client = supabaseClient;
+  const uid = state.session?.user?.id;
+  showProfileEditorError('');
+  if (!profileEditor.choice) { showProfileEditorError('프로필 사진 또는 아바타를 고른 뒤 [선택 저장]을 눌러 주세요.'); return; }
+  if (!client || !uid || offlineAccessActive || navigator.onLine === false) { showProfileEditorError('온라인 상태에서 저장할 수 있습니다. 네트워크 연결을 확인해 주세요.'); return; }
+  if (profileImageState.supported === false) { showProfileEditorError('서버 설정이 아직 적용되지 않아 저장할 수 없습니다. (관리자 적용 후 사용 가능)'); return; }
+  profileEditor.saving = true;
+  renderProfileEditor();
+  let uploadedPath = null, ownDataUrl = null;
+  try {
+    // required values first: a changed but unsaved nickname goes through the existing nickname logic
+    if (profileEditor.mode === 'setup') {
+      const nickname = profileEditorNickname();
+      if (nickname.length < 1 || nickname.length > 50) throw new Error('닉네임은 1~50자로 입력해 주세요.');
+      if (nickname !== (state.profile?.nickname || '') && !(await saveProfileEditorNickname())) throw new Error('닉네임을 저장하지 못했습니다. 닉네임 영역의 안내를 확인해 주세요.');
+    }
+    const choice = profileEditor.choice;
+    let args;
+    if (choice.kind === 'photo') {
+      const blob = choice.blob;
+      if (!blob) throw new Error('사진을 다시 선택해 주세요.');
+      const ext = blob.type === 'image/webp' ? 'webp' : 'jpg';
+      uploadedPath = `${uid}/${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error: upError } = await client.storage.from(PROFILE_PHOTO_BUCKET).upload(uploadedPath, blob, { contentType: blob.type, upsert: false, cacheControl: '31536000' });
+      if (upError) { uploadedPath = null; throw new Error('사진을 업로드하지 못했습니다. 잠시 후 다시 시도해 주세요.'); }
+      ownDataUrl = choice.src || await blobToDataUrl(blob).catch(() => null);
+      args = { p_photo_path: uploadedPath };
+    } else {
+      if (!PROFILE_AVATAR_IDS.includes(choice.id)) throw new Error('아바타를 선택해 주세요.');
+      args = { p_avatar_id: choice.id };
+    }
+    // the first successful image save is what marks the first-login setup as completed (server)
+    const { data, error } = await client.rpc('set_my_profile_image', args);
+    if (error) {
+      if (['PGRST202', '42883'].includes(error.code)) profileImageState.supported = false;
+      throw new Error(profileImageState.supported === false ? '서버 설정이 아직 적용되지 않아 저장할 수 없습니다.' : '저장하지 못했습니다. 이전 프로필이 유지됩니다.');
+    }
+    const saved = uploadedPath;
+    uploadedPath = null; // now referenced: never removed below
+    profileImageState.mine = { ...data, uid };
+    writeMineCache(uid, data);
+    writeOwnPhotoCache(uid, saved ? data?.photo_path : null, saved ? ownDataUrl : null);
+    if (data?.previous_photo_path) void client.storage.from(PROFILE_PHOTO_BUCKET).remove([data.previous_photo_path]).catch(() => {});
+    invalidatePartyMemberProfiles();
+    const wasSetup = profileEditor.mode === 'setup';
+    closeProfileImageEditor(true); // all required values saved -> the map screen is reachable
+    renderAccountProfileImage();
+    if (typeof renderPartyMain === 'function' && state.currentParty) renderPartyMain();
+    toast(wasSetup ? '프로필 설정을 완료했습니다.' : '프로필 이미지를 저장했습니다.');
+  } catch (error) {
+    if (uploadedPath) void client.storage.from(PROFILE_PHOTO_BUCKET).remove([uploadedPath]).catch(() => {});
+    showProfileEditorError(error?.message || '저장하지 못했습니다. 이전 프로필이 유지됩니다.');
+  } finally {
+    profileEditor.saving = false;
+    if (isProfileImageEditorOpen()) renderProfileEditor();
+  }
+}
+function resetProfileImageState() {
+  profileImageState.supported = null;
+  profileImageState.mine = null;
+  profileImageState.members = new Map();
+  profileImageState.membersAt = 0;
+  profileImageState.membersKey = '';
+  closeProfileImageEditor(true);
+  hideProfileGate();
+}
+// Local UI review without the server: index.html?profile-setup-preview opens the setup sheet (saving explains that
+// the server part is missing). Has no effect on stored data.
+if (/[?&]profile-setup-preview\b/.test(location.search)) setTimeout(() => openProfileImageEditor({ mode: 'setup' }), 1500);
+
+// Account screen (mobile / Android) and PC account panel: avatar or row -> change sheet (signed-in members only).
+document.addEventListener("click", event => {
+  if (!event.target.closest?.("#stitchAccountAvatarBtn, #stitchBtnChangeProfileImage, #pcAccountAvatarBtn")) return;
+  if (!state.session?.user || isProfileSetupBlocking()) return;
+  openProfileImageEditor({ mode: "edit" });
+});
+
+// ---- Party map markers: size by zoom, names hidden when crowded ----
+// Zoom bands from the existing map: regions open at ~10.5-11, "my location" zooms to >= 15.
+//   < 12 far: 20 px, no names | 12 - 14.5 normal: 26 px, names | >= 14.5 near: 32 px, names
+function partyMarkerZoomBand(zoom) { return zoom < 12 ? 'far' : zoom < 14.5 ? 'mid' : 'near'; }
+function updatePartyMarkerZoomBand() {
+  if (!map?.getContainer) return;
+  const band = partyMarkerZoomBand(map.getZoom());
+  const el = map.getContainer();
+  if (el.dataset.partyZoom !== band) el.dataset.partyZoom = band;
+}
+function ensurePartyMarkerZoomBinding() {
+  if (partyMarkerZoomBound || !map?.on) return;
+  partyMarkerZoomBound = true;
+  map.on('zoom', updatePartyMarkerZoomBand);
+  map.on('moveend', declutterPartyMarkerNames);
+  updatePartyMarkerZoomBand();
+}
+// Names of markers closer than a name's width / line on screen are hidden (the selected marker keeps its name).
+function declutterPartyMarkerNames() {
+  if (!map?.project) return;
+  const kept = [];
+  for (const entry of partyMemberMarkers.values()) {
+    let crowded = false;
+    try {
+      const p = map.project([entry.lng, entry.lat]);
+      crowded = kept.some(q => Math.abs(q.x - p.x) < 64 && Math.abs(q.y - p.y) < 30);
+      if (!crowded) kept.push(p);
+    } catch { }
+    entry.el.classList.toggle('name-hidden', crowded && !entry.el.classList.contains('selected'));
+  }
+}
+document.addEventListener('click', event => {
+  if (event.target.closest?.('.party-gps-marker')) return;
+  for (const entry of partyMemberMarkers.values()) if (entry.el.classList.contains('selected')) { entry.el.classList.remove('selected'); entry.el.style.zIndex = ''; }
+});
 
 function clearPartyMemberMapMarkers() {
   for (const entry of partyMemberMarkers.values()) {
@@ -11070,6 +11861,7 @@ function syncPartyMemberMapMarkers() {
     return;
   }
   const intervalSec = sanitizePartyGpsInterval(party.gps_interval_seconds);
+  ensurePartyMarkerZoomBinding();
   const activeUserIds = new Set();
   // Render filter only: my own position is the blue location marker, so my green party marker is not drawn
   // (my upload / the party location fetch are unchanged). Unknown own id → nobody is hidden.
@@ -11090,17 +11882,24 @@ function syncPartyMemberMapMarkers() {
     const timeText = formatPartyGpsUpdatedAt(member.updatedAt);
     let entry = partyMemberMarkers.get(member.user_id);
     if (!entry) {
+      // Profile image marker: the image centre is the member's position (anchor 'center'); name and the detail line
+      // (shown when selected) hang below without moving that point.
       const el = document.createElement('div');
       el.className = 'party-gps-marker';
-      el.innerHTML = '<div class="party-gps-marker-chip"><span class="party-gps-marker-dot"></span><span class="party-gps-marker-name"></span></div><div class="party-gps-marker-sub"></div><div class="party-gps-marker-pin"></div>';
+      el.innerHTML = '<span class="pgm-avatar"></span><span class="pgm-name"></span><span class="pgm-time"></span><span class="pgm-detail"></span>';
       el.addEventListener('click', ev => {
         ev.stopPropagation();
         const currentEntry = partyMemberMarkers.get(member.user_id);
+        const willSelect = !el.classList.contains('selected');
+        for (const other of partyMemberMarkers.values()) { other.el.classList.remove('selected'); other.el.style.zIndex = ''; }
+        el.classList.toggle('selected', willSelect);
+        el.style.zIndex = willSelect ? '3' : '';
+        if (willSelect) el.classList.remove('name-hidden');
         if (currentEntry && Number.isFinite(currentEntry.lng) && Number.isFinite(currentEntry.lat)) {
           map.easeTo({ center: [currentEntry.lng, currentEntry.lat], duration: 600 });
         }
       });
-      const marker = new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+      const marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
         .setLngLat([member.lng, member.lat])
         .addTo(map);
       entry = { marker, el, lng: member.lng, lat: member.lat };
@@ -11112,14 +11911,31 @@ function syncPartyMemberMapMarkers() {
     }
     entry.el.classList.toggle('leader', isLeaderRole);
     entry.el.classList.toggle('stale', isStale);
-    const nameEl = entry.el.querySelector('.party-gps-marker-name');
-    if (nameEl) nameEl.textContent = isLeaderRole ? `${nickname} (파티장)` : nickname;
-    const subEl = entry.el.querySelector('.party-gps-marker-sub');
-    if (subEl) {
-      subEl.innerHTML = timeText
+    entry.el.classList.toggle('offline', isStale); // online -> colour, offline -> greyscale (CSS), same size
+    entry.el.style.setProperty('--pgm-color', partyMarkerColor(member.user_id));
+    const imageKey = `${member.avatar_id ?? ''}|${member.photo_path ?? ''}|${profileImageSrc(member, member.user_id) ? 1 : 0}|${profileInitial(nickname)}`;
+    if (entry.imageKey !== imageKey) { // only when the profile image changed: no flicker on position updates
+      entry.imageKey = imageKey;
+      const avatarEl = entry.el.querySelector('.pgm-avatar');
+      if (avatarEl) avatarEl.innerHTML = profileImageHtml(member, nickname, member.user_id);
+    }
+    const nameEl = entry.el.querySelector('.pgm-name');
+    if (nameEl) nameEl.textContent = nickname;
+    // Always-visible accuracy · relative time of the last fix (as before the profile-image marker); refreshed by every
+    // sync (each location poll), so "N m ago" keeps counting for offline members whose last position stays shown.
+    const timeEl = entry.el.querySelector('.pgm-time');
+    if (timeEl) {
+      timeEl.innerHTML = timeText
         ? `<span class="party-gps-marker-acc">${escapeHtml(accText)}</span> · <span class="party-gps-marker-time">${escapeHtml(timeText)}</span>`
         : `<span class="party-gps-marker-acc">${escapeHtml(accText)}</span>`;
     }
+    const detailEl = entry.el.querySelector('.pgm-detail');
+    if (detailEl) {
+      // GPS position only: no altitude is shown (the party rows carry no GPS altitude).
+      detailEl.innerHTML = `<strong>${escapeHtml(nickname)}${isLeaderRole ? ' · 파티장' : ''}</strong>` +
+        `<span>${timeText ? `마지막 위치 수신 ${escapeHtml(timeText)}` : '위치 수신 시각 없음'}${accText ? ` · ${escapeHtml(accText)}` : ''}</span>`;
+    }
+    entry.el.setAttribute('aria-label', `${nickname}${isLeaderRole ? ' (파티장)' : ''} · ${member.gpsStatus === 'online' ? '온라인' : '오프라인'}`);
   }
   for (const [userId, entry] of partyMemberMarkers.entries()) {
     if (!activeUserIds.has(userId)) {
@@ -11127,6 +11943,7 @@ function syncPartyMemberMapMarkers() {
       partyMemberMarkers.delete(userId);
     }
   }
+  declutterPartyMarkerNames();
 }
 
 function applyLocalMemberFix(party, userId, fix, updatedAtIso) {
@@ -12978,6 +13795,14 @@ async function startPartyMemberSelectedRideOn() {
 
     if (!$('#gpsRecordingFinishModal')?.hidden) {
       toast('저장 또는 저장 안 함을 선택해 기록 종료를 완료하세요.');
+      return true;
+    }
+
+    if (isProfileGateOpen()) return true; // profile state not confirmed: stay until retry succeeds or sign-out
+
+    if (isProfileImageEditorOpen()) {
+      if (isProfileSetupBlocking()) showProfileEditorError('프로필 사진을 등록하거나 기본 아바타를 선택해 저장해 주세요.');
+      else closeProfileImageEditor();
       return true;
     }
 

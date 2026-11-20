@@ -5792,18 +5792,31 @@ select {
   .party-leader-modal button:disabled { background: #93000a; color: #ffdad6; opacity: .5; cursor: not-allowed; }
 }
 
-.party-gps-marker { display: flex; flex-direction: column; align-items: center; gap: 3px; pointer-events: auto; cursor: pointer; user-select: none; }
-.party-gps-marker-chip { display: flex; align-items: center; gap: 5px; max-width: 190px; padding: 4px 8px; border: 1.5px solid rgba(56, 189, 248, .75); border-radius: 999px; background: rgba(10, 14, 19, .92); color: #e0e2ea; box-shadow: 0 4px 12px rgba(0, 0, 0, .45); font: 600 11px Inter, "Noto Sans KR", sans-serif; white-space: nowrap; }
-.party-gps-marker.leader .party-gps-marker-chip { border-color: #4edea3; }
-.party-gps-marker.stale .party-gps-marker-chip { border-color: rgba(251, 191, 36, .75); opacity: .88; }
-.party-gps-marker-dot { width: 8px; height: 8px; border-radius: 50%; background: #4edea3; box-shadow: 0 0 8px rgba(78, 222, 163, .9); flex-shrink: 0; }
-.party-gps-marker.stale .party-gps-marker-dot { background: #fbbf24; box-shadow: none; }
-.party-gps-marker-name { overflow: hidden; text-overflow: ellipsis; }
-.party-gps-marker-sub { display: inline-flex; align-items: baseline; gap: 3px; padding: 2px 6px; border-radius: 6px; background: rgba(16, 20, 25, .88); color: #bdc8d1; font: 600 9px "JetBrains Mono", monospace; white-space: nowrap; }
-.party-gps-marker-time { font-size: 7.5px; font-weight: 500; color: #94a3b8; }
-.party-gps-marker-pin { width: 12px; height: 12px; border: 2px solid #0a0e13; border-radius: 50%; background: #38bdf8; box-shadow: 0 2px 6px rgba(0, 0, 0, .5); }
-.party-gps-marker.leader .party-gps-marker-pin { background: #4edea3; }
-.party-gps-marker.stale .party-gps-marker-pin { background: #fbbf24; }
+/* Party member map marker: round profile image (photo / avatar / nickname initial) with the member's colour ring.
+   The circle's centre is the position (marker anchor 'center'); name and detail hang below without moving it.
+   Size by map zoom (data-party-zoom on the map container): far 20px no name, mid 26px, near 32px.
+   No background plate / heavy shadow: terrain, slopes and GPX lines stay readable. */
+.party-gps-marker { --pgm-size: 26px; --pgm-color: #38bdf8; position: relative; width: var(--pgm-size); height: var(--pgm-size); pointer-events: auto; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; }
+.mapboxgl-map[data-party-zoom="far"] .party-gps-marker { --pgm-size: 20px; }
+.mapboxgl-map[data-party-zoom="near"] .party-gps-marker { --pgm-size: 32px; }
+.party-gps-marker .pgm-avatar { position: absolute; inset: 0; border: 2px solid var(--pgm-color); border-radius: 50%; overflow: hidden; background: #1b2129; box-sizing: border-box; box-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
+.party-gps-marker .pgm-avatar .pl-avatar { width: 100%; height: 100%; font-size: calc(var(--pgm-size) * .46); }
+.party-gps-marker .pgm-name { position: absolute; top: calc(100% + 2px); left: 50%; transform: translateX(-50%); max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pgm-color); font: 700 10px/12px Inter, "Noto Sans KR", sans-serif; text-shadow: 0 0 2px #05080b, 0 0 2px #05080b, 0 1px 1px #05080b; pointer-events: none; }
+.mapboxgl-map[data-party-zoom="far"] .party-gps-marker:not(.selected) .pgm-name,
+.party-gps-marker.name-hidden:not(.selected) .pgm-name { display: none; }
+/* accuracy · "N m ago" line under the name, always visible (online and offline), compact, no plate */
+.party-gps-marker .pgm-time { position: absolute; top: calc(100% + 15px); left: 50%; transform: translateX(-50%); color: #e0e2ea; font: 600 9px/11px "JetBrains Mono", monospace; white-space: nowrap; text-shadow: 0 0 2px #05080b, 0 0 2px #05080b, 0 1px 1px #05080b; pointer-events: none; }
+.party-gps-marker .pgm-time .party-gps-marker-time { font-weight: 500; color: #bdc8d1; }
+.mapboxgl-map[data-party-zoom="far"] .party-gps-marker:not(.selected) .pgm-time,
+.party-gps-marker.name-hidden:not(.selected) .pgm-time { top: calc(100% + 2px); }
+.party-gps-marker .pgm-detail { display: none; position: absolute; top: calc(100% + 29px); left: 50%; transform: translateX(-50%); padding: 4px 7px; border-radius: 7px; background: rgba(10, 14, 19, .9); color: #e0e2ea; font: 500 10px/14px Inter, "Noto Sans KR", sans-serif; white-space: nowrap; pointer-events: none; }
+.party-gps-marker .pgm-detail strong { display: block; font-weight: 700; }
+.party-gps-marker .pgm-detail span { color: #bdc8d1; }
+.party-gps-marker.selected .pgm-detail { display: block; }
+.party-gps-marker.selected .pgm-avatar { box-shadow: 0 0 0 2px rgba(255, 255, 255, .85); }
+/* offline: photo / avatar, ring and name in greyscale, same size; back online -> colour again */
+.party-gps-marker.offline { filter: grayscale(1); }
+.party-gps-marker.offline .pgm-avatar, .party-gps-marker.offline .pgm-name { opacity: .8; }
 .stitch-account-screen .stitch-admin-menu-disabled { opacity: .68; cursor: not-allowed; }
 .stitch-account-screen .stitch-admin-menu-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; background: rgba(135, 146, 154, .18); color: #87929a; font: 600 10px "JetBrains Mono", monospace; }
 .stitch-account-screen .admin-courses-header { display: flex; align-items: center; gap: 12px; padding: calc(14px + env(safe-area-inset-top)) 18px 14px; background: #1c2025; }
@@ -7456,3 +7469,74 @@ button.pl-push-banner-main { cursor: pointer; -webkit-tap-highlight-color: trans
 .admin-weather-select input { width: 16px; height: 16px; accent-color: #38bdf8; }
 .admin-weather-alert .admin-course-actions button[data-weather-hide] { background: #4a2a2a !important; color: #ffb4ab !important; }
 .admin-weather-alert-tools button:disabled { opacity: .5; cursor: default; }
+
+/* ---- Profile image (photo / default avatar / nickname initial) ---- */
+.pl-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; overflow: hidden; background: #26313b; color: #e0e2ea; font: 700 12px/1 Inter, "Noto Sans KR", sans-serif; flex-shrink: 0; vertical-align: middle; }
+.pl-avatar .pl-avatar-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pl-avatar.failed .pl-avatar-img { display: none; }
+.pl-avatar-member { width: 26px; height: 26px; margin-right: 6px; font-size: 11px; }
+.account-avatar-btn { position: relative; display: inline-flex; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; }
+.account-avatar-btn .pl-avatar-account { width: 56px; height: 56px; font-size: 22px; box-shadow: 0 0 0 2px rgba(56, 189, 248, .55); }
+.account-avatar-btn .account-avatar-edit { position: absolute; right: -2px; bottom: -2px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #38bdf8; color: #00354a; font-size: 14px; }
+.pc-account-avatar-btn { margin: 0 12px 0 0; }
+.pc-account-avatar-btn .pl-avatar-account { width: 44px; height: 44px; font-size: 18px; }
+
+/* ---- Profile image editor (first-login setup + account change): one sheet for web and Android, mobile first ----
+   Order: title -> 닉네임 등록 -> 프로필 사진 등록 (사진 업로드 | 아바타 설정, folded panels) -> 지도 표시 미리보기 -> 프로필 저장 */
+.pim-backdrop { position: fixed; inset: 0; z-index: 10030; display: flex; align-items: center; justify-content: center; padding: env(safe-area-inset-top, 0) 0 env(safe-area-inset-bottom, 0); background: rgba(5, 8, 11, .78); }
+.pim-backdrop[hidden] { display: none; }
+.pim-dialog { display: flex; flex-direction: column; gap: 10px; width: min(420px, 100vw); max-height: 100dvh; overflow-y: auto; overscroll-behavior: contain; box-sizing: border-box; padding: 14px 16px 16px; border-radius: 16px; background: #181c22; color: #e0e2ea; font: 400 14px/1.45 Inter, "Noto Sans KR", sans-serif; }
+@media (max-width: 520px) { .pim-dialog { width: 100vw; border-radius: 0; padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0)); } }
+.pim-header { display: flex; align-items: center; gap: 8px; }
+.pim-header h2 { flex: 1; margin: 0; font-size: 18px; font-weight: 700; }
+.pim-icon-btn { display: grid; place-items: center; width: 36px; height: 36px; border: 0; border-radius: 10px; background: transparent; color: #bdc8d1; cursor: pointer; }
+.pim-text-btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: #8a939c; font-family: inherit; font-size: 12px; cursor: pointer; }
+.pim-text-btn .material-symbols-outlined { font-size: 16px; }
+.pim-icon-btn[hidden], .pim-text-btn[hidden], .pim-section[hidden], .pim-panel[hidden], .pim-intro[hidden] { display: none; }
+.pim-intro { margin: 0; color: #bdc8d1; font-size: 13px; }
+.pim-section { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: #20252c; }
+.pim-section-title { margin: 0; font-size: 14px; font-weight: 700; color: #e0e2ea; }
+.pim-row { display: flex; gap: 8px; }
+.pim-row input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid #3a444d; border-radius: 10px; background: #262a30; color: #e0e2ea; font: inherit; }
+.pim-row input:focus { outline: 2px solid #38bdf8; outline-offset: 0; }
+.pim-status { min-height: 0; color: #8a939c; font-size: 12px; }
+.pim-status:empty { display: none; }
+.pim-choice-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pim-choice-btns button.active { box-shadow: inset 0 0 0 2px #38bdf8; }
+.pim-choice-btns button.chosen::after { content: '✓'; margin-left: 4px; color: #4ade80; }
+.pim-panel { display: flex; flex-direction: column; gap: 8px; }
+.pim-panel-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.pim-avatar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.pim-avatar-option { aspect-ratio: 1; padding: 3px; border: 2px solid transparent; border-radius: 50%; background: #262a30; cursor: pointer; }
+.pim-avatar-option img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; pointer-events: none; }
+.pim-avatar-option.selected { border-color: #38bdf8; background: rgba(56, 189, 248, .18); }
+.pim-secondary, .pim-primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 14px; border: 0; border-radius: 10px; font-family: inherit; font-size: 14px; font-weight: 700; line-height: 1; cursor: pointer; white-space: nowrap; }
+.pim-secondary { background: #363f48; color: #e0e2ea; }
+.pim-primary { background: #38bdf8; color: #00354a; }
+.pim-primary:disabled, .pim-secondary:disabled { opacity: .45; cursor: default; }
+.pim-secondary[hidden], .pim-primary[hidden] { display: none; }
+.pim-secondary .material-symbols-outlined { font-size: 18px; }
+.pim-crop { position: relative; width: min(260px, 72vw); aspect-ratio: 1; margin: 0 auto; border-radius: 12px; overflow: hidden; background: #0d1116; touch-action: none; }
+.pim-crop[hidden], .pim-zoom[hidden], .pim-hint[hidden] { display: none; }
+.pim-crop canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+.pim-crop canvas:active { cursor: grabbing; }
+.pim-crop-mask { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 0 calc(50% - 1px), rgba(255, 255, 255, .9) calc(50% - 1px) 50%, rgba(5, 8, 11, .62) calc(50% + 1px)); }
+.pim-zoom { display: flex; align-items: center; gap: 8px; color: #bdc8d1; }
+.pim-zoom input { flex: 1; accent-color: #38bdf8; }
+.pim-hint { display: block; color: #8a939c; font-size: 12px; }
+/* map preview: a thin terrain-like strip with the real party marker (26 px, colour ring, nickname below) */
+.pim-map-strip { display: flex; align-items: flex-start; justify-content: center; height: 58px; padding-top: 8px; box-sizing: border-box; border-radius: 10px; background: linear-gradient(135deg, #5b6b59 0%, #7d8a72 35%, #e8ecef 62%, #b9c4cc 100%); }
+.pim-map-strip .party-gps-marker { --pgm-size: 26px; cursor: default; }
+.pim-error { margin: 0; color: #ffb4ab; font-size: 13px; }
+.pim-error[hidden] { display: none; }
+.pim-save-main { width: 100%; min-height: 46px; font-size: 15px; }
+body.profile-image-open { overflow: hidden; }
+/* profile state gate (checking / server error): reuses the profile sheet styles */
+.pim-gate { z-index: 10031; }
+.pim-gate-dialog { align-items: center; justify-content: center; text-align: center; }
+.pim-gate-dialog h2 { margin: 0; font-size: 18px; font-weight: 700; }
+.pim-gate-icon { font-size: 40px; color: #38bdf8; }
+.pim-gate[data-kind="checking"] .pim-gate-icon { animation: pim-gate-spin 1.2s linear infinite; }
+.pim-gate[data-kind="error"] .pim-gate-icon { color: #ffb4ab; }
+@keyframes pim-gate-spin { to { transform: rotate(360deg); } }
+.pim-gate .pim-actions { justify-content: center; }
