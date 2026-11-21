@@ -1,12 +1,13 @@
 // Bump this version when the app shell changes so installed clients can update together.
 const SHELL_CACHE_PREFIX = 'powderline-pwa-shell-';
-const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v4`;
+const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v5`;
 const SHELL_FILES = [
   './',
   './index.html',
   './pwa-kiroro-offline.html',
   './pwa-kiroro-offline.css',
   './pwa-kiroro-offline.js',
+  './pwa-offline-entry.js',
   './vendor/pwa-maplibre-gl.js',
   './vendor/pwa-maplibre-gl.css',
   './vendor/pwa-pmtiles.js',

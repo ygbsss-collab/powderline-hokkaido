@@ -1418,20 +1418,10 @@
           || !window.location.pathname.startsWith('/powderline-hokkaido/')) return;
         if (!('serviceWorker' in navigator)) return;
 
-        // Browser PWA only: reuse the existing offline card without touching native UI or app.js.
-        const offlinePanel = document.getElementById('homeOfflineRegionsPanel');
-        const regionSelect = document.getElementById('homeRegionSelect');
-        if (offlinePanel && regionSelect) {
-          const link = document.createElement('a');
-          link.href = './pwa-kiroro-offline.html';
-          link.className = 'home-offline-all-btn';
-          link.textContent = '키로로 PWA 오프라인 3D 지도 · PoC';
-          link.style.cssText = 'display:block;text-align:center;text-decoration:none;margin-top:8px';
-          offlinePanel.appendChild(link);
-          const syncKiroroLink = () => { link.style.display = regionSelect.value === 'kiroro' ? 'block' : 'none'; };
-          regionSelect.addEventListener('change', syncKiroroLink);
-          syncKiroroLink();
-        }
+        // Browser PWA only: connect the existing offline menu to the isolated Kiroro PoC.
+        const offlineEntryScript = document.createElement('script');
+        offlineEntryScript.src = './pwa-offline-entry.js';
+        document.body.appendChild(offlineEntryScript);
 
         // PWA only (after the native / WebView / origin checks above): device notification test row.
         const notifyScript = document.createElement('script');
