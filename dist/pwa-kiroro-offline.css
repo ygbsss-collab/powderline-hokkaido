@@ -1,0 +1,26 @@
+:root { color-scheme: dark; font-family: system-ui, -apple-system, sans-serif; background: #101a2b; color: #f2f6fb; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; min-height: 100vh; }
+.topbar { display: flex; align-items: center; gap: 14px; padding: max(14px, env(safe-area-inset-top)) 16px 14px; background: #152338; border-bottom: 1px solid #30435b; }
+.topbar strong { display: block; letter-spacing: .12em; font-size: 14px; }
+.topbar span { color: #b8cadb; font-size: 12px; }
+.back { color: #d8e8fa; font-size: 26px; text-decoration: none; line-height: 1; }
+main { max-width: 1100px; margin: 0 auto; padding: 14px 14px max(24px, env(safe-area-inset-bottom)); }
+.card { background: #1a2b43; border: 1px solid #344a63; border-radius: 16px; padding: 16px; }
+h1 { margin: 0 0 8px; font-size: 19px; }
+.detail { color: #bfd0e0; font-size: 13px; line-height: 1.5; margin: 0 0 12px; }
+.status { min-height: 22px; margin: 0 0 9px; color: #9ee5ec; font-size: 14px; }
+.status.error { color: #ffb0ad; }
+progress { display: block; width: 100%; height: 9px; margin: 0 0 13px; accent-color: #48d5e5; }
+.buttons { display: flex; flex-wrap: wrap; gap: 9px; }
+button { border: 0; border-radius: 10px; padding: 10px 13px; color: #081725; background: #58d4e5; font-size: 13px; font-weight: 700; cursor: pointer; }
+button.secondary { color: #e7edf6; background: #40516a; }
+button:disabled { opacity: .45; cursor: default; }
+.storage { display: block; margin-top: 10px; color: #a9bbce; }
+.map-panel { position: relative; height: min(72vh, 760px); min-height: 420px; margin-top: 14px; border-radius: 16px; overflow: hidden; border: 1px solid #344a63; }
+#map { width: 100%; height: 100%; }
+.map-status { position: absolute; z-index: 1; top: 10px; left: 10px; max-width: calc(100% - 20px); margin: 0; border-radius: 8px; padding: 6px 9px; background: #102238dc; color: #e7f7fa; font-size: 12px; pointer-events: none; }
+.credit { color: #a9bbce; font-size: 11px; line-height: 1.5; margin: 12px 2px; }
+.maplibregl-popup-content { color: #17283b; }
+@media (max-width: 500px) { .buttons button { flex: 1 1 100%; } .map-panel { height: 62vh; } }

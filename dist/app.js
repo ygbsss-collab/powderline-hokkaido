@@ -14124,13 +14124,37 @@ async function startPartyMemberSelectedRideOn() {
   // Plain browsers: keep one guard history entry so the browser back button runs the same in-app back logic.
   function initBrowserBackGuard() {
     if (window.Capacitor?.getPlatform?.() === 'android') return;
-    const guard = () => { try { history.pushState({ plGuard: true }, ''); } catch { } };
+    const installedPwa = !window.Capacitor?.isNativePlatform?.()
+      && window.location.origin === 'https://ygbsss-collab.github.io'
+      && window.location.pathname.startsWith('/powderline-hokkaido/')
+      && (window.matchMedia?.('(display-mode: standalone)')?.matches || navigator.standalone === true);
+    let lastPwaHomeBackAt = 0;
+    let leavingBrowser = false;
+    const guard = () => {
+      if (history.state?.plGuard) return;
+      try { history.pushState({ plGuard: true }, ''); } catch { }
+    };
     try { history.replaceState({ plBase: true }, ''); } catch { return; }
     guard();
     window.addEventListener('popstate', async (event) => {
-      if (event?.plWeatherHandled) return; // the weather page popped its own history entry (weather.js): guard stays as is
+      if (event?.plWeatherHandled || leavingBrowser) return; // weather.js owns its entry; never re-push while leaving
       const consumed = await handleAndroidBackButton(null);
-      if (consumed) guard(); else history.back();
+      if (consumed) {
+        lastPwaHomeBackAt = 0;
+        guard();
+        return;
+      }
+      if (installedPwa && history.state?.plBase) {
+        const now = Date.now();
+        if (now - lastPwaHomeBackAt > 2500) {
+          lastPwaHomeBackAt = now;
+          guard();
+          toast('한 번 더 뒤로가기를 누르면 앱이 종료됩니다.');
+          return;
+        }
+      }
+      leavingBrowser = true;
+      history.back();
     });
   }
 

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101a2b">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./vendor/pwa-maplibre-gl.css">
+  <link rel="stylesheet" href="./pwa-kiroro-offline.css">
+  <title>키로로 오프라인 3D · POWDERLINE</title>
+</head>
+<body>
+  <header class="topbar">
+    <a class="back" href="./" aria-label="POWDERLINE 홈으로">←</a>
+    <div><strong>POWDERLINE</strong><span>키로로 PWA 오프라인 3D · PoC</span></div>
+  </header>
+  <main>
+    <section class="card" aria-labelledby="offlineTitle">
+      <h1 id="offlineTitle">키로로 지도 저장</h1>
+      <p class="detail">OSM 벡터 지도와 Terrarium 지형, 키로로 리프트·슬로프를 이 브라우저에 저장합니다. z15까지 지원합니다.</p>
+      <p id="status" class="status" role="status" aria-live="polite">저장 상태 확인 중…</p>
+      <progress id="progress" max="185" value="0" hidden></progress>
+      <div class="buttons">
+        <button id="download" type="button">키로로 다운로드 / 이어받기</button>
+        <button id="show" type="button" disabled>저장된 3D 지도 열기</button>
+        <button id="remove" type="button" class="secondary" disabled>저장 지도 삭제</button>
+      </div>
+      <small id="storage" class="storage"></small>
+    </section>
+    <section id="mapPanel" class="map-panel" hidden aria-label="키로로 오프라인 3D 지도">
+      <div id="map"></div>
+      <p id="mapStatus" class="map-status" role="status" aria-live="polite">지도 준비 중…</p>
+    </section>
+    <p class="credit">지도 © OpenStreetMap contributors (ODbL) · Protomaps. 지형: AWS Open Data Terrain Tiles / USGS SRTM·GMTED, NOAA/NESDIS/NCEI ETOPO1. 스키 데이터: OpenSkiData / OpenSkiMap.org, © OpenStreetMap contributors (ODbL), Skimap.org, Who's On First, © Mapterhorn. 지형 데이터는 안전·항법용이 아닙니다.</p>
+  </main>
+  <script src="./vendor/pwa-maplibre-gl.js"></script>
+  <script src="./vendor/pwa-pmtiles.js"></script>
+  <script src="./pwa-kiroro-offline.js"></script>
+</body>
+</html>
