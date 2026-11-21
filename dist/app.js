@@ -2738,6 +2738,7 @@ function syncPartySosButton() {
   button.hidden = !show;
   if (!show) closePartySosConfirm(true);
   setPartySosButtonState('idle');
+  syncPartyMembersMapButton(); // 파티원 button sits right before SOS and follows the same ride visibility
 }
 
 function clearPartySosMarkers() {
@@ -10181,6 +10182,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   function renderOfflineRegionList() {
+    renderOfflineAllRegions(); // all-regions modal follows every status / progress update (no-op while closed)
     const list = $('#homeOfflineRegionList');
     if (!list) return;
     // Home card shows only the currently selected ski area (same statuses / download handler as before).
@@ -10206,6 +10208,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     }
     const androidAvailable = Boolean(getOfflineMapTestPlugin());
     list.innerHTML = entries.map(([id, details]) => {
+      const { stateClass, stateLabel, buttonLabel, disabled, downloading } = offlineRegionItemView(id, details, androidAvailable);
+      return `<article class="home-offline-region-item" data-offline-region-id="${escapeHtml(id)}">` +
+        `<div><strong>${escapeHtml(details.label)}</strong><small>${escapeHtml(id)}</small>` +
+        `<span class="home-offline-region-state ${stateClass}">${escapeHtml(stateLabel)}</span>` +
+        (downloading ? `<i class="home-offline-region-bar"><b style="width:${offlineProgressPercent(offlineRegionProgress.get(id))}%"></b></i>` : '') + '</div>' +
+        `<button type="button" data-offline-region-download="${escapeHtml(id)}"${disabled ? ' disabled' : ''}>${escapeHtml(buttonLabel)}</button>` +
+        '</article>';
+    }).join('');
+  }
+
+  // One region's download status / label / button state. Shared by the home card and the all-regions modal.
+  function offlineRegionItemView(id, details, androidAvailable) {
       const { payload, unavailableReason } = createOfflineRegionPayload(id, details);
       const status = offlineRegionStatuses.get(id);
       const downloading = offlineRegionDownloads.has(id);
@@ -10262,13 +10276,93 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         stateClass = 'incomplete';
         stateLabel = '상태 확인 실패 · 다운로드 가능';
       }
-      return `<article class="home-offline-region-item" data-offline-region-id="${escapeHtml(id)}">` +
-        `<div><strong>${escapeHtml(details.label)}</strong><small>${escapeHtml(id)}</small>` +
-        `<span class="home-offline-region-state ${stateClass}">${escapeHtml(stateLabel)}</span>` +
-        (downloading ? `<i class="home-offline-region-bar"><b style="width:${offlineProgressPercent(offlineRegionProgress.get(id))}%"></b></i>` : '') + '</div>' +
+      return { stateClass, stateLabel, buttonLabel, disabled, downloading };
+  }
+
+  // ---- All-regions offline download modal (reuses the home card's status view and download / cancel handler) ----
+  const offlineAllFilter = { country: '', region: '', status: 'all' };
+  function offlineAllModal() { return $('#offlineAllRegionsModal'); }
+  function offlineAllCountryKey(id) { return regionCountry(id) || 'ETC'; }
+
+  function offlineAllRegionEntries() {
+    let entries = getOfflineCatalogRegions();
+    if (navigator.onLine === false) entries = entries.filter(([id]) => { const st = offlineRegionStatuses.get(id); return offlineUsable(st) || st?.loading; });
+    return entries;
+  }
+
+  function syncOfflineAllSelects(entries) {
+    const countrySel = $('#offlineAllCountrySelect');
+    const regionSel = $('#offlineAllRegionSelect');
+    if (!countrySel || !regionSel) return;
+    const keys = new Set(entries.map(([id]) => offlineAllCountryKey(id)));
+    const countries = [...HOME_COUNTRIES, ['ETC', '기타']].filter(([key]) => keys.has(key));
+    const countryHtml = '<option value="">전체 국가</option>' + countries.map(([v, l]) => `<option value="${v}">${escapeHtml(l)}</option>`).join('');
+    if (!countries.some(([v]) => v === offlineAllFilter.country)) offlineAllFilter.country = '';
+    if (countrySel.dataset.sig !== countryHtml) { countrySel.innerHTML = countryHtml; countrySel.dataset.sig = countryHtml; }
+    countrySel.value = offlineAllFilter.country;
+    const regionsInCountry = entries.filter(([id]) => !offlineAllFilter.country || offlineAllCountryKey(id) === offlineAllFilter.country);
+    const regionHtml = '<option value="">전체 지역</option>' + regionsInCountry.map(([id, d]) => `<option value="${escapeHtml(id)}">${escapeHtml(d.label)}</option>`).join('');
+    if (!regionsInCountry.some(([id]) => id === offlineAllFilter.region)) offlineAllFilter.region = '';
+    if (regionSel.dataset.sig !== regionHtml) { regionSel.innerHTML = regionHtml; regionSel.dataset.sig = regionHtml; }
+    regionSel.value = offlineAllFilter.region;
+  }
+
+  function renderOfflineAllRegions() {
+    const modal = offlineAllModal();
+    const list = $('#offlineAllRegionList');
+    if (!modal || modal.hidden || !list) return;
+    const entries = offlineAllRegionEntries();
+    syncOfflineAllSelects(entries);
+    const { country, region, status: statusFilter } = offlineAllFilter;
+    const shown = entries.filter(([id]) => {
+      if (country && offlineAllCountryKey(id) !== country) return false;
+      if (region && id !== region) return false;
+      const complete = offlineRegionStatuses.get(id)?.complete === true;
+      return statusFilter === 'done' ? complete : statusFilter === 'none' ? !complete : true;
+    });
+    const androidAvailable = Boolean(getOfflineMapTestPlugin());
+    const webNotice = $('#offlineAllWebNotice');
+    if (webNotice) webNotice.hidden = androidAvailable;
+    const count = $('#offlineAllRegionCount');
+    if (count) count.textContent = `${shown.length}개 지역`;
+    modal.querySelectorAll('[data-offline-all-status]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.offlineAllStatus === statusFilter));
+    });
+    if (!shown.length) {
+      const phase = state.offlineCatalog.phase;
+      const message = phase === 'loading' ? '다운로드된 지역을 확인하는 중입니다…' : '표시할 지역이 없습니다.';
+      list.innerHTML = `<p class="offline-all-empty">${escapeHtml(message)}</p>`;
+      return;
+    }
+    const icons = { complete: 'check_circle', loading: 'downloading', incomplete: 'error', unavailable: 'block', available: 'cloud_download' };
+    list.innerHTML = shown.map(([id, details]) => {
+      const view = offlineRegionItemView(id, details, androidAvailable);
+      const { stateClass, buttonLabel, disabled, downloading } = view;
+      // Web restriction is shown once at the top of the modal; the card only shows its download state.
+      const stateLabel = !androidAvailable && stateClass === 'available' ? '미다운로드' : view.stateLabel;
+      return `<article class="offline-all-item" data-offline-region-id="${escapeHtml(id)}">` +
+        `<div class="offline-all-item-main"><strong>${escapeHtml(details.label)}</strong>` +
+        `<span class="offline-all-state ${stateClass}"><span class="material-symbols-outlined" aria-hidden="true">${icons[stateClass] || 'cloud_download'}</span><span>${escapeHtml(stateLabel)}</span></span>` +
+        (downloading ? `<i class="offline-all-bar"><b style="width:${offlineProgressPercent(offlineRegionProgress.get(id))}%"></b></i>` : '') + '</div>' +
         `<button type="button" data-offline-region-download="${escapeHtml(id)}"${disabled ? ' disabled' : ''}>${escapeHtml(buttonLabel)}</button>` +
         '</article>';
     }).join('');
+  }
+
+  function openOfflineAllRegions() {
+    const modal = offlineAllModal();
+    if (!modal) return;
+    offlineAllFilter.country = '';
+    offlineAllFilter.region = '';
+    offlineAllFilter.status = 'all';
+    modal.hidden = false;
+    renderOfflineAllRegions();
+    $('#offlineAllRegionList')?.scrollTo?.(0, 0);
+  }
+
+  function closeOfflineAllRegions() {
+    const modal = offlineAllModal();
+    if (modal) modal.hidden = true;
   }
 
   // Regions saved on this device (Native storage) become catalog entries even when Supabase cannot be reached.
@@ -10889,12 +10983,30 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     document.querySelectorAll('[data-home-map-mode]').forEach(button => {
       button.addEventListener('click', () => setMobileHomeMapMode(button.dataset.homeMapMode));
     });
-    $('#homeOfflineRegionList')?.addEventListener('click', event => {
+    const onOfflineRegionButtonClick = event => {
       const button = event.target.closest('[data-offline-region-download]');
       if (!button || button.disabled) return;
       const id = button.dataset.offlineRegionDownload;
       if (offlineRegionDownloads.has(id) || offlineDownloadQueue.includes(id)) void cancelOfflineRegionDownload(id);
       else enqueueOfflineRegionDownload(id);
+    };
+    $('#homeOfflineRegionList')?.addEventListener('click', onOfflineRegionButtonClick);
+    $('#offlineAllRegionList')?.addEventListener('click', onOfflineRegionButtonClick);
+    $('#homeOfflineAllBtn')?.addEventListener('click', openOfflineAllRegions);
+    $('#offlineAllCloseBtn')?.addEventListener('click', closeOfflineAllRegions);
+    offlineAllModal()?.addEventListener('click', event => { if (event.target === offlineAllModal()) closeOfflineAllRegions(); });
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && offlineAllModal() && !offlineAllModal().hidden) closeOfflineAllRegions(); });
+    $('#offlineAllCountrySelect')?.addEventListener('change', event => {
+      offlineAllFilter.country = event.target.value;
+      offlineAllFilter.region = '';
+      renderOfflineAllRegions();
+    });
+    $('#offlineAllRegionSelect')?.addEventListener('change', event => {
+      offlineAllFilter.region = event.target.value;
+      renderOfflineAllRegions();
+    });
+    offlineAllModal()?.querySelectorAll('[data-offline-all-status]').forEach(button => {
+      button.addEventListener('click', () => { offlineAllFilter.status = button.dataset.offlineAllStatus; renderOfflineAllRegions(); });
     });
     $('#homeRideOnBtn')?.addEventListener('click', () => {
       if (mobileHomeMapMode === 'offline') void openOfflineHomeRegion();
@@ -11152,13 +11264,19 @@ function renderPartyMemberRowHtml(member, isJoinedView = false) {
   const accHtml = escapeHtml(formatPartyGpsAccuracy(member?.accuracy));
   const timeStr = formatPartyGpsUpdatedAt(member?.updatedAt);
   const timeHtml = timeStr ? ` · <span class="party-member-telemetry-time">${escapeHtml(timeStr)}</span>` : '';
+  // The marker rule decides 위치보기 (sharing OFF / no coordinates / me → disabled). Offline = last received position.
+  const mapPosition = typeof member === 'string' ? null : partyMemberMapPosition(member);
+  const lastPosPrefix = mapPosition && status === 'offline' ? '마지막 위치 · ' : '';
   const metaHtml = hasTelemetry
-    ? `<span class="party-member-telemetry-meta">${accHtml}${timeHtml}</span>`
+    ? `<span class="party-member-telemetry-meta">${lastPosPrefix}${accHtml}${timeHtml}</span>`
     : '';
   const rowClass = isJoinedView ? 'party-joined-member' : 'party-leader-member';
+  const toneClass = status === 'online' ? '' : ' is-muted'; // offline / sharing OFF → greyscale (same as the map marker)
   const iconHtml = isJoinedView ? '' : '<span class="material-symbols-outlined" aria-hidden="true">person</span>';
   const avatarHtml = typeof member === 'string' ? '' : profileImageHtml(member, name, member?.user_id, 'pl-avatar-member');
-  return `<div class="${rowClass}"><div class="party-member-main">${avatarHtml || iconHtml}<strong>${escapeHtml(name)}</strong>${roleBadge}</div><div class="party-member-telemetry"><span class="party-member-telemetry-status ${statusClass}">${statusLabel}</span>${metaHtml}</div></div>`;
+  const locateHtml = typeof member === 'string' || !member?.user_id ? ''
+    : `<button type="button" class="party-member-locate-btn" data-party-member-locate="${escapeHtml(member.user_id)}"${mapPosition ? '' : ' disabled'} aria-label="${escapeHtml(name)} 위치보기"><span class="material-symbols-outlined" aria-hidden="true">my_location</span><span>위치보기</span></button>`;
+  return `<div class="${rowClass} party-member-card${toneClass}"><div class="party-member-main">${avatarHtml || iconHtml}<div class="party-member-info"><div class="party-member-name"><strong>${escapeHtml(name)}</strong>${roleBadge}</div><div class="party-member-telemetry"><span class="party-member-telemetry-status ${statusClass}">${statusLabel}</span>${metaHtml}</div></div></div>${locateHtml}</div>`;
 }
 
 // ==== Profile image: own photo or one of 8 default avatars; party list + party map markers ===========================
@@ -11857,6 +11975,104 @@ document.addEventListener('click', event => {
   for (const entry of partyMemberMarkers.values()) if (entry.el.classList.contains('selected')) { entry.el.classList.remove('selected'); entry.el.style.zIndex = ''; }
 });
 
+// Single rule for "this member has a party marker on the map" (marker sync + 위치보기 button).
+// Render filter only: my own position is the blue location marker, so my party marker is not drawn
+// (my upload / the party location fetch are unchanged). Unknown own id → nobody is hidden.
+// Sharing OFF or no coordinates → no marker. Offline members keep their last received position.
+function partyMemberMapPosition(member) {
+  if (!member?.user_id) return null;
+  const myUserId = state.session?.user?.id || '';
+  if (myUserId && String(member.user_id) === String(myUserId)) return null;
+  if (member.locationSharingEnabled === false || !Number.isFinite(member.lat) || !Number.isFinite(member.lng)) return null;
+  return { lng: member.lng, lat: member.lat };
+}
+
+// ---- 위치보기: one camera move to a member's marker (no tracking; the user can move the map right after) ----
+function focusPartyMemberOnMap(userId) {
+  const member = state.currentParty?.members?.find(item => item?.user_id && String(item.user_id) === String(userId));
+  const target = partyMemberMapPosition(member);
+  if (!target) { toast('표시할 수 있는 파티원 위치가 없습니다.'); return; }
+  if (!map?.easeTo) return;
+  const move = () => {
+    if (!map?.easeTo) return;
+    if (typeof pauseRideFollowForGesture === 'function') pauseRideFollowForGesture(); // route follow would pull the camera back
+    const entry = partyMemberMarkers.get(member.user_id);
+    if (entry) { // same selection look as a marker tap
+      for (const other of partyMemberMarkers.values()) { other.el.classList.remove('selected'); other.el.style.zIndex = ''; }
+      entry.el.classList.add('selected');
+      entry.el.classList.remove('name-hidden');
+      entry.el.style.zIndex = '3';
+    }
+    // Pitch / bearing are not passed, so the current 3D tilt and rotation stay.
+    map.easeTo({ center: [target.lng, target.lat], zoom: Math.min(16, Math.max(15, map.getZoom())), duration: 900 });
+  };
+  // After a view switch the map is resized on the next frames: move once it is loaded and laid out.
+  const run = () => requestAnimationFrame(() => requestAnimationFrame(move));
+  if (map.loaded?.() === false) map.once('idle', run); else run();
+}
+
+function partyMembersModal() { return $('#partyMembersModal'); }
+function renderPartyMembersModal() {
+  const modal = partyMembersModal();
+  const list = $('#partyMembersModalList');
+  if (!modal || modal.hidden || !list) return;
+  const party = state.currentParty;
+  const members = Array.isArray(party?.members) ? party.members : [];
+  const intervalSec = sanitizePartyGpsInterval(party?.gps_interval_seconds);
+  for (const member of members) if (member && typeof member === 'object') member.gpsStatus = computePartyMemberGpsStatus(member, intervalSec);
+  const online = members.filter(member => member?.gpsStatus === 'online').length;
+  const offCount = members.filter(member => member?.gpsStatus === 'off').length;
+  const offline = Math.max(0, members.length - online - offCount);
+  const summary = $('#partyMembersModalSummary');
+  if (summary) summary.textContent = `${members.length}명 · 온라인 ${online}명 · 대기/오프라인 ${offline}명${offCount ? ` · 공유 꺼짐 ${offCount}명` : ''}`;
+  list.innerHTML = members.length
+    ? members.map(member => renderPartyMemberRowHtml(member, true)).join('')
+    : '<p class="party-members-modal-empty">표시할 파티원이 없습니다.</p>';
+}
+function openPartyMembersModal() {
+  const modal = partyMembersModal();
+  if (!modal || !state.currentParty?.id) return;
+  modal.hidden = false;
+  renderPartyMembersModal();
+  $('#partyMembersModalList')?.scrollTo?.(0, 0);
+}
+function closePartyMembersModal() {
+  const modal = partyMembersModal();
+  if (modal) modal.hidden = true;
+}
+// Map toolbar button: right before SOS in the same toolbar (SOS stays the last item), shown during party Ride On only.
+function syncPartyMembersMapButton() {
+  const button = $('#partyMembersMapBtn');
+  const sos = $('#partySosButton');
+  if (!button) return;
+  if (sos?.parentNode && button.nextElementSibling !== sos) sos.parentNode.insertBefore(button, sos);
+  const mobile = window.matchMedia('(max-width: 768px)').matches;
+  const onRideSurface = !mobile || document.body.dataset.mobileView === 'ride';
+  const show = isPartyRideActive() && onRideSurface && Boolean(state.currentParty?.id);
+  button.hidden = !show;
+  if (!show) closePartyMembersModal();
+}
+function initPartyMembersInteractions() {
+  $('#partyMembersMapBtn')?.addEventListener('click', event => { event.preventDefault(); openPartyMembersModal(); });
+  $('#partyMembersModalClose')?.addEventListener('click', closePartyMembersModal);
+  partyMembersModal()?.addEventListener('click', event => { if (event.target === partyMembersModal()) closePartyMembersModal(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && partyMembersModal() && !partyMembersModal().hidden) closePartyMembersModal(); });
+  // 위치보기 in the party home lists (#partyLeaderMembers / #partyJoinedMembers) and in the modal.
+  document.addEventListener('click', event => {
+    const button = event.target.closest?.('[data-party-member-locate]');
+    if (!button || button.disabled) return;
+    const userId = button.dataset.partyMemberLocate;
+    if (button.closest('#partyMembersModal')) {
+      closePartyMembersModal();
+    } else if (window.matchMedia('(max-width: 768px)').matches) {
+      // Party home → the existing map screen (ride screen when party Ride On is running).
+      setMobileAppView(isPartyRideActive() ? 'ride' : 'map');
+    }
+    focusPartyMemberOnMap(userId);
+  });
+  syncPartyMembersMapButton();
+}
+
 function clearPartyMemberMapMarkers() {
   for (const entry of partyMemberMarkers.values()) {
     try { entry.marker.remove(); } catch {}
@@ -11873,17 +12089,10 @@ function syncPartyMemberMapMarkers() {
   const intervalSec = sanitizePartyGpsInterval(party.gps_interval_seconds);
   ensurePartyMarkerZoomBinding();
   const activeUserIds = new Set();
-  // Render filter only: my own position is the blue location marker, so my green party marker is not drawn
-  // (my upload / the party location fetch are unchanged). Unknown own id → nobody is hidden.
-  const myUserId = state.session?.user?.id || '';
-  const sameUserId = (a, b) => String(a || '') === String(b || '');
   for (const member of party.members) {
     if (!member?.user_id) continue;
     member.gpsStatus = computePartyMemberGpsStatus(member, intervalSec);
-    if (myUserId && sameUserId(member.user_id, myUserId)) continue; // not in activeUserIds → an existing own marker is removed below
-    if (member.locationSharingEnabled === false || !Number.isFinite(member.lat) || !Number.isFinite(member.lng)) {
-      continue;
-    }
+    if (!partyMemberMapPosition(member)) continue; // not in activeUserIds → an existing marker is removed below
     activeUserIds.add(member.user_id);
     const isStale = member.gpsStatus !== 'online';
     const isLeaderRole = member.role === 'leader';
@@ -11954,6 +12163,7 @@ function syncPartyMemberMapMarkers() {
     }
   }
   declutterPartyMarkerNames();
+  renderPartyMembersModal(); // 파티원 현황 modal follows every marker / status update (no-op while closed)
 }
 
 function applyLocalMemberFix(party, userId, fix, updatedAtIso) {
@@ -13825,7 +14035,9 @@ async function startPartyMemberSelectedRideOn() {
       ['#partyLeaderDisbandModal', '#partyLeaderDisbandCloseBtn'],
       ['#compassCalibrationModal', '#compassCalibCancelBtn'],
       ['#routeFollowPromptModal', '#routeFollowLaterBtn'],
-      ['#weatherDetailPage', '#weatherDetailBackBtn']
+      ['#weatherDetailPage', '#weatherDetailBackBtn'],
+      ['#partyMembersModal', '#partyMembersModalClose'],
+      ['#offlineAllRegionsModal', '#offlineAllCloseBtn']
     ];
     for (const [modalId, closeId] of modalCloseControls) {
       if (clickVisibleControl(modalId, closeId)) return true;
@@ -14021,6 +14233,7 @@ async function startPartyMemberSelectedRideOn() {
   initMobileStandaloneInteractions();
   initGpsRecordingInteractions();
   initPartySosInteractions();
+  initPartyMembersInteractions();
   initAndroidBackButton();
   initCompassCalibration();
   initBrowserBackGuard();

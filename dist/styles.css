@@ -7573,3 +7573,184 @@ body.profile-image-open { overflow: hidden; }
 .pim-gate[data-kind="error"] .pim-gate-icon { color: #ffb4ab; }
 @keyframes pim-gate-spin { to { transform: rotate(360deg); } }
 .pim-gate .pim-actions { justify-content: center; }
+
+/* ---- Home: 오프라인 지도 다운로드 전체보기 button + all-regions download modal ----
+   Colours / radii / select + card styles reuse the existing home values (.home-select, .home-offline-region-item,
+   .home-map-mode-option). The home rules live in the mobile media query, so the modal repeats them scoped to itself. */
+.home-offline-all-btn {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 40px; margin-top: 8px;
+  padding: 7px 14px; border: 1px solid rgba(100, 116, 139, .55); border-radius: 999px; background: rgba(15, 34, 52, .9); color: #e0f2fe;
+  font-size: 12px; font-weight: 800; white-space: nowrap; cursor: pointer; touch-action: manipulation; transition: border-color .15s ease;
+}
+.home-offline-all-btn > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.home-offline-all-btn .material-symbols-outlined { flex: 0 0 auto; color: #7dd3fc; font-size: 18px; }
+.home-offline-all-btn:hover, .home-offline-all-btn:focus-visible { border-color: #22d3ee; outline: none; }
+.home-offline-all-btn:active { background: #13385c; }
+
+.offline-all-modal {
+  position: fixed; inset: 0; z-index: 10040; display: flex; align-items: center; justify-content: center;
+  padding: calc(16px + env(safe-area-inset-top)) 12px calc(16px + env(safe-area-inset-bottom)); background: rgba(2, 6, 23, .7);
+}
+.offline-all-modal[hidden] { display: none !important; }
+.offline-all-dialog {
+  /* Fixed height (never follows the filter result): header / selects / status stay put, only .offline-all-list changes.
+     100% = the backdrop's inner height (viewport minus safe-area padding), so it never exceeds the screen. */
+  display: flex; flex-direction: column; width: min(560px, 100%); height: min(640px, 100%); max-height: 100%; min-height: 0; padding: 16px;
+  border: 1px solid rgba(34, 211, 238, .35); border-radius: 20px; background: #0b1d30; color: #f1f5f9; box-shadow: 0 24px 48px rgba(0, 0, 0, .45);
+}
+.offline-all-head { flex: 0 0 auto; display: flex; align-items: flex-start; gap: 6px; padding-bottom: 12px; border-bottom: 1px solid #1b4b73; }
+.offline-all-head > div { flex: 1 1 auto; min-width: 0; }
+.offline-all-head h2 { margin: 0; overflow: hidden; color: #e0f2fe; font-size: 17px; font-weight: 800; line-height: 24px; text-overflow: ellipsis; white-space: nowrap; }
+.offline-all-head p { margin: 2px 0 0; color: #94a3b8; font-size: 11px; }
+.offline-all-map-icon { flex: 0 0 auto; margin-top: 3px; color: #22d3ee; font-size: 20px; }
+.offline-all-close { flex: 0 0 auto; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: #cbd5e1; cursor: pointer; }
+.offline-all-close:hover, .offline-all-close:focus-visible { background: rgba(148, 163, 184, .14); outline: none; }
+.offline-all-notice { flex: 0 0 auto; display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 0; color: #94a3b8; font-size: 11px; line-height: 16px; }
+.offline-all-notice[hidden] { display: none; }
+.offline-all-notice .material-symbols-outlined { flex: 0 0 auto; color: #7dd3fc; font-size: 16px; }
+
+/* Selects: same as .home-select */
+.offline-all-filters { flex: 0 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.offline-all-filters .home-field { min-width: 0; }
+.offline-all-filters .home-field-label { display: flex; align-items: center; margin-bottom: 4px; color: #22d3ee; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; letter-spacing: .05em; }
+.offline-all-filters .home-select-wrap { position: relative; width: 100%; }
+.offline-all-filters .home-select {
+  width: 100%; padding: 10px 34px 10px 12px; overflow: hidden; border: 1px solid #1b4b73; border-radius: 12px; background: rgba(13, 42, 69, .9);
+  color: #fff; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; box-shadow: 0 4px 6px rgba(0, 0, 0, .25);
+  -webkit-appearance: none; appearance: none; cursor: pointer;
+}
+.offline-all-filters .home-select:focus { outline: none; border-color: #22d3ee; }
+.offline-all-filters .home-select option { background: #0d2a45; color: #fff; }
+.offline-all-filters .home-select-icon { position: absolute; top: 50%; right: 10px; color: #22d3ee; font-size: 20px; transform: translateY(-50%); pointer-events: none; }
+
+/* Status: one rounded segmented control */
+.offline-all-status-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
+.offline-all-status-head > span { color: #22d3ee; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700; letter-spacing: .05em; }
+.offline-all-status-head b { padding: 2px 8px; border: 1px solid rgba(100, 116, 139, .42); border-radius: 999px; color: #cbd5e1; font-size: 10px; font-weight: 700; }
+.offline-all-tabs {
+  flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; margin: 6px 0 10px; padding: 3px;
+  border: 1px solid rgba(100, 116, 139, .55); border-radius: 999px; background: rgba(15, 34, 52, .9);
+}
+.offline-all-tabs button {
+  min-width: 0; min-height: 32px; padding: 0 6px; overflow: hidden; border: 1px solid transparent; border-radius: 999px; background: transparent;
+  color: #94a3b8; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; touch-action: manipulation;
+}
+.offline-all-tabs button[aria-pressed="true"] { border-color: rgba(56, 189, 248, .4); background: rgba(56, 189, 248, .18); color: #38bdf8; }
+
+/* Region list: compact cards with the home download card's colours */
+.offline-all-list {
+  flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable; scrollbar-width: thin; scrollbar-color: rgba(100, 116, 139, .45) transparent;
+}
+.offline-all-list::-webkit-scrollbar { width: 4px; }
+.offline-all-list::-webkit-scrollbar-track { background: transparent; }
+.offline-all-list::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(100, 116, 139, .45); }
+.offline-all-empty { margin: 10px 0; color: #94a3b8; font-size: 11px; text-align: center; }
+.offline-all-item {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 52px; padding: 8px 10px;
+  border: 1px solid rgba(100, 116, 139, .42); border-radius: 10px; background: rgba(15, 34, 52, .9);
+}
+.offline-all-item-main { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; }
+.offline-all-item-main strong { overflow: hidden; color: #f1f5f9; font-size: 13px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.offline-all-state { display: flex; align-items: center; gap: 4px; min-width: 0; color: #7dd3fc; font-size: 11px; }
+.offline-all-state > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.offline-all-state .material-symbols-outlined { flex: 0 0 auto; font-size: 13px; }
+.offline-all-state.complete { color: #4ade80; }
+.offline-all-state.incomplete { color: #fbbf24; }
+.offline-all-state.unavailable { color: #f87171; }
+.offline-all-state.loading { color: #cbd5e1; }
+.offline-all-bar { display: block; height: 3px; margin-top: 3px; border-radius: 2px; background: rgba(255, 255, 255, .1); overflow: hidden; }
+.offline-all-bar b { display: block; height: 100%; background: #38bdf8; transition: width .4s linear; }
+.offline-all-item button {
+  flex: 0 0 auto; min-width: 64px; min-height: 32px; padding: 0 14px; border: 1px solid rgba(34, 211, 238, .55); border-radius: 999px;
+  background: rgba(8, 74, 96, .72); color: #e0f2fe; font-size: 11px; font-weight: 800; white-space: nowrap; cursor: pointer; touch-action: manipulation;
+}
+.offline-all-item button:disabled { border-color: rgba(100, 116, 139, .35); background: rgba(30, 41, 59, .65); color: #64748b; cursor: default; }
+@media (max-width: 360px) {
+  .offline-all-dialog { padding: 14px 12px; }
+  .offline-all-tabs button { font-size: 11px; }
+  .offline-all-item button { min-width: 56px; padding: 0 10px; }
+}
+
+/* ---- Party members: 위치보기 on the member rows (party home + 파티원 현황 modal) and the map 파티원 button ----
+   Rows keep the existing .party-joined-member / .party-leader-member card; status goes under the nickname and the
+   right side holds the round 위치보기 pill. Offline / sharing OFF rows are greyscale like the map marker (.offline). */
+.party-member-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.party-member-card .party-member-main { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; }
+.party-member-card .party-member-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.party-member-card .party-member-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.party-member-card .party-member-name strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.party-member-card .party-member-role-badge { flex: 0 0 auto; }
+.party-member-card .party-member-telemetry { display: flex; flex-direction: row; flex-wrap: wrap; align-items: baseline; column-gap: 6px; row-gap: 0; min-width: 0; text-align: left; }
+.party-member-card .party-member-telemetry-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.party-member-card.is-muted .pl-avatar,
+.party-member-card.is-muted .party-member-main > .material-symbols-outlined { filter: grayscale(1); opacity: .8; }
+.party-member-card .party-member-locate-btn {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 12px;
+  border: 1px solid rgba(34, 211, 238, .55); border-radius: 999px; background: rgba(8, 74, 96, .72); color: #e0f2fe;
+  font: 700 12px Inter, "Noto Sans KR", sans-serif; white-space: nowrap; cursor: pointer; touch-action: manipulation;
+}
+.party-member-card .party-member-locate-btn span { flex: 0 0 auto; color: inherit; font-size: inherit; }
+.party-member-card .party-member-locate-btn .material-symbols-outlined { color: inherit; font-size: 15px; }
+.party-member-card .party-member-locate-btn:disabled { border-color: rgba(100, 116, 139, .35); background: rgba(30, 41, 59, .65); color: #64748b; cursor: default; }
+.party-member-card .party-member-locate-btn:not(:disabled):active { background: #13385c; }
+@media (max-width: 360px) {
+  .party-member-card .party-member-locate-btn { padding: 0 10px; }
+  .party-member-card .party-member-locate-btn .material-symbols-outlined { display: none; }
+}
+
+/* Map toolbar button (placed right before SOS by syncPartyMembersMapButton). Mobile ride toolbar: the generic
+   .ride-map-controls > button card applies; only the icon + label stack is set here. */
+.party-members-map-btn[hidden] { display: none !important; }
+.party-members-map-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0; cursor: pointer; }
+.party-members-map-btn .material-symbols-outlined { font-size: 17px; line-height: 17px; }
+.party-members-map-label { font: 700 8.5px/10px Inter, "Noto Sans KR", sans-serif; letter-spacing: -.02em; }
+.ride-map-controls > .party-members-map-btn { display: flex; }
+body[data-pc-web="true"] .pc-map-controls > .party-members-map-btn {
+  align-self: flex-end; width: calc(var(--pc-ctrl-btn-h) + 6px); height: calc(var(--pc-ctrl-btn-h) + 6px); padding: 0;
+  border: 1px solid var(--pc-ctrl-border); border-radius: var(--pc-ctrl-radius); background: var(--pc-ctrl-bg); color: var(--pc-ctrl-text);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .3);
+}
+body[data-pc-web="true"] .pc-map-controls > .party-members-map-btn:hover { background: var(--pc-ctrl-hover); color: var(--pc-ctrl-hover-text); }
+.mapboxgl-ctrl-top-right > .party-members-map-btn {
+  float: right; clear: both; width: 36px; height: 36px; margin: 10px 10px 0 0; padding: 0; pointer-events: auto;
+  border: 1px solid rgba(100, 116, 139, .5); border-radius: 12px; background: rgba(13, 20, 33, .82); color: #e2e8f0;
+}
+.map-panel > .party-members-map-btn {
+  position: absolute; top: 112px; right: 12px; width: 36px; height: 36px; padding: 0;
+  border: 1px solid rgba(100, 116, 139, .5); border-radius: 12px; background: rgba(13, 20, 33, .82); color: #e2e8f0;
+}
+
+/* 파티원 현황 modal over the map (map stays mounted underneath). */
+.party-members-modal {
+  position: fixed; inset: 0; z-index: 10025; display: flex; align-items: center; justify-content: center;
+  padding: calc(16px + env(safe-area-inset-top)) 12px calc(16px + env(safe-area-inset-bottom)); box-sizing: border-box; background: rgba(0, 0, 0, .6);
+}
+.party-members-modal[hidden] { display: none !important; }
+.party-members-dialog {
+  display: flex; flex-direction: column; width: min(440px, 100%); max-height: min(600px, 100%); min-height: 0; padding: 16px; box-sizing: border-box;
+  border: 1px solid rgba(49, 53, 59, .6); border-radius: 14px; background: #101419; color: #e0e2ea; box-shadow: 0 20px 48px rgba(0, 0, 0, .5);
+  font-family: 'Inter', 'Noto Sans KR', sans-serif;
+}
+.party-members-modal-head { flex: 0 0 auto; display: flex; align-items: flex-start; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid rgba(49, 53, 59, .6); }
+.party-members-modal-head > div { flex: 1 1 auto; min-width: 0; }
+.party-members-modal-head h2 { margin: 0; color: #e0e2ea; font-size: 17px; font-weight: 800; line-height: 24px; }
+.party-members-modal-head p { margin: 2px 0 0; color: #87929a; font-size: 12px; line-height: 17px; }
+.party-members-modal-close { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 999px; background: transparent; color: #bdc8d1; cursor: pointer; }
+.party-members-modal-close:hover, .party-members-modal-close:focus-visible { background: rgba(148, 163, 184, .14); outline: none; }
+.party-members-modal-list {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; margin-top: 12px; overflow-y: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: rgba(100, 116, 139, .45) transparent;
+}
+.party-members-modal-list::-webkit-scrollbar { width: 4px; }
+.party-members-modal-list::-webkit-scrollbar-thumb { border-radius: 2px; background: rgba(100, 116, 139, .45); }
+.party-members-modal-empty { margin: 0; padding: 14px 8px; border-radius: 8px; background: #181c21; color: #bdc8d1; font-size: 14px; text-align: center; }
+/* Same card as the party home (.party-joined-member, defined for mobile only) so PC shows it identically. */
+.party-members-modal .party-joined-member { flex: 0 0 auto; padding: 10px; border: 1px solid rgba(49, 53, 59, .6); border-radius: 8px; background: #181c21; }
+.party-members-modal .party-joined-member strong { color: #e0e2ea; font-size: 14px; }
+.party-members-modal .party-member-role-badge { padding: 1px 5px; border-radius: 4px; background: rgba(56, 189, 248, .16); color: #8ed5ff; font: 600 9px "JetBrains Mono", monospace; }
+.party-members-modal .party-member-telemetry-status { color: #87929a; font: 600 11px Inter, "Noto Sans KR", sans-serif; }
+.party-members-modal .party-member-telemetry-status.online { color: #4edea3; }
+.party-members-modal .party-member-telemetry-status.stale { color: #fbbf24; }
+.party-members-modal .party-member-telemetry-meta { color: #87929a; font: 500 10px "JetBrains Mono", monospace; }
+.party-members-modal .party-member-telemetry-time { color: #76828b; font-size: 8.5px; }

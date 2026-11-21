@@ -128,6 +128,7 @@
           <svg class="party-sos-progress" viewBox="0 0 52 52" aria-hidden="true"><circle class="party-sos-progress-track" cx="26" cy="26" r="23"></circle><circle class="party-sos-progress-value" cx="26" cy="26" r="23"></circle></svg>
           <span class="party-sos-label">SOS</span>
         </button>
+        <button id="partyMembersMapBtn" class="party-members-map-btn" type="button" aria-label="파티원 현황" aria-haspopup="dialog" aria-controls="partyMembersModal" hidden><span class="material-symbols-outlined" aria-hidden="true">group</span><span class="party-members-map-label">파티원</span></button>
         <span id="partySosSafety" class="party-sos-assistive">FCM 알림 수신은 보장되지 않으며 긴급 구조 신고를 대신하지 않습니다.</span>
         <!-- PC web only: right-top map controls. The existing style switch and Mapbox zoom/compass/locate controls are moved in here (never duplicated). -->
         <div id="pcMapControls" class="pc-map-controls" hidden>
@@ -313,6 +314,7 @@
                   <small>OFFLINE MAP</small>
                 </div>
                 <div id="homeOfflineRegionList" class="home-offline-region-list" aria-live="polite"></div>
+                <button id="homeOfflineAllBtn" type="button" class="home-offline-all-btn" aria-haspopup="dialog" aria-controls="offlineAllRegionsModal"><span class="material-symbols-outlined" aria-hidden="true">format_list_bulleted</span><span>오프라인 지도 다운로드 전체보기</span><span class="material-symbols-outlined" aria-hidden="true">chevron_right</span></button>
               </section>
             </section>
         </section>
@@ -1179,6 +1181,7 @@
         </div></main>
       </section>
     </div>
+    <div id="partyMembersModal" class="party-members-modal" hidden><div class="party-members-dialog" role="dialog" aria-modal="true" aria-labelledby="partyMembersModalTitle"><header class="party-members-modal-head"><div><h2 id="partyMembersModalTitle">파티원 현황</h2><p id="partyMembersModalSummary"></p></div><button id="partyMembersModalClose" type="button" class="party-members-modal-close" aria-label="닫기"><span class="material-symbols-outlined" aria-hidden="true">close</span></button></header><div id="partyMembersModalList" class="party-members-modal-list" aria-live="polite"></div></div></div>
     <div id="partySosConfirmModal" class="party-sos-confirm" hidden><div class="party-sos-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="partySosConfirmTitle" aria-describedby="partySosConfirmText"><h2 id="partySosConfirmTitle">SOS</h2><p id="partySosConfirmText"></p><small>FCM 알림 수신은 보장되지 않으며 긴급 구조 신고를 대신하지 않습니다.</small><div class="party-sos-confirm-actions"><button id="partySosConfirmCancel" type="button">취소</button><button id="partySosConfirmOk" type="button"></button></div></div></div>
     <div id="gpsRecordingFinishModal" class="modal-backdrop gps-recording-finish-modal" hidden>
       <div class="modal-dialog gps-recording-finish-dialog" role="dialog" aria-modal="true" aria-labelledby="gpsRecordingFinishTitle" aria-describedby="gpsRecordingFinishSummary">
@@ -1194,6 +1197,27 @@
             <button id="gpsRecordingSaveBtn" type="submit" class="primary">저장</button>
           </div>
         </form>
+      </div>
+    </div>
+    <div id="offlineAllRegionsModal" class="offline-all-modal" hidden>
+      <div class="offline-all-dialog" role="dialog" aria-modal="true" aria-labelledby="offlineAllTitle">
+        <header class="offline-all-head">
+          <div><h2 id="offlineAllTitle">오프라인 지도 다운로드</h2><p>전체 지역 다운로드 관리</p></div>
+          <span class="material-symbols-outlined offline-all-map-icon" aria-hidden="true">map</span>
+          <button id="offlineAllCloseBtn" type="button" class="offline-all-close" aria-label="닫기"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+        </header>
+        <p id="offlineAllWebNotice" class="offline-all-notice" hidden><span class="material-symbols-outlined" aria-hidden="true">info</span><span>웹에서는 다운로드할 수 없습니다 · Powderline Android 앱에서 다운로드 가능</span></p>
+        <div class="offline-all-filters">
+          <div class="home-field"><label for="offlineAllCountrySelect" class="home-field-label">국가 선택</label><div class="home-select-wrap"><select id="offlineAllCountrySelect" class="home-select"><option value="">전체 국가</option></select><span class="material-symbols-outlined home-select-icon" aria-hidden="true">expand_more</span></div></div>
+          <div class="home-field"><label for="offlineAllRegionSelect" class="home-field-label">지역 선택</label><div class="home-select-wrap"><select id="offlineAllRegionSelect" class="home-select"><option value="">전체 지역</option></select><span class="material-symbols-outlined home-select-icon" aria-hidden="true">expand_more</span></div></div>
+        </div>
+        <div class="offline-all-status-head"><span>다운로드 상태</span><b id="offlineAllRegionCount">0개 지역</b></div>
+        <div class="offline-all-tabs" role="group" aria-label="다운로드 상태">
+          <button type="button" data-offline-all-status="all" aria-pressed="true">전체</button>
+          <button type="button" data-offline-all-status="done" aria-pressed="false">다운로드 완료</button>
+          <button type="button" data-offline-all-status="none" aria-pressed="false">미다운로드</button>
+        </div>
+        <div id="offlineAllRegionList" class="offline-all-list" aria-live="polite"></div>
       </div>
     </div>
     <div id="confirmModal" class="modal-backdrop" hidden>

@@ -504,12 +504,11 @@
     const c = currentOf(detailPoint);
     const [prev, next] = snowPrevNext(detailPoint);
     return `<section class="wx-px"><div class="wx-card wx-cond-card">
-      <div class="wx-cond-head"><div class="wx-cond-title"><span class="material-symbols-outlined" aria-hidden="true">ac_unit</span><span>WEATHER</span></div></div>
       <div class="wx-cond-grid">
         <div><span class="wx-cell-label">${pointName(detailPoint)} 기온</span><div class="wx-cell-value">${fmt(c?.temperature_2m, 1)}°C</div></div>
         <div><span class="wx-cell-label">풍속 (풍향)</span><div class="wx-cell-value wx-wind">${fmt(c?.wind_speed_10m, 1)}m/s <small class="wx-wind-dir">${dir8Ko(c?.wind_direction_10m)}</small></div></div>
-        <div><span class="wx-cell-label">이전 24H</span><div class="wx-cell-value wx-snow">${snowText(prev)}</div></div>
-        <div><span class="wx-cell-label wx-next">향후 24H</span><div class="wx-cell-value wx-snow">${snowText(next)}</div></div>
+        <div><span class="wx-cell-label">PAST 24H</span><div class="wx-cell-value wx-snow">${snowText(prev)}</div></div>
+        <div><span class="wx-cell-label wx-next">NEXT 24H</span><div class="wx-cell-value wx-snow">${snowText(next)}</div></div>
       </div></div></section>`;
   }
 
@@ -643,7 +642,7 @@
     }) : [];
     const md = date ? `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))} (${WEEKDAYS[new Date(`${date}T12:00:00Z`).getUTCDay()]})` : '--';
     return `<section class="wx-section wx-px" id="wxHourlySection"><div class="wx-section-head"><div><span class="material-symbols-outlined wx-icon-accent" aria-hidden="true">schedule</span><span>시간대별 기상</span></div>
-      <div class="wx-hour-tools"><span>${md}</span><button type="button" class="wx-more-btn" id="wxHourlyToggle" aria-expanded="${hourlyExpanded}">${hourlyExpanded ? '접기' : '상세보기'}</button></div></div>
+      <div class="wx-hour-tools"><span>${md}</span><button type="button" class="wx-more-btn" id="wxHourlyToggle" aria-expanded="${hourlyExpanded}">${hourlyExpanded ? '접기' : '24시간 보기'}</button></div></div>
       ${rows.length ? `<div class="wx-hours${hourlyExpanded ? ' wx-hours-scroll' : ''}" id="wxHoursList"${hourlyExpanded ? ' tabindex="0" aria-label="시간대별 기상 24시간 목록"' : ''}>${rows.join('')}</div>`
         : '<p class="wx-empty">데이터 없음</p>'}</section>`;
   }
@@ -665,7 +664,7 @@
   }
 
   // ---- LIVE CAM screen: an in-app view over the Weather page (one extra history entry {plWeather, plWeatherCam}) ----
-  // The Weather page stays mounted underneath, so date / altitude / 상세보기 state are kept when coming back.
+  // The Weather page stays mounted underneath, so date / altitude / 24-hour view state are kept when coming back.
   const CAM_STATE = {plWeather: true, plWeatherCam: true};
   const camView = () => $('wxCamView');
   const isCamOpen = () => Boolean(camView() && !camView().hidden);

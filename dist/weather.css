@@ -124,13 +124,13 @@ body[data-native-android="1"] .home-weather-title { font-size: 13.5px; }
 .weather-detail-back .material-symbols-outlined { font-size: 24px; }
 .weather-detail-bar h1 { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 20px; line-height: 28px; font-weight: 700; letter-spacing: -0.015em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .weather-detail-body {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
-  display: flex; flex-direction: column; gap: 10px; padding: 10px 0 env(safe-area-inset-bottom, 0px); scrollbar-width: none;
+  flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  display: flex; flex-direction: column; gap: 6px; padding: 6px 0 env(safe-area-inset-bottom, 0px); scrollbar-width: none;
 }
 .weather-detail-body::-webkit-scrollbar { display: none; }
 .wx-header-time { flex: 0 0 auto; color: var(--wx-on-surface-variant); font: 600 10px/12px var(--wx-mono); letter-spacing: 0.1em; white-space: nowrap; }
 .wx-header-time.stale { color: var(--wx-outline); }
-.wx-stack { display: flex; flex-direction: column; gap: 10px; }
+.wx-stack { display: flex; flex-direction: column; gap: 6px; }
 .wx-px { padding-left: 16px; padding-right: 16px; }
 .wx-empty { margin: 8px 0; color: var(--wx-outline); font-size: 13px; }
 .wx-card { border: 1px solid rgba(62, 72, 79, 0.3); border-radius: 12px; background: var(--wx-surface-low); }
@@ -179,11 +179,8 @@ body[data-native-android="1"] .home-weather-title { font-size: 13.5px; }
 .altitude-range-slider:disabled { cursor: default; }
 
 /* CONDITION card */
-.wx-cond-card { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 10px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1); }
-.wx-cond-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.wx-cond-title { display: flex; align-items: center; gap: 6px; color: var(--wx-primary); font: 600 10px/12px var(--wx-mono); letter-spacing: 0.1em; text-transform: uppercase; }
-.wx-cond-title .material-symbols-outlined { font-size: 18px; }
-.wx-cond-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding-top: 6px; border-top: 1px solid rgba(62, 72, 79, 0.2); }
+.wx-cond-card { display: flex; flex-direction: column; padding: 6px 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1); }
+.wx-cond-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .wx-cond-grid > div { display: flex; flex-direction: column; align-items: center; min-width: 0; padding: 6px 4px; border-radius: 8px; background: rgba(28, 32, 37, 0.7); text-align: center; }
 .wx-cell-label { display: block; margin-bottom: 2px; color: var(--wx-outline); font: 600 10px/12px var(--wx-mono); letter-spacing: 0.1em; white-space: nowrap; }
 .wx-cell-label.wx-next { color: rgba(142, 213, 255, 0.8); }
@@ -262,7 +259,7 @@ body[data-native-android="1"] .home-weather-title { font-size: 13.5px; }
 /* ---- Fixed viewport layout ----
    The page is position: fixed (inset 0 = the visible viewport; dvh where supported). .weather-detail-body is the flex
    column of that height; #wxPointSections is display: contents so its sections are direct flex items of it:
-     slider · WEATHER · daily  -> own height (never shrink)
+     slider · summary · daily  -> own height (never shrink)
      hourly section            -> takes ALL remaining height (flex 1) and may shrink to its minimum
      LIVE CAM entry · footer   -> own height, always below the hourly section
    The hourly list scrolls only inside itself. If even the minimum does not fit (very small screens) the body scrolls as
@@ -278,7 +275,7 @@ body[data-native-android="1"] .home-weather-title { font-size: 13.5px; }
   padding-bottom: 2px; scrollbar-width: thin; scrollbar-color: rgba(142, 213, 255, 0.35) transparent; border-radius: 12px;
 }
 .wx-hours-scroll:focus-visible { outline: 2px solid var(--wx-primary); outline-offset: 2px; }
-/* The list box has the SAME size in both modes (flex 1 1 0 = remaining height, not its content), so 상세보기 changes
+/* The list box has the SAME size in both modes (flex 1 1 0 = remaining height, not its content), so 24시간 보기 changes
    neither the page height nor the position of the cards above / below; the footer is never toggled by the mode.
    Small screens hide the footer in both modes. */
 @media (max-height: 700px) { .weather-detail-body > .wx-footer { display: none; } }

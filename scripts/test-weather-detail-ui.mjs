@@ -80,7 +80,8 @@ check('detail_open', !page.hidden && history.state?.plWeather === true);
 check('daily_18_cards_one_selected', (body().match(/class="wx-day[ "]/g) || []).length === 18 && (body().match(/aria-pressed="true"/g) || []).length === 1);
 check('collapsed_7_rows_08_to_20_every_2h', rows() === 7 && hourTimes() === '08,10,12,14,16,18,20' && !els.get('weatherDetailBody').classList.contains('wx-hours-expanded'), {times: hourTimes()});
 check('daily_subtitle_removed', !body().includes('과거 2일') && !body().includes('16일간 전망') && body().includes('일별 예보'));
-// order: WEATHER -> daily -> hourly -> LIVE CAM entry -> footer
+check('condition_title_removed_labels_updated', !body().includes('wx-cond-head') && !body().includes('>WEATHER<') && body().includes('PAST 24H') && body().includes('NEXT 24H'));
+// order: summary -> daily -> hourly -> LIVE CAM entry -> footer
 const iCond = body().indexOf('wx-cond-card'), iDaily = body().indexOf('class="wx-days"'), iHour = body().indexOf('id="wxHourlySection"'), iCam = body().indexOf('id="wxLiveCam"'), iFoot = body().indexOf('wx-footer');
 check('order_weather_daily_hourly_cam_footer', iCond > 0 && iCond < iDaily && iDaily < iHour && iHour < iCam && iCam < iFoot);
 const camCard = body().slice(body().indexOf('<button type="button" class="wx-card wx-cam-entry"'), body().indexOf('</button>', iCam));
@@ -98,7 +99,7 @@ click('[data-wx-date]');
 check('date_change_resets_scroll_keeps_mode', body().includes(`data-wx-date="${click.date}" aria-pressed="true"`) && els.get('wxHoursList').scrollTop === 0 && rows() === 24);
 // collapse
 click('#wxHourlyToggle');
-check('collapse_back_to_7', rows() === 7 && hourTimes() === '08,10,12,14,16,18,20' && !els.get('weatherDetailBody').classList.contains('wx-hours-expanded') && />상세보기<\/button>/.test(body()));
+check('collapse_back_to_7', rows() === 7 && hourTimes() === '08,10,12,14,16,18,20' && !els.get('weatherDetailBody').classList.contains('wx-hours-expanded') && />24시간 보기<\/button>/.test(body()));
 click('#wxHourlyToggle'); // expanded again before visiting the camera view
 // LIVE CAM view
 click('#wxLiveCam');
@@ -143,7 +144,7 @@ check('css_footer_not_toggled_by_mode', !/wx-hours-expanded[^{]*\{[^}]*display: 
 check('css_cam_entry_grid_center', /\.wx-cam-entry \{\s*display: grid; grid-template-columns: 1fr auto 1fr;/.test(css) && /\.wx-cam-entry-chevron \{ justify-self: end;/.test(css));
 check('css_list_inner_scroll', /#wxHourlySection > \.wx-hours \{[^}]*min-height: 0; overflow-y: auto; overscroll-behavior: contain;[^}]*touch-action: pan-y;/.test(css));
 check('css_fixed_children_dont_shrink', /\.weather-detail-body > \* \{ flex: 0 0 auto; \}/.test(css) && /#wxPointSections > \* \{ flex: 0 0 auto; \}/.test(css));
-check('css_body_column_viewport', /\.weather-detail-body \{\s*flex: 1 1 auto; min-height: 0; overflow-y: auto;/.test(css) && /height: 100dvh/.test(css));
+check('css_body_column_viewport', /\.weather-detail-body \{\s*flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;/.test(css) && /height: 100dvh/.test(css));
 check('css_4_daily_cards_kept', css.includes('.wx-day { flex: 0 0 calc((100% - 12px) / 4)'));
 check('css_cam_view_over_page', /\.wx-cam-view \{ position: absolute; inset: 0;/.test(css) && /env\(safe-area-inset-bottom/.test(css));
 check('no_condition_or_surface_ui', !/wx-pill|ratingPill|class="wx-surface|\.wx-surface[a-z-]* \{|data\/snow-surface/.test(js + css));

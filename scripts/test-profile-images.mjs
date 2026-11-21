@@ -79,11 +79,13 @@ await test('member colours: stable per user, from the 8-colour palette', () => {
   assert.equal(api.partyMarkerColor('abc'), api.partyMarkerColor('abc'));
   assert.match(api.partyMarkerColor('abc'), /^#[0-9a-f]{6}$/);
 });
-await test('zoom bands: < 12 far (20px), 12-14.5 mid (26px), >= 14.5 near (32px)', () => {
+await test('zoom bands: < 12 far (24px), 12-14.5 mid (31.2px), >= 14.5 near (38.4px)', () => {
   assert.deepEqual([10.5, 11.99, 12, 14.49, 14.5, 17].map(api.partyMarkerZoomBand), ['far', 'far', 'mid', 'mid', 'near', 'near']);
-  assert.match(css, /data-party-zoom="far"\] \.party-gps-marker \{ --pgm-size: 20px; \}/);
-  assert.match(css, /\.party-gps-marker \{ --pgm-size: 26px;/);
-  assert.match(css, /data-party-zoom="near"\] \.party-gps-marker \{ --pgm-size: 32px; \}/);
+  assert.match(css, /data-party-zoom="far"\] \.party-gps-marker \{ --pgm-size: 24px; \}/);
+  assert.match(css, /\.party-gps-marker \{ --pgm-size: 31\.2px;/);
+  assert.match(css, /data-party-zoom="near"\] \.party-gps-marker \{ --pgm-size: 38\.4px; \}/);
+  assert.match(css, /font: 700 12px\/14\.4px Inter/, 'nickname is 20% larger');
+  assert.match(app, /Math\.abs\(q\.x - p\.x\) < 77 && Math\.abs\(q\.y - p\.y\) < 36/, 'declutter spacing follows the larger marker');
   assert.match(css, /data-party-zoom="far"\] \.party-gps-marker:not\(\.selected\) \.pgm-name/, 'far: names hidden');
   assert.match(css, /\.party-gps-marker\.offline \{ filter: grayscale\(1\); \}/, 'offline greyscale by CSS');
 });
