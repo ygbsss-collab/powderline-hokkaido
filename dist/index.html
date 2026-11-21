@@ -1418,6 +1418,11 @@
           || !window.location.pathname.startsWith('/powderline-hokkaido/')) return;
         if (!('serviceWorker' in navigator)) return;
 
+        // PWA only (after the native / WebView / origin checks above): device notification test row.
+        const notifyScript = document.createElement('script');
+        notifyScript.src = './pwa-notify.js';
+        document.body.appendChild(notifyScript);
+
         navigator.serviceWorker.register('./sw.js').then(registration => {
           let updatePromptOpen = false;
           const offerUpdate = () => {
