@@ -3,6 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#050b16" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./assets/pwa-apple-touch-icon.png" />
     <title data-i18n="docTitle">POWDERLINE — 백컨트리 경로 설계</title>
     <link rel="stylesheet" href="./vendor/mapbox-gl.css" />
     <link rel="stylesheet" href="./vendor/fonts.css" />
@@ -1403,5 +1408,36 @@
     <script src="./weather.js"></script>
     <script src="./app.js"></script>
     <script src="./push-notifications.js"></script>
+    <script>
+      window.addEventListener('load', () => {
+        const capacitor = window.Capacitor;
+        const platform = capacitor?.getPlatform?.();
+        if (capacitor?.isNativePlatform?.() || platform === 'android' || platform === 'ios') return;
+        if (/Android.*(?:;\s*wv\)|Version\/4\.0.*Chrome\/)/i.test(navigator.userAgent)) return;
+        if (window.location.origin !== 'https://ygbsss-collab.github.io'
+          || !window.location.pathname.startsWith('/powderline-hokkaido/')) return;
+        if (!('serviceWorker' in navigator)) return;
+
+        navigator.serviceWorker.register('./sw.js').then(registration => {
+          let updatePromptOpen = false;
+          const offerUpdate = () => {
+            if (!registration.waiting || !navigator.serviceWorker.controller || updatePromptOpen) return;
+            updatePromptOpen = true;
+            if (window.confirm('POWDERLINE 새 버전이 준비되었습니다. 지금 새로고침할까요?')) {
+              navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload(), { once: true });
+              registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+            } else {
+              updatePromptOpen = false;
+            }
+          };
+          if (registration.waiting) offerUpdate();
+          registration.addEventListener('updatefound', () => {
+            registration.installing?.addEventListener('statechange', event => {
+              if (event.target.state === 'installed') offerUpdate();
+            });
+          });
+        }).catch(error => console.warn('PWA Service Worker registration failed:', error));
+      });
+    </script>
   </body>
 </html>
