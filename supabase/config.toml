@@ -17,3 +17,9 @@ verify_jwt = false
 
 [functions.dispatch-weather-admin-alert]
 verify_jwt = false
+
+[functions.dispatch-weather-watch]
+verify_jwt = false
+
+[functions.weather-hourly]
+verify_jwt = false

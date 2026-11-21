@@ -272,6 +272,8 @@ export async function collectRegion(regionId, net = {}) {
   for (const [a, b] of [['summit', 'base'], ['summit', 'mid'], ['mid', 'base']]) {
     if (results[a] && results[b]) output.comparisons[`${a}-${b}`] = comparePoints(results[a], results[b]);
   }
+  // Local debug copy; runtimes without a writable working directory (Supabase Edge) pass {saveOutput: false}.
+  if (net.saveOutput === false) return {output, file: null};
   await mkdir('work/weather', {recursive: true});
   const file = `work/weather/${regionId}-${output.generated_at.replace(/[-:]/g, '').slice(0, 15)}Z.json`;
   await writeFile(file, JSON.stringify(output));

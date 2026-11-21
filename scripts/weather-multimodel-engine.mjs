@@ -25,7 +25,11 @@ const round = (v, d = 3) => (v == null ? null : Math.round(v * 10 ** d) / 10 ** 
 const mean = a => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
 const iso = ms => new Date(ms).toISOString();
 
-export const loadConfig = () => JSON.parse(readFileSync(CFG_PATH, 'utf8'));
+// Runtimes without file access to scripts/ (Supabase Edge) inject the same JSON once with setConfig(); every call
+// still returns a fresh copy, exactly like a new read of the file.
+let injectedConfig = null;
+export const setConfig = cfg => { injectedConfig = cfg ? JSON.stringify(cfg) : null; };
+export const loadConfig = () => JSON.parse(injectedConfig ?? readFileSync(CFG_PATH, 'utf8'));
 
 export function bandFor(cfg, leadH) {
   return cfg.bands.find(b => leadH >= b.lead_h[0] && leadH <= b.lead_h[1]) || null;
