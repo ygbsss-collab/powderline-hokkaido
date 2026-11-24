@@ -1,4 +1,4 @@
-/* Isolated browser-only Kiroro offline 3D PoC. No Mapbox, native map, auth or user data access. */
+/* Browser-only Kiroro offline pack download / status / delete. The map itself is shown by the main app (app.js + sw.js). */
 (() => {
   'use strict';
 
@@ -13,13 +13,11 @@
   const $ = id => document.getElementById(id);
   const ui = {
     status: $('status'), progress: $('progress'), storage: $('storage'),
-    download: $('download'), show: $('show'), remove: $('remove'),
-    panel: $('mapPanel'), mapStatus: $('mapStatus'), close: $('mapClose'),
+    download: $('download'), remove: $('remove'),
   };
-  let map = null;
+  // Download management only. The saved map is shown on the main POWDERLINE map (app.js + sw.js), not here.
   let busy = false;
   let currentPack = null;
-  let protocolRegistered = false;
 
   function browserAllowed() {
     const capacitor = window.Capacitor;
@@ -129,12 +127,11 @@
   async function refresh() {
     currentPack = await loadPack();
     const complete = await verifyPack(currentPack);
-    ui.show.disabled = busy || !complete;
     ui.remove.disabled = busy || !currentPack;
     ui.download.disabled = busy || complete;
     if (!busy) {
       setStatus(complete
-        ? `저장 완료 · DEM ${currentPack.manifest.tiles.length}장 · ${mb(currentPack.totalBytes)} · 오프라인 사용 가능`
+        ? `저장 완료 · DEM ${currentPack.manifest.tiles.length}장 · ${mb(currentPack.totalBytes)} · 메인 화면에서 오프라인 지도를 선택하세요`
         : currentPack ? '저장 중단 또는 누락된 타일이 있습니다. 온라인에서 이어받으세요.'
           : '저장된 키로로 지도가 없습니다. 온라인에서 다운로드하세요.');
     }
@@ -145,7 +142,7 @@
   async function download() {
     if (busy) return;
     busy = true;
-    ui.download.disabled = ui.show.disabled = ui.remove.disabled = true;
+    ui.download.disabled = ui.remove.disabled = true;
     try {
       if (navigator.onLine === false) throw new Error('네트워크 연결 후 다운로드하세요.');
       await navigator.storage?.persist?.().catch(() => false);
@@ -191,7 +188,6 @@
       ui.progress.hidden = true;
       busy = false;
       await refresh();
-      await showMap();
     } catch (error) {
       busy = false;
       ui.progress.hidden = true;
@@ -200,116 +196,17 @@
     }
   }
 
-  function terrainProtocol(params) {
-    const match = /^kiroro-dem:\/\/(\d+)\/(\d+)\/(\d+)\.png$/.exec(params.url);
-    if (!match) throw new Error('허용되지 않은 DEM 주소');
-    const path = `${match[1]}/${match[2]}/${match[3]}.png`;
-    return caches.open(DEM_CACHE).then(cache => cache.match(asset(`./data/offline/kiroro-dem/${path}`)))
-      .then(response => {
-        if (!response) throw new Error(`오프라인 DEM 누락: ${path}`);
-        return response.arrayBuffer();
-      }).then(data => ({ data }));
-  }
-  function mapStyle(skiData) {
-    return {
-      version: 8,
-      name: 'POWDERLINE Kiroro PWA Offline',
-      sources: {
-        base: { type: 'vector', url: 'pmtiles://kiroro-basemap-z15.pmtiles', attribution: '© OpenStreetMap contributors · Protomaps' },
-        dem: { type: 'raster-dem', tiles: ['kiroro-dem://{z}/{x}/{y}.png'], tileSize: 256,
-          minzoom: 8, maxzoom: 15, encoding: 'terrarium', attribution: 'Terrain: AWS Open Data Terrain Tiles / USGS and NOAA' },
-        ski: { type: 'geojson', data: skiData, attribution: 'OpenSkiData / OpenSkiMap.org (ODbL)' },
-      },
-      layers: [
-        { id: 'background', type: 'background', paint: { 'background-color': '#dce8ea' } },
-        { id: 'landcover', type: 'fill', source: 'base', 'source-layer': 'landcover', paint: { 'fill-color': '#b2c8b2', 'fill-opacity': 0.65 } },
-        { id: 'forest', type: 'fill', source: 'base', 'source-layer': 'landuse', filter: ['==', ['get', 'kind'], 'forest'], paint: { 'fill-color': '#8daf9a', 'fill-opacity': 0.6 } },
-        { id: 'water', type: 'fill', source: 'base', 'source-layer': 'water', paint: { 'fill-color': '#9dc6d9' } },
-        { id: 'hillshade', type: 'hillshade', source: 'dem', paint: { 'hillshade-exaggeration': 0.3 } },
-        { id: 'roads', type: 'line', source: 'base', 'source-layer': 'roads', paint: { 'line-color': '#f6f5e8', 'line-width': 1.4 } },
-        { id: 'runs-fill', type: 'fill', source: 'ski', filter: ['==', ['get', 'powderlineType'], 'run'], paint: { 'fill-color': '#64c7e7', 'fill-opacity': 0.18 } },
-        { id: 'runs-line', type: 'line', source: 'ski', filter: ['==', ['get', 'powderlineType'], 'run'], paint: { 'line-color': '#1d91c0', 'line-width': 2.8 } },
-        { id: 'lifts', type: 'line', source: 'ski', filter: ['==', ['get', 'powderlineType'], 'lift'], paint: { 'line-color': '#d24778', 'line-width': 3 } },
-        { id: 'stations', type: 'circle', source: 'ski', filter: ['==', ['get', 'powderlineType'], 'station'], paint: { 'circle-radius': 4, 'circle-color': '#d24778', 'circle-stroke-color': '#fff', 'circle-stroke-width': 1 } },
-      ],
-    };
-  }
-  async function showMap() {
-    const pack = await loadPack();
-    if (!await verifyPack(pack)) { setStatus('지도 파일이 누락되었습니다. 온라인에서 이어받으세요.', true); return; }
-    enterMapView();
-    if (map) { requestAnimationFrame(() => map?.resize()); return; } // same instance, re-sized to the full screen
-    if (!protocolRegistered) {
-      const archive = new pmtiles.PMTiles(new pmtiles.FileSource(
-        new File([pack.basemap], 'kiroro-basemap-z15.pmtiles', { type: 'application/vnd.pmtiles' })));
-      const protocol = new pmtiles.Protocol();
-      protocol.add(archive);
-      maplibregl.addProtocol('pmtiles', protocol.tile);
-      maplibregl.addProtocol('kiroro-dem', terrainProtocol);
-      protocolRegistered = true;
-    }
-    ui.panel.hidden = false;
-    ui.mapStatus.textContent = '저장된 지도와 DEM 로딩 중…';
-    map = new maplibregl.Map({
-      container: 'map', style: mapStyle(pack.skiData), center: [140.999, 43.064],
-      zoom: 13, pitch: 45, bearing: -12, minZoom: 8, maxZoom: 15,
-      maxBounds: [[BBOX[0], BBOX[1]], [BBOX[2], BBOX[3]]], antialias: true,
-    });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
-    map.on('load', () => map.setTerrain({ source: 'dem', exaggeration: 1.35 }));
-    map.on('idle', () => {
-      if (map.getTerrain() && map.isSourceLoaded('dem')) {
-        ui.mapStatus.textContent = '오프라인 3D 지형 준비됨 · 드래그·회전·확대 가능';
-      }
-    });
-    map.on('error', event => {
-      ui.mapStatus.textContent = `지도 오류: ${event.error?.message || '타일 로딩 실패'}`;
-    });
-    for (const layer of ['lifts', 'runs-line']) {
-      map.on('click', layer, event => {
-        const feature = event.features?.[0];
-        if (!feature) return;
-        const popup = document.createElement('span');
-        popup.textContent = feature.properties?.name || (layer === 'lifts' ? '리프트' : '슬로프');
-        new maplibregl.Popup().setLngLat(event.lngLat).setDOMContent(popup).addTo(map);
-      });
-    }
-  }
-  // Full-screen map view: management UI hidden (body.map-open), one history entry so Back returns to it.
-  function enterMapView() {
-    ui.panel.hidden = false;
-    document.body.classList.add('map-open');
-    if (history.state?.kiroroMap !== true) history.pushState({ kiroroMap: true }, '');
-  }
-  function leaveMapView() {
-    document.body.classList.remove('map-open');
-    ui.panel.hidden = true; // the MapLibre instance stays; reopening only resizes it
-  }
-  function closeMapView() {
-    if (history.state?.kiroroMap === true) history.back(); // popstate → leaveMapView
-    else leaveMapView();
-  }
   async function removeMap() {
     if (busy || !confirm('이 브라우저에 저장한 키로로 지도만 삭제할까요?')) return;
-    if (map) { map.remove(); map = null; }
-    leaveMapView();
     await deletePack();
     await caches.delete(DEM_CACHE);
     await refresh();
   }
 
   ui.download.addEventListener('click', download);
-  ui.show.addEventListener('click', () => showMap().catch(error => setStatus(error.message, true)));
   ui.remove.addEventListener('click', () => removeMap().catch(error => setStatus(error.message, true)));
-  ui.close.addEventListener('click', closeMapView);
-  window.addEventListener('popstate', event => {
-    if (event.state?.kiroroMap !== true && document.body.classList.contains('map-open')) leaveMapView();
-  });
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && document.body.classList.contains('map-open')) closeMapView();
-  });
-  window.__kiroroOfflinePoc = { download, showMap, verify: async () => verifyPack(await loadPack()),
-    getMap: () => map, getStatus: () => ui.status.textContent };
+  window.__kiroroOfflinePoc = { download, verify: async () => verifyPack(await loadPack()),
+    getStatus: () => ui.status.textContent };
 
   (async () => {
     if (!browserAllowed()) {

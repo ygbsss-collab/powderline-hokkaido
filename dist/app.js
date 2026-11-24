@@ -761,6 +761,93 @@
     }
   }
 
+// ---- Browser PWA only: the downloaded Kiroro pack (pwa-kiroro-offline.js) shown on THIS Mapbox map. sw.js serves
+// the vector tiles (PMTiles in IndexedDB) and DEM (Cache Storage); no second map. Android / WebView never use it. ----
+const PWA_KIRORO = {
+  regionId: 'kiroro', db: 'powderline-pwa-kiroro-offline-v1', packVersion: 'kiroro-20261120-z15-v1',
+  demCache: 'powderline-pwa-kiroro-dem-v1', bbox: [140.966636, 43.048858, 141.042287, 43.079879]
+};
+const pwaKiroro = { ready: false, active: false, skiData: null };
+function isPwaBrowser() {
+  const cap = window.Capacitor, platform = cap?.getPlatform?.();
+  if (cap?.isNativePlatform?.() || platform === 'android' || platform === 'ios') return false;
+  if (/Android.*(?:;\s*wv\)|Version\/4\.0.*Chrome\/)/i.test(navigator.userAgent)) return false;
+  return 'serviceWorker' in navigator && location.origin === 'https://ygbsss-collab.github.io'
+    && location.pathname.startsWith('/powderline-hokkaido/');
+}
+function readPwaKiroroPack() {
+  return new Promise(resolve => {
+    try {
+      const request = indexedDB.open(PWA_KIRORO.db);
+      request.onupgradeneeded = () => request.transaction.abort(); // no DB yet = nothing downloaded (never create it here)
+      request.onerror = () => resolve(null);
+      request.onsuccess = () => {
+        const db = request.result;
+        try {
+          const get = db.transaction('packs', 'readonly').objectStore('packs').get(PWA_KIRORO.regionId);
+          get.onsuccess = () => { db.close(); resolve(get.result || null); };
+          get.onerror = () => { db.close(); resolve(null); };
+        } catch { db.close(); resolve(null); }
+      };
+    } catch { resolve(null); }
+  });
+}
+// Download completed by the Kiroro page (it sets complete only after verifying every DEM tile).
+async function refreshPwaKiroroPack() {
+  if (!isPwaBrowser()) return false;
+  try {
+    const pack = await readPwaKiroroPack();
+    const ready = Boolean(pack?.complete && pack.version === PWA_KIRORO.packVersion && pack.basemap && pack.skiData?.features?.length)
+      && await caches.has(PWA_KIRORO.demCache);
+    pwaKiroro.ready = ready;
+    pwaKiroro.skiData = ready ? pack.skiData : null;
+  } catch { pwaKiroro.ready = false; pwaKiroro.skiData = null; }
+  return pwaKiroro.ready;
+}
+function pwaKiroroStyle() {
+  const base = new URL('./', document.baseURI).href;
+  return {
+    version: 8,
+    name: 'POWDERLINE Kiroro offline',
+    glyphs: 'mapbox://fonts/mapbox/{fontstack}/{range}.pbf', // labels only when reachable (no offline fonts yet)
+    sources: {
+      'pwa-kiroro-base': { type: 'vector', tiles: [`${base}offline-tiles/kiroro/{z}/{x}/{y}.mvt`], minzoom: 0, maxzoom: 15,
+        bounds: PWA_KIRORO.bbox, attribution: '© OpenStreetMap contributors · Protomaps' },
+      'pwa-kiroro-dem': { type: 'raster-dem', tiles: [`${base}data/offline/kiroro-dem/{z}/{x}/{y}.png`], tileSize: 256,
+        minzoom: 8, maxzoom: 15, encoding: 'terrarium', bounds: PWA_KIRORO.bbox,
+        attribution: 'Terrain: AWS Open Data Terrain Tiles / USGS and NOAA' }
+    },
+    layers: [ // same base look as the Kiroro page; ski / route layers are added by the existing style.load handler
+      { id: 'background', type: 'background', paint: { 'background-color': '#dce8ea' } },
+      { id: 'landcover', type: 'fill', source: 'pwa-kiroro-base', 'source-layer': 'landcover', paint: { 'fill-color': '#b2c8b2', 'fill-opacity': 0.65 } },
+      { id: 'forest', type: 'fill', source: 'pwa-kiroro-base', 'source-layer': 'landuse', filter: ['==', ['get', 'kind'], 'forest'], paint: { 'fill-color': '#8daf9a', 'fill-opacity': 0.6 } },
+      { id: 'water', type: 'fill', source: 'pwa-kiroro-base', 'source-layer': 'water', paint: { 'fill-color': '#9dc6d9' } },
+      { id: 'hillshade', type: 'hillshade', source: 'pwa-kiroro-dem', paint: { 'hillshade-exaggeration': 0.3 } },
+      { id: 'roads', type: 'line', source: 'pwa-kiroro-base', 'source-layer': 'roads', paint: { 'line-color': '#f6f5e8', 'line-width': 1.4 } }
+    ]
+  };
+}
+// Same map instance: setStyle → the existing style.load handler rebuilds terrain / ski / route layers and visibility.
+function activatePwaKiroroOffline() {
+  if (pwaKiroro.active || !pwaKiroro.ready) return pwaKiroro.active;
+  pwaKiroro.active = true;
+  map.setStyle(pwaKiroroStyle(), { diff: false });
+  return true;
+}
+function deactivatePwaKiroroOffline() {
+  if (!pwaKiroro.active || navigator.onLine === false) return; // no network: keep the saved map instead of a blank one
+  pwaKiroro.active = false;
+  map.setStyle(hasMapboxToken ? (MAPBOX_STYLES[state.mapStyle] || MAPBOX_STYLES.satellite) : tokenFallbackStyle, { diff: false });
+}
+// loadSkiData: the pack's Kiroro lifts / runs while the offline style is shown (no network needed).
+function pwaKiroroSkiResponse(region) {
+  if (!pwaKiroro.active || region !== PWA_KIRORO.regionId || !pwaKiroro.skiData) return null;
+  return new Response(JSON.stringify({ ...pwaKiroro.skiData, metadata: { ...(pwaKiroro.skiData.metadata || {}), status: 'available' } }));
+}
+// First start without internet: open straight on the saved Kiroro style (no mapbox:// style request).
+const pwaStartOffline = navigator.onLine === false && await refreshPwaKiroroPack();
+if (pwaStartOffline) pwaKiroro.active = true;
+
 const mapboxToken=await loadMapboxToken();
 const hasMapboxToken=mapboxToken.startsWith('pk.');
 const tokenFallbackStyle={version:8,sources:{},layers:[{id:'token-background',type:'background',paint:{'background-color':'#aebcb3'}}]};
@@ -769,6 +856,10 @@ mapboxgl.accessToken=mapboxToken;
 const initialRegionId = (() => {
   const saved = readLastRegion();
   const select = document.getElementById('region');
+  if (pwaStartOffline && select && [...select.options].some(option => option.value === PWA_KIRORO.regionId)) {
+    select.value = PWA_KIRORO.regionId; // offline start: the only region whose map is saved in this browser
+    return PWA_KIRORO.regionId;
+  }
   if (saved && regions[saved] && !regions[saved].custom && select && [...select.options].some(option => option.value === saved)) {
     select.value = saved;
     return saved;
@@ -776,7 +867,7 @@ const initialRegionId = (() => {
   return 'furano';
 })();
 const initialRegion = regions[initialRegionId] || regions.furano;
-const map=new mapboxgl.Map({container:'map',style:hasMapboxToken?MAPBOX_STYLES.satellite:tokenFallbackStyle,center:initialRegion.center,zoom:initialRegion.zoom,bearing:initialRegion.bearing,pitch:initialRegion.pitch,antialias:true,maxPitch:75});
+const map=new mapboxgl.Map({container:'map',style:pwaStartOffline?pwaKiroroStyle():hasMapboxToken?MAPBOX_STYLES.satellite:tokenFallbackStyle,center:initialRegion.center,zoom:initialRegion.zoom,bearing:initialRegion.bearing,pitch:initialRegion.pitch,antialias:true,maxPitch:75});
 map.addControl(new mapboxgl.NavigationControl({showCompass:true}), 'bottom-right');
 const geolocateControl = new mapboxgl.GeolocateControl({
   positionOptions: { enableHighAccuracy: true },
@@ -3786,7 +3877,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   return true;
 }
 
-  function setTerrain() { if (!map.getSource('mapbox-dem')) map.addSource('mapbox-dem', { type: 'raster-dem', url: 'mapbox://mapbox.mapbox-terrain-dem-v1', tileSize: 512, maxzoom: 14 }); map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.0 }) }
+  function setTerrain() { if (pwaKiroro.active && map.getSource('pwa-kiroro-dem')) { map.setTerrain({ source: 'pwa-kiroro-dem', exaggeration: 1.0 }); return; } if (!map.getSource('mapbox-dem')) map.addSource('mapbox-dem', { type: 'raster-dem', url: 'mapbox://mapbox.mapbox-terrain-dem-v1', tileSize: 512, maxzoom: 14 }); map.setTerrain({ source: 'mapbox-dem', exaggeration: 1.0 }) }
 
   function buildLiftDecorations(liftFeatures) {
     const towerFeatures = [];
@@ -3992,7 +4083,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     map.addLayer({ id: 'gps-recording-line', type: 'line', source: 'gps-recording-route', paint: { 'line-color': '#38bdf8', 'line-width': 4, 'line-opacity': 1 } });
   }
   function restoreLayerVisibility() { setLayerVisibility(['ski-lifts-line', 'ski-lifts-label', 'ski-lifts', 'ski-lift-terminals'], $('#liftsToggle').checked); setLayerVisibility(['ski-runs'], $('#runsToggle').checked); setLayerVisibility(['route-glow', 'route-line', 'route-points', 'route-midpoints', 'route-endpoints-dot', 'route-endpoints-label'], $('#gpxToggle').checked) }
-  map.on('style.load', () => { if (!hasMapboxToken) { $('#mapStatus').textContent = t('mapStatusNeedToken'); return } $('#mapStatus').textContent = t('mapStatusLoading'); setTerrain(); addSkiLayers(); addRouteLayers(); loadSkiData($('#region').value); render(); restoreLayerVisibility() });
+  map.on('style.load', () => { if (!hasMapboxToken && !pwaKiroro.active) { $('#mapStatus').textContent = t('mapStatusNeedToken'); return } $('#mapStatus').textContent = t('mapStatusLoading'); setTerrain(); addSkiLayers(); addRouteLayers(); loadSkiData($('#region').value); render(); restoreLayerVisibility() });
   map.on('sourcedata', e => { if (e.sourceId === 'mapbox-dem' && e.isSourceLoaded) { $('#mapStatus').textContent = t('mapStatusReady'); if (profile.pending) scheduleProfile(80) } });
   map.on('idle', () => { if (profile.pending) scheduleProfile(0) });
   // Ride On 3D check (console only): route source/layers/data after a tilt, to confirm the 3D-route cause on a device.
@@ -4012,6 +4103,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   // state.mapStyle = the style actually shown (confirmed on style.load); mapStyleRequest = the one being loaded.
   let mapStyleRequest = null, mapStyleLoadTimer = null;
   function setMapStyle(style) {
+    if (pwaKiroro.active) return toast('오프라인 지도에서는 지도 스타일을 바꿀 수 없습니다. 홈에서 온라인 지도를 선택해 주세요.');
     if (!hasMapboxToken) return toast(t('toastNeedToken'));
     if (!MAPBOX_STYLES[style]) return;
     if (mapStyleRequest) return; // a style is still loading: ignore rapid extra picks
@@ -4161,9 +4253,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   async function loadSkiData(region) {
     const token = ++skiLoadToken; updateFacilityStatus('loading'); try {
       const serverReady = regions[region]?.skiDataStatus === 'ready' && regions[region]?.skiDataVersion;
-      let response = serverReady
+      let response = pwaKiroroSkiResponse(region) || (serverReady
         ? await fetch(`${SUPABASE_URL}/storage/v1/object/public/ski-data/${encodeURIComponent(region)}.geojson?v=${encodeURIComponent(regions[region].skiDataVersion)}`).catch(() => null)
-        : null;
+        : null);
       if (!response?.ok) response = await fetch(new URL(`./data/ski/${region}.geojson`, document.baseURI)).catch(() => null);
       if (!response?.ok) {
         const info = regions[region], st = info?.skiDataStatus;
@@ -10074,8 +10166,9 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const selectedPayload = selectedRegion ? createOfflineRegionPayload(selectedRegionId, selectedRegion).payload : null;
     const selectedOfflineStatus = offlineRegionStatuses.get(selectedRegionId);
     const onlineReady = mobileHomeMapMode === 'online';
-    const offlineReady = mobileHomeMapMode === 'offline' && Boolean(selectedPayload) &&
-      offlineUsable(selectedOfflineStatus) && !offlineRegionOpenInProgress;
+    const pwaOfflineReady = selectedRegionId === PWA_KIRORO.regionId && pwaKiroro.ready && isPwaBrowser();
+    const offlineReady = mobileHomeMapMode === 'offline' && (pwaOfflineReady || Boolean(selectedPayload) &&
+      offlineUsable(selectedOfflineStatus)) && !offlineRegionOpenInProgress;
     const rideOnDisabled = !(onlineReady || offlineReady);
     document.querySelectorAll('[data-home-map-mode]').forEach(button => {
       button.setAttribute('aria-checked', String(button.dataset.homeMapMode === mobileHomeMapMode));
@@ -10438,6 +10531,11 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     const plugin = getOfflineMapTestPlugin();
     await ensureLocalOfflineCatalog();
     const entries = getOfflineCatalogRegions();
+    if (!plugin?.getOfflineStatus && isPwaBrowser()) { // browser PWA: Kiroro pack saved by pwa-kiroro-offline.js
+      if (await refreshPwaKiroroPack()) offlineRegionStatuses.set(PWA_KIRORO.regionId, { complete: true, downloaded: true });
+      else if (offlineRegionStatuses.get(PWA_KIRORO.regionId)?.complete) offlineRegionStatuses.delete(PWA_KIRORO.regionId);
+      renderOfflineRegionList();
+    }
     if (!plugin?.getOfflineStatus || !entries.length) {
       updateMobileHomeMapModeUi();
       return;
@@ -10839,6 +10937,15 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
 
   async function openOfflineHomeRegion() {
     if (offlineRegionOpenInProgress) return;
+    if (!getOfflineMapTestPlugin() && isPwaBrowser()) { // browser PWA: saved Kiroro map on the same main map
+      if ($('#homeRegionSelect')?.value !== PWA_KIRORO.regionId || !await refreshPwaKiroroPack()) {
+        toast('PWA 오프라인 지도는 다운로드를 완료한 키로로에서만 사용할 수 있습니다.');
+        return;
+      }
+      activatePwaKiroroOffline();
+      mobileHomeRideOn('ride', 'offline');
+      return;
+    }
     const regionId = $('#homeRegionSelect')?.value || '';
     const details = regions[regionId];
     const plugin = getOfflineMapTestPlugin();
@@ -11046,6 +11153,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       if (mobileHomeMapMode === 'offline') void openOfflineHomeRegion();
       else {
         void deactivateNativeMap();
+        deactivatePwaKiroroOffline(); // browser PWA: back to the online style (no-op when it was not shown)
         if (navigator.onLine === false) toast('인터넷에 연결되어 있지 않습니다. 이전에 본 지도 일부만 표시됩니다. 다운로드한 지도는 오프라인 3D로 이용해 주세요.');
         mobileHomeRideOn('ride', 'home');
       }

@@ -1,6 +1,6 @@
 // Bump this version when the app shell changes so installed clients can update together.
 const SHELL_CACHE_PREFIX = 'powderline-pwa-shell-';
-const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v6`;
+const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v7`;
 const SHELL_FILES = [
   './',
   './index.html',
@@ -96,11 +96,77 @@ self.addEventListener('message', event => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
+// ---- Kiroro offline basemap for the main Mapbox map (app.js PWA offline style). The pack is written by
+// pwa-kiroro-offline.js: PMTiles Blob in IndexedDB, DEM PNGs in their own Cache Storage. Read-only here. ----
+importScripts('./vendor/pwa-pmtiles.js'); // global `pmtiles` (same file the Kiroro page uses)
+const KIRORO_DB = 'powderline-pwa-kiroro-offline-v1';
+const KIRORO_PACK_VERSION = 'kiroro-20261120-z15-v1';
+const KIRORO_DEM_CACHE = 'powderline-pwa-kiroro-dem-v1';
+const KIRORO_TILE_PATH = /\/offline-tiles\/kiroro\/(\d{1,2})\/(\d+)\/(\d+)\.mvt$/;
+const KIRORO_DEM_PATH = /\/data\/offline\/kiroro-dem\/\d{1,2}\/\d+\/\d+\.png$/;
+let kiroroArchive = null; // { key, archive }
+
+function readKiroroPack() {
+  return new Promise(resolve => {
+    const request = indexedDB.open(KIRORO_DB);
+    request.onupgradeneeded = () => request.transaction.abort(); // never create the DB here: no pack yet
+    request.onerror = () => resolve(null);
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        const get = db.transaction('packs', 'readonly').objectStore('packs').get('kiroro');
+        get.onsuccess = () => { db.close(); resolve(get.result || null); };
+        get.onerror = () => { db.close(); resolve(null); };
+      } catch { db.close(); resolve(null); }
+    };
+  });
+}
+async function kiroroBasemap() {
+  const pack = await readKiroroPack();
+  if (!pack?.complete || pack.version !== KIRORO_PACK_VERSION || !(pack.basemap instanceof Blob)) { kiroroArchive = null; return null; }
+  const key = `${pack.version}:${pack.basemap.size}:${pack.totalBytes || 0}`;
+  if (kiroroArchive?.key !== key) {
+    const file = new File([pack.basemap], 'kiroro-basemap-z15.pmtiles', { type: 'application/vnd.pmtiles' });
+    kiroroArchive = { key, archive: new pmtiles.PMTiles(new pmtiles.FileSource(file)) };
+  }
+  return kiroroArchive.archive;
+}
+async function kiroroTileResponse(z, x, y) {
+  try {
+    const archive = await kiroroBasemap();
+    if (!archive) return new Response(null, { status: 404 });
+    const tile = await archive.getZxy(z, x, y); // decompressed MVT bytes
+    if (!tile?.data) return new Response(null, { status: 204 }); // no tile at this z/x/y (outside / empty)
+    return new Response(tile.data, { headers: { 'Content-Type': 'application/vnd.mapbox-vector-tile' } });
+  } catch (error) {
+    console.warn('Kiroro offline tile failed:', z, x, y, error?.message || error);
+    return new Response(null, { status: 500 });
+  }
+}
+// Map requests: saved DEM first. 'no-store' (the Kiroro downloader re-verifying a tile) always goes to the network.
+async function kiroroDemResponse(request) {
+  if (request.cache !== 'no-store') {
+    const cached = await (await caches.open(KIRORO_DEM_CACHE)).match(request.url);
+    if (cached) return cached;
+  }
+  return fetch(request);
+}
+
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || url.search) return;
+
+  const tileMatch = KIRORO_TILE_PATH.exec(url.pathname);
+  if (tileMatch) {
+    event.respondWith(kiroroTileResponse(Number(tileMatch[1]), Number(tileMatch[2]), Number(tileMatch[3])));
+    return;
+  }
+  if (KIRORO_DEM_PATH.test(url.pathname)) {
+    event.respondWith(kiroroDemResponse(request));
+    return;
+  }
 
   if (url.href === APP_URL || url.href === INDEX_URL) {
     event.respondWith((async () => {

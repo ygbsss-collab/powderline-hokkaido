@@ -23,13 +23,13 @@
     link.style.textDecoration = 'none';
     return link;
   };
-  const homeLink = makeLink('키로로 PWA 지도 다운로드 / 열기');
+  const homeLink = makeLink('키로로 PWA 지도 다운로드 / 관리');
   homeList.insertAdjacentElement('afterend', homeLink);
   const unsupportedNote = document.createElement('p');
   unsupportedNote.className = 'home-offline-region-empty';
   unsupportedNote.textContent = 'PWA 오프라인 지도는 현재 키로로만 지원합니다. 다른 지역은 Android 앱에서 다운로드할 수 있습니다.';
   homeLink.insertAdjacentElement('afterend', unsupportedNote);
-  const modalLink = makeLink('키로로 PWA 지도 다운로드 / 열기');
+  const modalLink = makeLink('키로로 PWA 지도 다운로드 / 관리');
   webNotice.insertAdjacentElement('afterend', modalLink);
   const noticeText = webNotice.querySelector('span:last-child');
   if (noticeText) noticeText.textContent = 'PWA 오프라인 지도는 키로로만 지원합니다. 다른 지역은 Android 앱에서 다운로드할 수 있습니다.';
@@ -45,13 +45,15 @@
       const state = item.querySelector('.home-offline-region-state, .offline-all-state');
       const stateText = state?.querySelector('span:last-child') || state;
       if (kiroro) {
+        // app.js marks the state 'complete' once the saved pack is verified (offline map selectable on the main map)
+        const saved = Boolean(state?.classList.contains('complete'));
         if (button) {
           button.removeAttribute('data-offline-region-download');
           button.setAttribute('data-pwa-kiroro-download', '');
           button.disabled = false;
-          setText(button, 'PWA 지도 다운로드');
+          setText(button, saved ? '저장 관리' : 'PWA 지도 다운로드');
         }
-        setText(stateText, 'PWA 지도 · 저장 화면에서 상태 확인');
+        setText(stateText, saved ? '다운로드 완료 · 오프라인 지도 선택 가능' : 'PWA 지도 · 저장 화면에서 상태 확인');
       } else {
         if (button) {
           button.removeAttribute('data-offline-region-download');

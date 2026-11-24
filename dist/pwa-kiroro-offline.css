@@ -18,16 +18,4 @@ button { border: 0; border-radius: 10px; padding: 10px 13px; color: #081725; bac
 button.secondary { color: #e7edf6; background: #40516a; }
 button:disabled { opacity: .45; cursor: default; }
 .storage { display: block; margin-top: 10px; color: #a9bbce; }
-.map-panel { position: relative; height: min(72vh, 760px); min-height: 420px; margin-top: 14px; border-radius: 16px; overflow: hidden; border: 1px solid #344a63; }
-#map { width: 100%; height: 100%; }
-.map-status { position: absolute; z-index: 1; top: 10px; left: 10px; max-width: calc(100% - 20px); margin: 0; border-radius: 8px; padding: 6px 9px; background: #102238dc; color: #e7f7fa; font-size: 12px; pointer-events: none; }
 .credit { color: #a9bbce; font-size: 11px; line-height: 1.5; margin: 12px 2px; }
-.maplibregl-popup-content { color: #17283b; }
-.map-close { display: none; }
-/* Saved 3D map open: the management UI is hidden and the map fills the whole viewport. */
-body.map-open { overflow: hidden; }
-body.map-open .topbar, body.map-open .card, body.map-open .credit { display: none; }
-body.map-open .map-panel { position: fixed; inset: 0; z-index: 10; width: 100vw; height: 100vh; height: 100dvh; min-height: 0; margin: 0; border: 0; border-radius: 0; }
-body.map-open .map-close { display: block; position: absolute; z-index: 2; top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); color: #e7edf6; background: #102238e6; box-shadow: 0 2px 8px #0006; }
-body.map-open .map-status { top: calc(max(10px, env(safe-area-inset-top)) + 46px); left: max(10px, env(safe-area-inset-left)); }
-@media (max-width: 500px) { .buttons button { flex: 1 1 100%; } .map-panel { height: 62vh; } }

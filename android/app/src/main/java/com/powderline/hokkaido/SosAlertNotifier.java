@@ -29,10 +29,11 @@ import java.util.Map;
  * Do Not Disturb, the volume and the user's channel settings always apply; nothing is forced.
  */
 public final class SosAlertNotifier {
-    // v2: own SOS sound (res/raw/powderline_sos_emergency.mp3 = dist/assets/audio/05_sos_emergency_final.mp3) and a
+    // v2+: own SOS sound (res/raw/powderline_sos_emergency.mp3 = dist/assets/audio/05_sos_emergency_final.mp3) and a
     // strong repeating vibration. A new id is required: Android never lets an app change an existing channel's sound.
-    static final String CHANNEL_ID = "powderline_sos_alert_v2"; // same id as dist/push-notifications.js
-    private static final String LEGACY_CHANNEL_ID = "powderline_sos_alert"; // system default sound; removed
+    // v3: v2 could already exist on devices with older settings (a channel's sound can never be changed afterwards).
+    static final String CHANNEL_ID = "powderline_sos_alert_v3"; // same id as dist/push-notifications.js
+    private static final String[] LEGACY_CHANNEL_IDS = {"powderline_sos_alert", "powderline_sos_alert_v2"}; // removed
     private static final long[] SOS_VIBRATION = {0, 800, 200, 800, 200, 800, 600}; // FLAG_INSISTENT repeats it
     static final String STATUS_CHANNEL_ID = "powderline_sos_status";
     static final String TAG = "powderline_sos"; // JS stops an alert with removeDeliveredNotifications({id, tag})
@@ -91,7 +92,7 @@ public final class SosAlertNotifier {
     }
 
     private static Uri sosSoundUri(Context context) {
-        return Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + context.getPackageName() + "/" + R.raw.powderline_sos_emergency);
+        return Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + context.getPackageName() + "/raw/powderline_sos_emergency"); // by name: stored in the channel, survives rebuilds
     }
 
     /** Also called from MainActivity.onCreate, so the native channel (with sound + pattern) exists before JS creates it. */
@@ -99,7 +100,9 @@ public final class SosAlertNotifier {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         if (manager == null) return;
-        if (manager.getNotificationChannel(LEGACY_CHANNEL_ID) != null) manager.deleteNotificationChannel(LEGACY_CHANNEL_ID);
+        for (String legacy : LEGACY_CHANNEL_IDS) {
+            if (manager.getNotificationChannel(legacy) != null) manager.deleteNotificationChannel(legacy);
+        }
         // Existing channels are never modified: the user's sound / vibration choices stay in effect.
         if (manager.getNotificationChannel(CHANNEL_ID) == null) {
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "SOS 긴급 알림", NotificationManager.IMPORTANCE_HIGH);

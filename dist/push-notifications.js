@@ -109,7 +109,7 @@
   // ---- SOS channel: HIGH importance, own SOS MP3 + strong vibration (native SosAlertNotifier creates it). Sound/vibration stay editable in
   // Android settings and follow ringer mode / Do Not Disturb. New id: Android never lets an app change an existing
   // channel's sound, vibration or importance. General notifications keep using the default FCM channel. ----
-  const SOS_CHANNEL_ID = 'powderline_sos_alert_v2'; // v2 = own MP3 (res/raw/powderline_sos_emergency) + strong pattern, created natively first
+  const SOS_CHANNEL_ID = 'powderline_sos_alert_v3'; // v3 = own MP3 (res/raw/powderline_sos_emergency) + strong pattern, created natively first
   let sosChannelPromise = null;
   function ensureSosChannel() {
     const push = plugin();
