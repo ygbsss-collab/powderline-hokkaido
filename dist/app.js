@@ -776,7 +776,7 @@ async function activatePwaOfflineRegion(regionId) {
   const api = pwaOfflineApi();
   if (!api || !regionId) return false;
   const meta = await api.getRegionMeta(regionId);
-  if (!(await api.getOfflineStatus({ regionId }))?.complete || !meta) return false;
+  if (!(await api.getOfflineStatus({ regionId }))?.usable || !meta) return false;
   const sameRegion = pwaOffline.active && pwaOffline.regionId === regionId;
   Object.assign(pwaOffline, { active: true, regionId, meta, skiData: await api.readSkiData(regionId) });
   try { localStorage.setItem(PWA_OFFLINE_LAST_REGION_KEY, regionId); } catch {}
@@ -791,7 +791,9 @@ function deactivatePwaOffline({ force = false } = {}) {
 }
 // loadSkiData: the stored lifts / runs of the offline region (no network needed).
 async function pwaOfflineSkiResponse(region) {
-  if (!pwaOffline.active || region !== pwaOffline.regionId || !pwaOffline.skiData) return null;
+  // Offline mode: always the active offline region's stored data (right after an offline restart a server-only region
+  // is not in the region selects yet, so `region` can still be another id).
+  if (!pwaOffline.active || !pwaOffline.regionId || !pwaOffline.skiData) return null;
   return new Response(JSON.stringify({ ...pwaOffline.skiData, metadata: { ...(pwaOffline.skiData.metadata || {}), status: 'available' } }));
 }
 // First start without internet: open straight on a stored region's offline style (no mapbox:// style request).
@@ -10213,7 +10215,7 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   // (opens offline, but parts may be empty until a supplementary download).
   function offlineUsable(status) { return status?.complete === true || status?.usable === true; }
   function offlineMissingText(missing) {
-    const names = { pixel_ratio: '고해상도 위성 영상', context: '주변 저배율 지형', style: '지도 스타일', zoom: '확대 범위', profile_missing: '이전 버전 다운로드', terrain: '지형도', winter: 'WINTER' };
+    const names = { pixel_ratio: '고해상도 위성 영상', context: '주변 저배율 지형', style: '지도 스타일', zoom: '확대 범위', profile_missing: '이전 버전 다운로드', terrain: '지형도', winter: 'WINTER', contour: '등고선', ski: '리프트·슬로프' };
     const parts = Array.isArray(missing) ? [...new Set(missing.map(code => names[code]).filter(Boolean))] : [];
     return parts.length ? ` (${parts.join('·')})` : '';
   }
@@ -10360,6 +10362,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       const skiStatus = details.skiDataStatus;
       const skiNote = skiStatus === 'pending' || skiStatus === 'processing' ? ' · 리프트·슬로프 데이터 준비 중' : skiStatus === 'failed' ? ' · 리프트·슬로프 데이터 준비 실패' : '';
       let stateLabel = androidAvailable ? '다운로드 가능' + skiNote : '웹에서는 다운로드할 수 없습니다 · Powderline Android 앱에서 다운로드 가능';
+      const pwaEstimate = isPwaBrowser() && payload ? pwaOfflineApi().estimate(payload.bounds) : null;
+      if (pwaEstimate) stateLabel += ` · 예상 ${pwaEstimate.mb.toFixed(0)}MB (위성 ${pwaEstimate.sat} · 지형 ${pwaEstimate.vec} · DEM ${pwaEstimate.dem})`;
       let buttonLabel = '다운로드';
       let disabled = !androidAvailable;
       if (!payload) {
@@ -10391,7 +10395,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
         buttonLabel = '다시 다운로드';
       } else if (status?.complete) {
         stateClass = 'complete';
-        stateLabel = '다운로드 완료' + skiNote + (status.pwaBytes ? ` · ${(status.pwaBytes / 1e6).toFixed(1)}MB` : ''); // PWA: stored size
+        stateLabel = '다운로드 완료' + skiNote + (status.pwaBytes ? ` · ${(status.pwaBytes / 1e6).toFixed(1)}MB` : '') // PWA: stored size
+          + ({ complete: ' · 리프트·슬로프 저장 완료', empty: ' · 리프트·슬로프 데이터 없음', failed: ' · 리프트·슬로프 다운로드 실패' }[status.pwaSkiStatus] || ''); // PWA ski data
         buttonLabel = '완료';
         disabled = true;
       } else if (status?.needsUpdate) {
@@ -10572,7 +10577,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
   }
 
   // Native reports real TileStore resource counts (event "offlineDownloadProgress", ~2/s) tagged with regionId + jobId.
-  const OFFLINE_PHASE_LABEL = { style: '스타일', tiles: '지도 타일', context: '주변 타일' };
+  const OFFLINE_PHASE_LABEL = { style: '스타일', tiles: '지도 타일', context: '주변 타일',
+    sat: '위성 다운로드', vec: '지형 다운로드', dem: '고도 데이터 다운로드', contour: '등고선 생성', ski: '리프트·슬로프 저장' }; // PWA phases
   function offlineProgressPercent(p) {
     return p && Number.isFinite(p.percent) && p.percent >= 0 ? Math.min(100, Math.round(p.percent)) : 0;
   }
@@ -10623,6 +10629,8 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
       toast(unavailableReason || 'Android 앱에서만 다운로드할 수 있습니다.');
       return;
     }
+    const pwaEstimate = isPwaBrowser() ? pwaOfflineApi().estimate(payload.bounds) : null;
+    if (pwaEstimate?.warnings.length && !confirm(`${regions[id]?.label || id} 다운로드 범위가 큽니다.\n${pwaEstimate.warnings.join('\n')}\n위성 ${pwaEstimate.sat} · 지형 ${pwaEstimate.vec} · DEM ${pwaEstimate.dem}개, 예상 ${pwaEstimate.mb.toFixed(0)}MB\n그래도 다운로드할까요?`)) return;
     offlineRegionOutcome.delete(id);
     offlineDownloadQueue.push(id);
     renderOfflineRegionList();

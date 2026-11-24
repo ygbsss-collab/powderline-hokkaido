@@ -1,10 +1,11 @@
 // Bump this version when the app shell changes so installed clients can update together.
 const SHELL_CACHE_PREFIX = 'powderline-pwa-shell-';
-const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v8`;
+const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v9`;
 const SHELL_FILES = [
   './',
   './index.html',
   './pwa-offline-store.js',
+  './pwa-offline-contour-worker.js',
   './manifest.webmanifest',
   './config.js',
   './app.js',
@@ -94,7 +95,10 @@ self.addEventListener('message', event => {
 // `powderline-offline-region-{regionId}` holding satellite / vector / DEM tiles and ski data under these same URLs.
 // Not stored = 404 (the map shows nothing there; no network fallback, so offline mode never mixes in online data). ----
 const OFFLINE_REGION_CACHE_PREFIX = 'powderline-offline-region-';
-const OFFLINE_REGION_PATH = /\/offline-tiles\/([A-Za-z0-9_-]{1,64})\/(?:(?:sat|vec|dem)\/\d{1,2}\/\d+\/\d+\.(?:jpg|pbf|png)|ski\.geojson)$/;
+const OFFLINE_REGION_PATH = /\/offline-tiles\/([A-Za-z0-9_-]{1,64})\/(?:(?:sat|vec|dem)\/\d{1,2}\/\d+\/\d+\.(?:jpg|pbf|png)|ski\.geojson|contour\.geojson)$/;
+// Shared offline label font: every requested fontstack gets the stored Noto Sans Bold range (pwa-offline-store.js).
+const OFFLINE_FONT_PATH = /\/offline-tiles\/_fonts\/[^/]+\/(\d+-\d+)\.pbf$/;
+const OFFLINE_FONT_CACHE = 'powderline-offline-fonts';
 async function offlineRegionResponse(regionId, url) {
   try {
     if (await caches.has(OFFLINE_REGION_CACHE_PREFIX + regionId)) {
@@ -111,6 +115,12 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || url.search) return;
 
+  const fontMatch = OFFLINE_FONT_PATH.exec(url.pathname);
+  if (fontMatch) {
+    event.respondWith((async () => (await (await caches.open(OFFLINE_FONT_CACHE)).match(new URL(`./offline-tiles/_fonts/${fontMatch[1]}.pbf`, self.registration.scope).href))
+      || new Response(null, { status: 404, statusText: 'Not stored offline' }))());
+    return;
+  }
   const offlineMatch = OFFLINE_REGION_PATH.exec(url.pathname);
   if (offlineMatch) {
     event.respondWith(offlineRegionResponse(offlineMatch[1], url.href));
