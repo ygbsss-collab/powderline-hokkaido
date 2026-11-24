@@ -1406,22 +1406,14 @@
     <script src="./vendor/mapbox-gl.js"></script>
     <script src="./vendor/supabase.js"></script>
     <script src="./weather.js"></script>
+    <script src="./pwa-offline-store.js"></script>
     <script src="./app.js"></script>
     <script src="./push-notifications.js"></script>
     <script>
       window.addEventListener('load', () => {
-        const capacitor = window.Capacitor;
-        const platform = capacitor?.getPlatform?.();
-        if (capacitor?.isNativePlatform?.() || platform === 'android' || platform === 'ios') return;
-        if (/Android.*(?:;\s*wv\)|Version\/4\.0.*Chrome\/)/i.test(navigator.userAgent)) return;
-        if (window.location.origin !== 'https://ygbsss-collab.github.io'
-          || !window.location.pathname.startsWith('/powderline-hokkaido/')) return;
-        if (!('serviceWorker' in navigator)) return;
-
-        // Browser PWA only: connect the existing offline menu to the isolated Kiroro PoC.
-        const offlineEntryScript = document.createElement('script');
-        offlineEntryScript.src = './pwa-offline-entry.js';
-        document.body.appendChild(offlineEntryScript);
+        // Browser PWA only (same native / WebView / origin checks, in pwa-offline-store.js). Offline regions are
+        // downloaded from the existing offline menu by pwa-offline-store.js + app.js.
+        if (!window.PowderlinePwaOffline?.allowed?.()) return;
 
         // PWA only (after the native / WebView / origin checks above): device notification test row.
         const notifyScript = document.createElement('script');
