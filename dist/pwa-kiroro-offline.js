@@ -14,7 +14,7 @@
   const ui = {
     status: $('status'), progress: $('progress'), storage: $('storage'),
     download: $('download'), show: $('show'), remove: $('remove'),
-    panel: $('mapPanel'), mapStatus: $('mapStatus'),
+    panel: $('mapPanel'), mapStatus: $('mapStatus'), close: $('mapClose'),
   };
   let map = null;
   let busy = false;
@@ -237,7 +237,8 @@
   async function showMap() {
     const pack = await loadPack();
     if (!await verifyPack(pack)) { setStatus('지도 파일이 누락되었습니다. 온라인에서 이어받으세요.', true); return; }
-    if (map) { map.resize(); return; }
+    enterMapView();
+    if (map) { requestAnimationFrame(() => map?.resize()); return; } // same instance, re-sized to the full screen
     if (!protocolRegistered) {
       const archive = new pmtiles.PMTiles(new pmtiles.FileSource(
         new File([pack.basemap], 'kiroro-basemap-z15.pmtiles', { type: 'application/vnd.pmtiles' })));
@@ -274,10 +275,24 @@
       });
     }
   }
+  // Full-screen map view: management UI hidden (body.map-open), one history entry so Back returns to it.
+  function enterMapView() {
+    ui.panel.hidden = false;
+    document.body.classList.add('map-open');
+    if (history.state?.kiroroMap !== true) history.pushState({ kiroroMap: true }, '');
+  }
+  function leaveMapView() {
+    document.body.classList.remove('map-open');
+    ui.panel.hidden = true; // the MapLibre instance stays; reopening only resizes it
+  }
+  function closeMapView() {
+    if (history.state?.kiroroMap === true) history.back(); // popstate → leaveMapView
+    else leaveMapView();
+  }
   async function removeMap() {
     if (busy || !confirm('이 브라우저에 저장한 키로로 지도만 삭제할까요?')) return;
     if (map) { map.remove(); map = null; }
-    ui.panel.hidden = true;
+    leaveMapView();
     await deletePack();
     await caches.delete(DEM_CACHE);
     await refresh();
@@ -286,6 +301,13 @@
   ui.download.addEventListener('click', download);
   ui.show.addEventListener('click', () => showMap().catch(error => setStatus(error.message, true)));
   ui.remove.addEventListener('click', () => removeMap().catch(error => setStatus(error.message, true)));
+  ui.close.addEventListener('click', closeMapView);
+  window.addEventListener('popstate', event => {
+    if (event.state?.kiroroMap !== true && document.body.classList.contains('map-open')) leaveMapView();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && document.body.classList.contains('map-open')) closeMapView();
+  });
   window.__kiroroOfflinePoc = { download, showMap, verify: async () => verifyPack(await loadPack()),
     getMap: () => map, getStatus: () => ui.status.textContent };
 

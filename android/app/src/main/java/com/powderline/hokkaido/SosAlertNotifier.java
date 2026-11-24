@@ -7,10 +7,13 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.AudioAttributes;
+import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
@@ -26,7 +29,11 @@ import java.util.Map;
  * Do Not Disturb, the volume and the user's channel settings always apply; nothing is forced.
  */
 public final class SosAlertNotifier {
-    static final String CHANNEL_ID = "powderline_sos_alert"; // same id as dist/push-notifications.js
+    // v2: own SOS sound (res/raw/powderline_sos_emergency.mp3 = dist/assets/audio/05_sos_emergency_final.mp3) and a
+    // strong repeating vibration. A new id is required: Android never lets an app change an existing channel's sound.
+    static final String CHANNEL_ID = "powderline_sos_alert_v2"; // same id as dist/push-notifications.js
+    private static final String LEGACY_CHANNEL_ID = "powderline_sos_alert"; // system default sound; removed
+    private static final long[] SOS_VIBRATION = {0, 800, 200, 800, 200, 800, 600}; // FLAG_INSISTENT repeats it
     static final String STATUS_CHANNEL_ID = "powderline_sos_status";
     static final String TAG = "powderline_sos"; // JS stops an alert with removeDeliveredNotifications({id, tag})
     static final String EXTRA_STOP_SOS_ID = "powderline_sos_stop";
@@ -83,15 +90,26 @@ public final class SosAlertNotifier {
             || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
     }
 
-    private static void ensureChannels(Context context) {
+    private static Uri sosSoundUri(Context context) {
+        return Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + context.getPackageName() + "/" + R.raw.powderline_sos_emergency);
+    }
+
+    /** Also called from MainActivity.onCreate, so the native channel (with sound + pattern) exists before JS creates it. */
+    static void ensureChannels(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         if (manager == null) return;
+        if (manager.getNotificationChannel(LEGACY_CHANNEL_ID) != null) manager.deleteNotificationChannel(LEGACY_CHANNEL_ID);
         // Existing channels are never modified: the user's sound / vibration choices stay in effect.
         if (manager.getNotificationChannel(CHANNEL_ID) == null) {
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "SOS 긴급 알림", NotificationManager.IMPORTANCE_HIGH);
             channel.setDescription("파티원의 긴급 SOS 위치 공유 알림");
-            channel.enableVibration(true); // default sound of a new channel = system notification sound
+            channel.setSound(sosSoundUri(context), new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()); // own MP3, never the system notification sound
+            channel.enableVibration(true);
+            channel.setVibrationPattern(SOS_VIBRATION);
             channel.enableLights(true);
             channel.setLightColor(0xFFFF0000);
             channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
@@ -136,7 +154,9 @@ public final class SosAlertNotifier {
             .setContentText(body)
             .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_MAX) // Android 7.x; 8+ uses the channel importance
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setDefaults(NotificationCompat.DEFAULT_LIGHTS) // Android 7.x: own sound + pattern below; 8+ uses the channel
+            .setSound(sosSoundUri(context))
+            .setVibrate(SOS_VIBRATION)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setAutoCancel(true)
             .setContentIntent(open)

@@ -1467,7 +1467,16 @@ const rideOffRoute = {
   lastNearestSegmentIndex: null, lastRouteDistanceMeters: null,
   confirmStartedAt: 0, lastFixTime: 0
 };
-const rideAlert = { audio: null, timer: null, tick: 0 };
+const rideAlert = { audio: null, timer: null, tick: 0, buffers: {}, loading: null, playing: {} };
+// Own bundled MP3s (dist/assets/audio: local in the Android app, precached by sw.js for the PWA → offline OK).
+// Never the phone's notification sound.
+const RIDE_ALERT_AUDIO = {
+  approach: './assets/audio/01_ride_on_final.mp3',
+  offroute: './assets/audio/02_warning_final.mp3',
+  back: './assets/audio/03_back_on_track_final.mp3',
+  complete: './assets/audio/04_course_finished_final.mp3',
+  sos: './assets/audio/05_sos_emergency_final.mp3' // mobile web only; the Android app plays it natively (SosAlertNotifier)
+};
 // Any tap during a Ride On session keeps the Web Audio context usable (WebView autoplay policy; e.g. offline-map start).
 document.addEventListener('pointerdown', () => { if (rideOnSession.active) unlockRideAlertAudio(); }, { capture: true, passive: true });
 function unlockRideAlertAudio() {
@@ -1476,59 +1485,81 @@ function unlockRideAlertAudio() {
     if (!Ctx) return;
     if (!rideAlert.audio) rideAlert.audio = new Ctx();
     if (rideAlert.audio.state === 'suspended') rideAlert.audio.resume().catch(() => {});
+    if (!nativeRideAlertSoundPlugin()) loadRideAlertBuffers(); // Android app: native res/raw playback instead
   } catch {}
 }
-function playRideBeep() {
+// Decode the MP3s once into the unlocked context, so later alerts play without a user gesture.
+function loadRideAlertBuffers() {
   const ctx = rideAlert.audio;
-  if (!ctx) return;
-  try {
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-    const now = ctx.currentTime;
-    for (const start of [0, 0.32]) { // two short beeps (local Web Audio, no file / network)
-      const osc = ctx.createOscillator(), gain = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, now + start);
-      gain.gain.exponentialRampToValueAtTime(0.25, now + start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + 0.22);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(now + start);
-      osc.stop(now + start + 0.25);
-    }
-  } catch {}
+  if (!ctx || rideAlert.loading) return;
+  rideAlert.loading = Promise.all(Object.entries(RIDE_ALERT_AUDIO).map(async ([type, url]) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.arrayBuffer();
+      rideAlert.buffers[type] = await new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject));
+    } catch (error) { console.warn('Ride alert audio load failed:', url, error?.message || error); }
+  }));
 }
-// Short tones for the other two Ride alerts (same Web Audio context, no files): approach = two light high beeps,
-// complete = two rising tones. The off-route alert keeps playRideBeep (square 880 Hz, repeated).
-function playRideTones(tones) {
-  const ctx = rideAlert.audio;
-  if (!ctx) return;
-  try {
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-    const now = ctx.currentTime;
-    for (const [start, freq, dur, peak] of tones) {
-      const osc = ctx.createOscillator(), gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.0001, now + start);
-      gain.gain.exponentialRampToValueAtTime(peak, now + start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + start + dur);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(now + start);
-      osc.stop(now + start + dur + 0.03);
-    }
-  } catch {}
+// Android app: RideAlertSound plugin (MediaPlayer on the app's own res/raw MP3s). Web / older APK: Web Audio below.
+let rideAlertSoundPlugin;
+function nativeRideAlertSoundPlugin() {
+  const cap = window.Capacitor;
+  if (cap?.getPlatform?.() !== 'android' || !cap.isPluginAvailable?.('RideAlertSound')) return null;
+  rideAlertSoundPlugin ||= cap.registerPlugin ? cap.registerPlugin('RideAlertSound') : cap.Plugins?.RideAlertSound || null;
+  return rideAlertSoundPlugin;
 }
-function playRideAlertSound(type) {
-  if (type === 'approach') playRideTones([[0, 1175, 0.14, 0.18], [0.2, 1175, 0.14, 0.18]]);
-  else if (type === 'complete') playRideTones([[0, 784, 0.22, 0.22], [0.26, 1175, 0.34, 0.22]]);
-  else playRideBeep();
+function isRideAlertPlaying(type) {
+  const p = rideAlert.playing[type];
+  if (!p) return false;
+  if (p.el) return !p.el.paused && !p.el.ended;
+  return Boolean(rideAlert.audio) && rideAlert.audio.currentTime < p.until;
+}
+function stopRideAlertAudio(type) {
+  const plugin = nativeRideAlertSoundPlugin();
+  if (plugin) { plugin.stop({ type }).catch(() => {}); return; }
+  const p = rideAlert.playing[type];
+  rideAlert.playing[type] = null;
+  try { p?.src?.stop(); } catch {}
+  try { if (p?.el) { p.el.pause(); p.el.currentTime = 0; } } catch {}
+}
+// Plays one alert MP3 from the start (decoded buffer when ready; otherwise an <audio> element, which the Capacitor
+// WebView allows without a gesture). Replaces any still-running copy of the same alert.
+// skipIfPlaying: keep a still-running copy (off-route repeat never overlaps its own sound).
+function playRideAlertSound(type, { skipIfPlaying = false } = {}) {
+  const url = RIDE_ALERT_AUDIO[type];
+  if (!url) return;
+  const plugin = nativeRideAlertSoundPlugin();
+  if (plugin) {
+    plugin.play({ type, skipIfPlaying }).catch(error => console.warn('Ride alert sound failed:', error?.message || error));
+    return;
+  }
+  if (skipIfPlaying && isRideAlertPlaying(type)) return;
+  stopRideAlertAudio(type);
+  const ctx = rideAlert.audio, buffer = rideAlert.buffers[type];
+  try {
+    if (ctx && buffer) {
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(ctx.destination);
+      src.start();
+      rideAlert.playing[type] = { src, until: ctx.currentTime + buffer.duration };
+      return;
+    }
+    const el = new Audio(url);
+    rideAlert.playing[type] = { el };
+    el.play().catch(error => console.warn('Ride alert audio play failed:', error?.message || error));
+  } catch {}
 }
 // Vibration per alert: Android app → native waveform (max amplitude 255 where supported); web → navigator.vibrate
 // pattern; unsupported → silently nothing. Never repeating on its own (the off-route timer calls it again).
 const RIDE_VIBRATION = {
-  approach: { timings: [0, 300, 120, 300], amplitudes: [0, 255, 0, 255] },
-  offroute: { timings: [0, 450, 150, 450], amplitudes: [0, 255, 0, 255] },
-  complete: { timings: [0, 500, 150, 500], amplitudes: [0, 255, 0, 255] }
+  approach: { timings: [0, 200, 100, 300], amplitudes: [0, 255, 0, 255] }, // Ride On [200,100,300]
+  offroute: { timings: [0, 400, 150, 400, 150, 400], amplitudes: [0, 255, 0, 255, 0, 255] }, // Warning
+  back: { timings: [0, 200, 100, 200], amplitudes: [0, 255, 0, 255] }, // Back on Track [200,100,200]
+  complete: { timings: [0, 200, 100, 200, 100, 400], amplitudes: [0, 255, 0, 255, 0, 255] }, // Course Finished
+  sos: { timings: [0, 800, 200, 800, 200, 800, 200, 800, 200, 800], amplitudes: [0, 255, 0, 255, 0, 255, 0, 255, 0, 255] } // SOS (strong, repeated)
 };
 function nativeRideVibrationPlugin() {
   const plugin = window.Capacitor?.getPlatform?.() === 'android' ? getOfflineMapTestPlugin() : null;
@@ -1554,7 +1585,7 @@ function cancelRideVibration() {
   } catch {}
 }
 function rideAlertTick() {
-  playRideAlertSound('offroute');
+  playRideAlertSound('offroute', { skipIfPlaying: true }); // repeats only after the MP3 has finished
   // Vibration every second beep (about every 3 s), as before; now the strong off-route pattern.
   if (rideAlert.tick++ % 2 === 0) vibrateRideAlert('offroute');
 }
@@ -1568,7 +1599,7 @@ function startRideAlert() {
 function stopRideAlert() {
   const wasRunning = Boolean(rideAlert.timer);
   if (rideAlert.timer) { clearInterval(rideAlert.timer); rideAlert.timer = null; }
-  if (wasRunning) cancelRideVibration(); // only an off-route vibration may still be running here
+  if (wasRunning) { cancelRideVibration(); stopRideAlertAudio('offroute'); } // only off-route sound/vibration may still be running here
 }
 function renderOffRouteBanner() {
   const banner = document.getElementById('offRouteBanner');
@@ -1621,6 +1652,8 @@ function checkRideOffRoute(coords, timestamp) {
     stopRideAlert();
     Object.assign(rideOffRoute, { offRoute: false, offRouteMuted: false, offRouteConfirmCount: 0, confirmStartedAt: 0 });
     renderOffRouteBanner();
+    playRideAlertSound('back'); // once per off-route episode (after stopRideAlert cancels the warning)
+    vibrateRideAlert('back');
     return true; // returned this fix
   }
   renderOffRouteBanner();
@@ -2856,6 +2889,7 @@ async function syncPartySosRuntimeForCurrentParty() {
         if (incoming?.requester_id !== state.session?.user?.id) {
           if (payload.eventType === 'INSERT' && incoming?.status === 'active') {
             toast(`${incoming.requester_name}님의 긴급 SOS가 발생했습니다. 지도에서 위치를 확인하세요.`);
+            if (!window.Capacitor?.isNativePlatform?.()) { playRideAlertSound('sos'); vibrateRideAlert('sos'); } // app: native FCM alert
           } else if (payload.eventType === 'UPDATE' && incoming?.status === 'resolved') {
             toast(`${incoming.requester_name}님의 SOS가 종료되었습니다.`);
           }

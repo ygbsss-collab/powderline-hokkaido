@@ -106,17 +106,17 @@
     };
   }
 
-  // ---- SOS channel: HIGH importance, system default notification sound + vibration. Sound/vibration stay editable in
+  // ---- SOS channel: HIGH importance, own SOS MP3 + strong vibration (native SosAlertNotifier creates it). Sound/vibration stay editable in
   // Android settings and follow ringer mode / Do Not Disturb. New id: Android never lets an app change an existing
   // channel's sound, vibration or importance. General notifications keep using the default FCM channel. ----
-  const SOS_CHANNEL_ID = 'powderline_sos_alert';
+  const SOS_CHANNEL_ID = 'powderline_sos_alert_v2'; // v2 = own MP3 (res/raw/powderline_sos_emergency) + strong pattern, created natively first
   let sosChannelPromise = null;
   function ensureSosChannel() {
     const push = plugin();
     if (!push?.createChannel || !isAndroidNative()) return Promise.resolve(false);
     sosChannelPromise ||= Promise.resolve(push.createChannel({
       id: SOS_CHANNEL_ID, name: 'SOS 긴급 알림', description: '파티원의 긴급 SOS 위치 공유 알림',
-      importance: 4, visibility: 1, vibration: true, lights: true, lightColor: '#FF0000'
+      importance: 4, visibility: 1, vibration: true, lights: true, lightColor: '#FF0000', sound: 'powderline_sos_emergency'
     })).then(() => true, error => {
       sosChannelPromise = null;
       console.warn('SOS notification channel failed:', error?.message || error);

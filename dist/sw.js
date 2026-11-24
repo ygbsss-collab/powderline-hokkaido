@@ -1,6 +1,6 @@
 // Bump this version when the app shell changes so installed clients can update together.
 const SHELL_CACHE_PREFIX = 'powderline-pwa-shell-';
-const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v5`;
+const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v6`;
 const SHELL_FILES = [
   './',
   './index.html',
@@ -46,7 +46,13 @@ const SHELL_FILES = [
   './assets/avatars/avatar-05.webp',
   './assets/avatars/avatar-06.webp',
   './assets/avatars/avatar-07.webp',
-  './assets/avatars/avatar-08.webp'
+  './assets/avatars/avatar-08.webp',
+  // Ride On / SOS alert sounds (app.js): must play offline on the slope.
+  './assets/audio/01_ride_on_final.mp3',
+  './assets/audio/02_warning_final.mp3',
+  './assets/audio/03_back_on_track_final.mp3',
+  './assets/audio/04_course_finished_final.mp3',
+  './assets/audio/05_sos_emergency_final.mp3'
 ];
 const SHELL_URLS = new Set(SHELL_FILES.map(path => new URL(path, self.registration.scope).href));
 const APP_URL = new URL('./', self.registration.scope).href;

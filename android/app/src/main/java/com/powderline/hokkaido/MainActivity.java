@@ -9,7 +9,9 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(OfflineMapTestPlugin.class);
         registerPlugin(GpxFileSaverPlugin.class);
+        registerPlugin(RideAlertSoundPlugin.class); // course alert MP3s (res/raw), called from app.js
         super.onCreate(savedInstanceState);
+        SosAlertNotifier.ensureChannels(this); // before push-notifications.js can create the SOS channel without sound/pattern
     }
 
     // SOS notification "위치 보기" / tap: stop the repeating alert at once, then Capacitor routes the extras to JS.
