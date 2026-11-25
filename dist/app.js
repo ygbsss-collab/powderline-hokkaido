@@ -599,6 +599,10 @@
     elapsedBeforePauseMs: 0, lastResumedAt: null, watcherId: null, webWatcherId: null,
     watcherGeneration: 0, lastError: '', initialized: false
   };
+  // Read-only activity flag for app-update.js: no update prompt during Ride On, party ride or a GPS recording.
+  window.PowderlineActivity = Object.freeze({
+    busy: () => Boolean(rideOnSession.active || gpsRecording.status === 'recording' || gpsRecording.status === 'paused' || isPartyRideActive())
+  });
   let backgroundGeolocationPlugin = null;
   let localNotificationsPlugin = null;
   let gpsRecordingUiTimer = null;

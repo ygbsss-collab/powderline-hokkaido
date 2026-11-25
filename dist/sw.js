@@ -1,6 +1,6 @@
 // Bump this version when the app shell changes so installed clients can update together.
 const SHELL_CACHE_PREFIX = 'powderline-pwa-shell-';
-const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v9`;
+const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v13`;
 const SHELL_FILES = [
   './',
   './index.html',
@@ -12,6 +12,8 @@ const SHELL_FILES = [
   './weather.js',
   './push-notifications.js',
   './pwa-notify.js',
+  './pwa-install.js',
+  './app-update.js',
   './styles.css',
   './weather.css',
   './vendor/mapbox-gl.js',

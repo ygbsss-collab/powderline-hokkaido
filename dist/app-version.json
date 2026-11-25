@@ -1,0 +1,10 @@
+{
+  "android": {
+    "versionCode": 2,
+    "versionName": "1.1.0",
+    "apkUrl": "https://github.com/ygbsss-collab/powderline-hokkaido/releases/latest/download/POWDERLINE.apk",
+    "releaseNotes": [
+      "앱 업데이트 알림 및 설정 메뉴의 버전 표시·업데이트 확인"
+    ]
+  }
+}

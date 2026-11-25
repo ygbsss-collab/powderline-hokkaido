@@ -43,6 +43,24 @@
 body[data-native-android="1"] .home-mode-card .home-offline-regions-panel { max-height: none; display: block; }
 body[data-native-android="1"] .home-mode-card .home-offline-regions-panel[hidden] { display: none !important; }
 @media (max-height: 640px) { .home-mode-card { min-height: 112px; } }
+/* PWA / mobile web only: the map-mode card never shrinks below its content, so it has no inner vertical scroll.
+   It still grows into spare height; spacing is tightened (more on short screens) so every item fits inside the card. */
+@media (max-width: 768px) {
+  body:not([data-native-android="1"]) .home-mode-card { flex: 1 0 auto; min-height: 0; overflow: hidden; gap: 6px; padding: 9px 10px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-map-mode-option { min-height: 46px; padding: 6px 10px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-offline-regions-heading { margin-bottom: 5px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-offline-region-item { min-height: 50px; padding: 7px 10px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-offline-all-btn { min-height: 36px; margin-top: 6px; padding: 6px 14px; }
+}
+@media (max-width: 768px) and (max-height: 700px) {
+  body:not([data-native-android="1"]) .home-mode-card { gap: 4px; padding: 7px 9px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-map-mode-option { min-height: 40px; padding: 5px 8px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-map-mode-hint { min-height: 12px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-offline-regions-heading { margin-bottom: 4px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-offline-region-item { min-height: 44px; padding: 5px 9px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-offline-region-item button { min-height: 32px; padding: 5px 9px; }
+  body:not([data-native-android="1"]) .home-mode-card .home-offline-all-btn { min-height: 32px; margin-top: 4px; padding: 5px 12px; }
+}
 /* Weather card: shared snow-mountain silhouette + per-weather overlay colour (data-wx-group set from weather_code). */
 .home-weather-hero {
   --wx-overlay: linear-gradient(135deg, rgba(30, 41, 59, .92), rgba(15, 23, 42, .88));
