@@ -14282,37 +14282,46 @@ async function startPartyMemberSelectedRideOn() {
 
   // Browsers / PWA (never the Android app, which uses the App plugin above): one guard history entry above the page's
   // base entry, so the system / browser back runs the same in-app back logic (handleAndroidBackButton) as the APK.
-  // Chrome skips history entries pushed without a user gesture, so the guard is (re)armed on the user's own taps / keys
-  // and on in-app screen changes. Only base + guard ever exist (weather.js pushes and pops its own entries on top).
-  // Installed PWA: the first back on home shows a toast and leaves no guard, so a second back within 2.5 s closes it.
+  // Browsers skip history entries that a page pushed without a user gesture, so the guard is only ever PUSHED during a
+  // real tap / key. After a handled back it is not pushed again: history.go(1) steps forward onto the very same guard
+  // entry (a traversal never marks anything skippable). Only base + guard exist (weather.js pops its own entries).
+  // Final home screen of the installed PWA: the APK's exit question (no double-press timer).
   function initBrowserBackGuard() {
     const cap = window.Capacitor;
     if (cap?.getPlatform?.() === 'android' || cap?.isNativePlatform?.()) return;
     const isStandalonePwa = () => navigator.standalone === true
       || ['standalone', 'fullscreen', 'minimal-ui'].some(mode => window.matchMedia?.(`(display-mode: ${mode})`)?.matches);
-    const HOME_EXIT_WINDOW_MS = 2500;
     const BASE_STATE = { plBase: true };
     const GUARD_STATE = { plGuard: true };
-    let homeExitUntil = 0;   // installed PWA on home: a second back before this time leaves the app
-    let homeExitTimer = null;
-    let leaving = false;     // a deliberate exit is in progress: no re-arm, no second history.back()
+    let leaving = false;      // a deliberate exit is in progress: no restore, no second history.back()
     let leaveTimer = null;
-    let handling = false;    // one back at a time
+    let handling = false;     // one back at a time
     let userActivated = Boolean(navigator.userActivation?.hasBeenActive);
     let guardReady = false;
     let rebuildingGuard = false;
+    let forwardGuard = false; // we are on the base and the guard we just left is still the forward entry
 
     const isWeatherEntry = () => Boolean(history.state?.plWeather);
-    // Push one guard only after this document has received a real user activation and while its base is current.
+    const activeGesture = () => !navigator.userActivation || navigator.userActivation.isActive;
+    // Push the guard only during a real user activation and while the base is current.
     const armGuard = () => {
-      if (leaving || rebuildingGuard || !userActivated || isWeatherEntry() || !history.state?.plBase) return false;
+      if (leaving || rebuildingGuard || !userActivated || !activeGesture() || isWeatherEntry() || !history.state?.plBase) return false;
       try {
         history.pushState(GUARD_STATE, '');
         guardReady = true;
+        forwardGuard = false;
         return true;
       } catch { return false; }
     };
-    const cancelHomeExit = () => { homeExitUntil = 0; clearTimeout(homeExitTimer); };
+    // After a handled back: step forward onto the guard we came from (no new entry); else arm on the next tap.
+    const restoreGuard = () => {
+      if (leaving || !history.state?.plBase) return;
+      if (forwardGuard) {
+        forwardGuard = false;
+        try { history.go(1); return; } catch { }
+      }
+      armGuard();
+    };
     // Popups that exist only on the web; closed here so the shared APK back list stays unchanged.
     const closeBrowserOnlyPopup = () => clickVisibleControl('#partySosConfirmModal', '#partySosConfirmCancel')
       || clickVisibleControl('#pwaInstallModal', '#pwaInstallModal .pwa-install-close-btn');
@@ -14331,7 +14340,6 @@ async function startPartyMemberSelectedRideOn() {
       const activation = navigator.userActivation;
       if (activation && !activation.isActive && !activation.hasBeenActive) return false;
       userActivated = true;
-      cancelHomeExit();
       return true;
     };
     const ensureActivatedGuard = event => {
@@ -14347,7 +14355,7 @@ async function startPartyMemberSelectedRideOn() {
     window.addEventListener('pointerup', ensureActivatedGuard);
     window.addEventListener('click', ensureActivatedGuard);
     window.addEventListener('keydown', ensureActivatedGuard);
-    // In-app screen changes (tabs, menus, login/signup): keep a guard under the new screen.
+    // In-app screen changes (tabs, menus, login/signup) happen inside a tap: keep a guard under the new screen.
     new MutationObserver(() => armGuard()).observe(document.body, { attributes: true, attributeFilter: ['data-mobile-view', 'data-mobile-auth'] });
     window.addEventListener('popstate', async (event) => {
       if (rebuildingGuard) {
@@ -14357,31 +14365,50 @@ async function startPartyMemberSelectedRideOn() {
         armGuard(); // pushing from the previous base also drops the old forward guard, so history never grows.
         return;
       }
-      // weather.js handled its own entry; forward onto the guard is not a back; ignore while leaving or busy.
+      // weather.js handled its own entry (its page / camera closed).
       if (event?.plWeatherHandled) {
         // If weather was opened over a retained pre-activation guard, rebuild that guard only after weather closes.
         if (userActivated && event.state?.plGuard && !guardReady) beginGuardRebuild();
         return;
       }
+      // Forward onto the guard (our own history.go(1) included) is not a back; ignore while leaving.
       if (leaving || event.state?.plGuard) return;
-      if (handling) { armGuard(); return; }
+      forwardGuard = Boolean(event.state?.plBase && guardReady); // we just left the guard: it is the forward entry
+      if (handling) { restoreGuard(); return; }
       handling = true;
       let consumed = false;
       try { consumed = closeBrowserOnlyPopup() || Boolean(await handleAndroidBackButton(null)); } finally { handling = false; }
-      if (consumed) { cancelHomeExit(); armGuard(); return; }
-      // Nothing left to go back to inside the app (home / map).
+      // Web map screen with no earlier screen recorded: back goes home (the APK path itself is unchanged).
+      if (!consumed && document.body.dataset.mobileView === 'map' && typeof setMobileAppView === 'function') {
+        state.backNavigating = true;
+        try { setMobileAppView('home'); } finally { state.backNavigating = false; }
+        consumed = true;
+      }
+      if (consumed) { restoreGuard(); return; }
+      // Final home screen of the installed PWA: the APK's exit question.
       if (isStandalonePwa()) {
-        if (Date.now() < homeExitUntil) return; // unreachable in practice: no guard was left, the system closed the app
-        homeExitUntil = Date.now() + HOME_EXIT_WINDOW_MS;
-        toast('한 번 더 뒤로가기를 누르면 앱이 종료됩니다.');
-        clearTimeout(homeExitTimer);
-        homeExitTimer = setTimeout(() => { homeExitUntil = 0; armGuard(); }, HOME_EXIT_WINDOW_MS);
+        if (exitConfirmationOpen) return;
+        exitConfirmationOpen = true;
+        let exit = false;
+        try { exit = window.confirm('POWDERLINE 앱을 종료하시겠습니까?'); } finally { exitConfirmationOpen = false; }
+        if (!exit) { restoreGuard(); return; } // cancel: stay on home with the guard back in place
+        // Exit as far as the browser allows: close the app window, else leave the app's history. A WebAPK started at
+        // its first entry cannot be closed by script; then no guard is left, so the next system back closes it.
+        leaving = true;
+        try { window.close(); } catch { }
+        setTimeout(() => {
+          if (document.visibilityState !== 'visible') return;
+          try { history.back(); } catch { }
+          setTimeout(() => { if (document.visibilityState === 'visible') toast('뒤로가기를 한 번 더 누르면 앱이 종료됩니다.'); }, 400);
+        }, 150);
+        clearTimeout(leaveTimer);
+        leaveTimer = setTimeout(() => { leaving = false; }, 3000); // still open after a while: the next tap re-arms
         return;
       }
       // Browser tab: leave the page once (to the previous site). If nothing happens (no previous page), stay usable.
       leaving = true;
       clearTimeout(leaveTimer);
-      leaveTimer = setTimeout(() => { leaving = false; armGuard(); }, 1500);
+      leaveTimer = setTimeout(() => { leaving = false; restoreGuard(); }, 1500);
       history.back();
     });
   }
