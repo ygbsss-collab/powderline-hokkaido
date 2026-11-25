@@ -14291,33 +14291,79 @@ async function startPartyMemberSelectedRideOn() {
     const isStandalonePwa = () => navigator.standalone === true
       || ['standalone', 'fullscreen', 'minimal-ui'].some(mode => window.matchMedia?.(`(display-mode: ${mode})`)?.matches);
     const HOME_EXIT_WINDOW_MS = 2500;
+    const BASE_STATE = { plBase: true };
+    const GUARD_STATE = { plGuard: true };
     let homeExitUntil = 0;   // installed PWA on home: a second back before this time leaves the app
     let homeExitTimer = null;
     let leaving = false;     // a deliberate exit is in progress: no re-arm, no second history.back()
     let leaveTimer = null;
     let handling = false;    // one back at a time
-    // Push the single guard only while the base entry is current: never twice, never above weather.js entries.
+    let userActivated = Boolean(navigator.userActivation?.hasBeenActive);
+    let guardReady = false;
+    let rebuildingGuard = false;
+
+    const isWeatherEntry = () => Boolean(history.state?.plWeather);
+    // Push one guard only after this document has received a real user activation and while its base is current.
     const armGuard = () => {
-      if (leaving || !history.state?.plBase) return;
-      try { history.pushState({ plGuard: true }, ''); } catch { }
+      if (leaving || rebuildingGuard || !userActivated || isWeatherEntry() || !history.state?.plBase) return false;
+      try {
+        history.pushState(GUARD_STATE, '');
+        guardReady = true;
+        return true;
+      } catch { return false; }
     };
     const cancelHomeExit = () => { homeExitUntil = 0; clearTimeout(homeExitTimer); };
     // Popups that exist only on the web; closed here so the shared APK back list stays unchanged.
     const closeBrowserOnlyPopup = () => clickVisibleControl('#partySosConfirmModal', '#partySosConfirmCancel')
       || clickVisibleControl('#pwaInstallModal', '#pwaInstallModal .pwa-install-close-btn');
     try {
-      // A reload keeps the entries: stay on an existing guard instead of stacking a new base + guard.
-      if (!history.state?.plGuard) history.replaceState({ plBase: true }, '');
+      // A fresh document starts at its base. A reload can retain an old guard; it is rebuilt after activation below.
+      if (!history.state?.plGuard && !history.state?.plBase && !isWeatherEntry()) history.replaceState(BASE_STATE, '');
     } catch { return; }
-    armGuard(); // may be skipped by Chrome until the first tap re-arms it below
-    const rearmByUser = () => { cancelHomeExit(); armGuard(); };
-    window.addEventListener('pointerdown', rearmByUser, true);
-    window.addEventListener('keydown', rearmByUser, true);
+
+    const beginGuardRebuild = () => {
+      if (rebuildingGuard || leaving || isWeatherEntry() || !history.state?.plGuard) return;
+      rebuildingGuard = true;
+      try { history.back(); } catch { rebuildingGuard = false; }
+    };
+    const acceptUserActivation = event => {
+      if (event?.isTrusted === false) return false;
+      const activation = navigator.userActivation;
+      if (activation && !activation.isActive && !activation.hasBeenActive) return false;
+      userActivated = true;
+      cancelHomeExit();
+      return true;
+    };
+    const ensureActivatedGuard = event => {
+      if (!acceptUserActivation(event) || isWeatherEntry()) return;
+      if (history.state?.plBase) armGuard();
+      // A click follows pointerup. Defer retained-guard rebuilding until that click so a weather-card click can
+      // install its own history entry first; pointerup still creates the guard immediately on a fresh base.
+      else if (event?.type !== 'pointerup' && history.state?.plGuard && !guardReady) beginGuardRebuild();
+    };
+    // pointerdown only records activation. Guard creation waits for a completed gesture; click/keyboard cover iOS
+    // and accessibility activation. Bubble phase lets weather.js push its own entry first, which we leave untouched.
+    window.addEventListener('pointerdown', event => { acceptUserActivation(event); }, true);
+    window.addEventListener('pointerup', ensureActivatedGuard);
+    window.addEventListener('click', ensureActivatedGuard);
+    window.addEventListener('keydown', ensureActivatedGuard);
     // In-app screen changes (tabs, menus, login/signup): keep a guard under the new screen.
     new MutationObserver(() => armGuard()).observe(document.body, { attributes: true, attributeFilter: ['data-mobile-view', 'data-mobile-auth'] });
     window.addEventListener('popstate', async (event) => {
+      if (rebuildingGuard) {
+        rebuildingGuard = false;
+        if (event?.plWeatherHandled || isWeatherEntry()) return;
+        try { history.replaceState(BASE_STATE, ''); } catch { return; }
+        armGuard(); // pushing from the previous base also drops the old forward guard, so history never grows.
+        return;
+      }
       // weather.js handled its own entry; forward onto the guard is not a back; ignore while leaving or busy.
-      if (event?.plWeatherHandled || leaving || event.state?.plGuard) return;
+      if (event?.plWeatherHandled) {
+        // If weather was opened over a retained pre-activation guard, rebuild that guard only after weather closes.
+        if (userActivated && event.state?.plGuard && !guardReady) beginGuardRebuild();
+        return;
+      }
+      if (leaving || event.state?.plGuard) return;
       if (handling) { armGuard(); return; }
       handling = true;
       let consumed = false;
