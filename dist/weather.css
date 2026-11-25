@@ -61,6 +61,27 @@ body[data-native-android="1"] .home-mode-card .home-offline-regions-panel[hidden
   body:not([data-native-android="1"]) .home-mode-card .home-offline-region-item button { min-height: 32px; padding: 5px 9px; }
   body:not([data-native-android="1"]) .home-mode-card .home-offline-all-btn { min-height: 32px; margin-top: 4px; padding: 5px 12px; }
 }
+/* PWA / mobile web home: the info area (weather + map-mode cards) never shrinks below its content, so the map-mode card
+   can no longer spill over RIDE ON (it pushes RIDE ON down; the home screen itself scrolls on short phones). The
+   country / ski area / course selects are lower (44 px = minimum touch height) with tighter gaps to make room. */
+@media (max-width: 768px) {
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-info-cards { flex: 1 0 auto; }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-filter-grid { gap: 7px; margin-top: 2px; }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-field-label { margin-bottom: 1px; line-height: 1.2; }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-select { height: 44px; padding-top: 0; padding-bottom: 0; }
+  /* The map HUD (map-only UI: region/course bar, rail buttons, info button, "라이드온 하기" FAB) never shows over the home
+     screen, even if it was left visible; the map screen shows it as before. The bottom nav is outside #mobileHud. */
+  body:not([data-native-android="1"])[data-mobile-view="home"] #mobileHud { display: none !important; }
+}
+/* Browser-tab heights (URL bar visible): outer spacing only, cards unchanged. */
+@media (max-width: 768px) and (max-height: 760px) {
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-header { padding-top: calc(8px + env(safe-area-inset-top)); }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-main { gap: 8px; padding-top: 8px; padding-bottom: 6px; }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-info-cards { gap: 8px; }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-cta { padding: 0; }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-ride-on-btn { padding-top: 10px; padding-bottom: 10px; }
+  body:not([data-native-android="1"]) #mobileHomeScreen .home-credit { padding-bottom: 0; }
+}
 /* Weather card: shared snow-mountain silhouette + per-weather overlay colour (data-wx-group set from weather_code). */
 .home-weather-hero {
   --wx-overlay: linear-gradient(135deg, rgba(30, 41, 59, .92), rgba(15, 23, 42, .88));

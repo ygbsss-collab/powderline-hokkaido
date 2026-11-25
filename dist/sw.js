@@ -1,6 +1,6 @@
 // Bump this version when the app shell changes so installed clients can update together.
 const SHELL_CACHE_PREFIX = 'powderline-pwa-shell-';
-const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v15`;
+const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v16`;
 const SHELL_FILES = [
   './',
   './index.html',

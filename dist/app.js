@@ -14276,39 +14276,62 @@ async function startPartyMemberSelectedRideOn() {
     return false;
   }
 
-  // Plain browsers: keep one guard history entry so the browser back button runs the same in-app back logic.
+  // Browsers / PWA (never the Android app, which uses the App plugin above): one guard history entry above the page's
+  // base entry, so the system / browser back runs the same in-app back logic (handleAndroidBackButton) as the APK.
+  // Chrome skips history entries pushed without a user gesture, so the guard is (re)armed on the user's own taps / keys
+  // and on in-app screen changes. Only base + guard ever exist (weather.js pushes and pops its own entries on top).
+  // Installed PWA: the first back on home shows a toast and leaves no guard, so a second back within 2.5 s closes it.
   function initBrowserBackGuard() {
-    if (window.Capacitor?.getPlatform?.() === 'android') return;
-    const installedPwa = !window.Capacitor?.isNativePlatform?.()
-      && window.location.origin === 'https://ygbsss-collab.github.io'
-      && window.location.pathname.startsWith('/powderline-hokkaido/')
-      && (window.matchMedia?.('(display-mode: standalone)')?.matches || navigator.standalone === true);
-    let lastPwaHomeBackAt = 0;
-    let leavingBrowser = false;
-    const guard = () => {
-      if (history.state?.plGuard) return;
+    const cap = window.Capacitor;
+    if (cap?.getPlatform?.() === 'android' || cap?.isNativePlatform?.()) return;
+    const isStandalonePwa = () => navigator.standalone === true
+      || ['standalone', 'fullscreen', 'minimal-ui'].some(mode => window.matchMedia?.(`(display-mode: ${mode})`)?.matches);
+    const HOME_EXIT_WINDOW_MS = 2500;
+    let homeExitUntil = 0;   // installed PWA on home: a second back before this time leaves the app
+    let homeExitTimer = null;
+    let leaving = false;     // a deliberate exit is in progress: no re-arm, no second history.back()
+    let leaveTimer = null;
+    let handling = false;    // one back at a time
+    // Push the single guard only while the base entry is current: never twice, never above weather.js entries.
+    const armGuard = () => {
+      if (leaving || !history.state?.plBase) return;
       try { history.pushState({ plGuard: true }, ''); } catch { }
     };
-    try { history.replaceState({ plBase: true }, ''); } catch { return; }
-    guard();
+    const cancelHomeExit = () => { homeExitUntil = 0; clearTimeout(homeExitTimer); };
+    // Popups that exist only on the web; closed here so the shared APK back list stays unchanged.
+    const closeBrowserOnlyPopup = () => clickVisibleControl('#partySosConfirmModal', '#partySosConfirmCancel')
+      || clickVisibleControl('#pwaInstallModal', '#pwaInstallModal .pwa-install-close-btn');
+    try {
+      // A reload keeps the entries: stay on an existing guard instead of stacking a new base + guard.
+      if (!history.state?.plGuard) history.replaceState({ plBase: true }, '');
+    } catch { return; }
+    armGuard(); // may be skipped by Chrome until the first tap re-arms it below
+    const rearmByUser = () => { cancelHomeExit(); armGuard(); };
+    window.addEventListener('pointerdown', rearmByUser, true);
+    window.addEventListener('keydown', rearmByUser, true);
+    // In-app screen changes (tabs, menus, login/signup): keep a guard under the new screen.
+    new MutationObserver(() => armGuard()).observe(document.body, { attributes: true, attributeFilter: ['data-mobile-view', 'data-mobile-auth'] });
     window.addEventListener('popstate', async (event) => {
-      if (event?.plWeatherHandled || leavingBrowser) return; // weather.js owns its entry; never re-push while leaving
-      const consumed = await handleAndroidBackButton(null);
-      if (consumed) {
-        lastPwaHomeBackAt = 0;
-        guard();
+      // weather.js handled its own entry; forward onto the guard is not a back; ignore while leaving or busy.
+      if (event?.plWeatherHandled || leaving || event.state?.plGuard) return;
+      if (handling) { armGuard(); return; }
+      handling = true;
+      let consumed = false;
+      try { consumed = closeBrowserOnlyPopup() || Boolean(await handleAndroidBackButton(null)); } finally { handling = false; }
+      if (consumed) { cancelHomeExit(); armGuard(); return; }
+      // Nothing left to go back to inside the app (home / map).
+      if (isStandalonePwa()) {
+        if (Date.now() < homeExitUntil) return; // unreachable in practice: no guard was left, the system closed the app
+        homeExitUntil = Date.now() + HOME_EXIT_WINDOW_MS;
+        toast('한 번 더 뒤로가기를 누르면 앱이 종료됩니다.');
+        clearTimeout(homeExitTimer);
+        homeExitTimer = setTimeout(() => { homeExitUntil = 0; armGuard(); }, HOME_EXIT_WINDOW_MS);
         return;
       }
-      if (installedPwa && history.state?.plBase) {
-        const now = Date.now();
-        if (now - lastPwaHomeBackAt > 2500) {
-          lastPwaHomeBackAt = now;
-          guard();
-          toast('한 번 더 뒤로가기를 누르면 앱이 종료됩니다.');
-          return;
-        }
-      }
-      leavingBrowser = true;
+      // Browser tab: leave the page once (to the previous site). If nothing happens (no previous page), stay usable.
+      leaving = true;
+      clearTimeout(leaveTimer);
+      leaveTimer = setTimeout(() => { leaving = false; armGuard(); }, 1500);
       history.back();
     });
   }
