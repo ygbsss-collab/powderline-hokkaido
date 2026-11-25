@@ -7761,25 +7761,21 @@ body[data-pc-web="true"] .pc-map-controls > .party-members-map-btn:hover { backg
    (a new index.html with an older cached styles.css would otherwise render bare white browser buttons). */
 .app-install-cards {
   --pwa-install-styled: 1;
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; width: 100%; margin-top: 20px;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; margin-top: 12px;
 }
 .app-install-cards[hidden] { display: none; }
+/* Compact one-row card (~46 px): small icon | title + action line */
 .app-install-card {
-  display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px; box-sizing: border-box;
+  display: flex; min-width: 0; align-items: center; gap: 8px; min-height: 46px; padding: 7px 10px; box-sizing: border-box;
   border: 1px solid #304b60; border-radius: 10px; background: #14222e; color: #e2e8f0; font: inherit; text-align: left; text-decoration: none;
   cursor: pointer; touch-action: manipulation; -webkit-appearance: none; appearance: none; -webkit-tap-highlight-color: transparent;
   transition: background-color .15s ease, border-color .15s ease;
 }
 .app-install-card .material-symbols-outlined { color: #38bdf8; }
-.app-install-card-icon { font-size: 26px; }
-.app-install-card-text { display: flex; min-width: 0; max-width: 100%; flex-direction: column; gap: 2px; }
-.app-install-card-text strong { overflow: hidden; color: #e2e8f0; font-size: 14px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
-.app-install-card-text small { overflow: hidden; color: #87929a; font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-.app-install-card-action {
-  display: flex; align-items: center; gap: 4px; max-width: 100%; margin-top: 2px; overflow: hidden; color: #38bdf8; font-size: 12px; font-weight: 700;
-  white-space: nowrap;
-}
-.app-install-card-action .material-symbols-outlined { flex: 0 0 auto; font-size: 16px; }
+.app-install-card-icon { flex: 0 0 auto; font-size: 20px; }
+.app-install-card-text { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.app-install-card-text strong { overflow: hidden; color: #e2e8f0; font-size: 13px; font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.app-install-card-text small { overflow: hidden; color: #38bdf8; font-size: 11px; font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .app-install-card:active { background: #192b3a; border-color: #3b5a72; }
 .app-install-card:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
 /* iPhone guide: illustration + numbered text per step */
@@ -7826,3 +7822,47 @@ body[data-pc-web="true"] .pc-map-controls > .party-members-map-btn:hover { backg
 .app-update-now-btn:active { background: #0ea5e9; }
 /* Settings: version row action label */
 .app-version-check-btn { flex: 0 0 auto; padding: 5px 10px; border: 1px solid #304b60; border-radius: 999px; background: #14222e; color: #38bdf8; font-size: 12px; font-weight: 700; white-space: nowrap; }
+/* ---- Mobile login (not PC; Android app + mobile web/PWA): compact layout, photo card with the slogan BELOW the photo ----
+   Heights are really reduced (no overflow clipping); the container keeps overflow-y: auto for the keyboard / tiny screens.
+   The view fills the container (100%) instead of 100vh, which on mobile browsers is taller than the visible area.
+   Photo: full width at 16:9. --login-photo-h (screen height minus the rest of the login, min 76 px) only caps it on
+   short phones, where the photo gets lower (cover, centred on the rider; never stretched). No fixed maximum. */
+body:not([data-auth-scope="pc"]) #mobileLoginView {
+  --login-photo-h: max(76px, calc(100vh - 484px));
+  min-height: 100%;
+}
+@supports (height: 100dvh) {
+  body:not([data-auth-scope="pc"]) #mobileLoginView { --login-photo-h: max(76px, calc(100dvh - 484px)); }
+}
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-header-inner { height: 44px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-main { padding: 6px 16px calc(6px + env(safe-area-inset-bottom)); }
+/* Hero card: 1) photo only  2) text block under it (no overlay) */
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-hero {
+  display: block; min-height: 0; margin-bottom: 8px; border-radius: 12px; background: #12171d; background-image: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+}
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-hero-img {
+  display: block; width: 100%; aspect-ratio: 16 / 9; max-height: var(--login-photo-h); background: url('assets/login-hero.jpg') center 66% / cover no-repeat #0b1d30;
+}
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-hero-content { padding: 7px 12px 8px; text-align: center; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-hero-title {
+  margin: 0; color: #f1f5f9; font-size: 18px; font-weight: 800; line-height: 1.2; letter-spacing: .01em; text-shadow: none;
+}
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-hero-subtitle {
+  margin: 1px 0 0; color: #8ec5e6; font-size: 11px; font-weight: 600; line-height: 1.3; letter-spacing: .08em; text-shadow: none;
+}
+/* Form: same parts, tighter spacing */
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-tabs { margin-bottom: 8px; padding: 3px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-tab { padding: 6px 0; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-form { gap: 8px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-field { gap: 3px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-input { height: 42px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-submit-btn { height: 44px; margin-top: 0; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-switch-prompt { margin-top: 6px; }
+/* Install cards: still two columns, a little smaller */
+body:not([data-auth-scope="pc"]) #mobileLoginView .app-install-cards { margin-top: 8px; gap: 8px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .app-install-card { min-height: 40px; padding: 5px 10px; gap: 7px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .app-install-card-icon { font-size: 18px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .app-install-card-text strong { font-size: 12.5px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .app-install-card-text small { font-size: 10.5px; }
+body:not([data-auth-scope="pc"]) #mobileLoginView .mobile-auth-footer { margin-top: 8px; }

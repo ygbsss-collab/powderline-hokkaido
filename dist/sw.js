@@ -1,6 +1,6 @@
 // Bump this version when the app shell changes so installed clients can update together.
 const SHELL_CACHE_PREFIX = 'powderline-pwa-shell-';
-const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v13`;
+const SHELL_CACHE = `${SHELL_CACHE_PREFIX}v14`;
 const SHELL_FILES = [
   './',
   './index.html',
@@ -36,6 +36,7 @@ const SHELL_FILES = [
   // Intro first frame (styles.css) and the 8 default profile avatars (party list / markers work without network).
   // The intro video is not cached: when it cannot load, the intro finishes on its 'error' event.
   './assets/powderline-app-intro-first.jpg',
+  './assets/login-hero.jpg',
   './assets/avatars/avatar-01.webp',
   './assets/avatars/avatar-02.webp',
   './assets/avatars/avatar-03.webp',
