@@ -9,6 +9,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  actions: read # wait step: list this run's artifacts
 
 # Shared with the deploy job of weather-update.yml: one Pages deployment at a time, a running one is never cancelled
 # (each deployment is a full ./dist of a main commit that already contains all earlier commits).
@@ -31,6 +32,21 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
+      # deploy-pages looks the artifact up ~0.5 s after the upload finalizes and sometimes finds none yet
+      # ("Found 0 artifact(s)"). Wait until this run's github-pages artifact is listed: every 10 s, at most 120 s
+      # (the first check after 10 s, so the deploy never starts right on the heels of the upload).
+      - name: Wait for Pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 12); do
+            sleep 10
+            n=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?name=github-pages" --jq '.total_count' || echo 0)
+            if [ "${n:-0}" -ge 1 ]; then echo "github-pages artifact listed after $((i * 10)) s"; exit 0; fi
+            echo "github-pages artifact not listed yet ($((i * 10)) s)"
+          done
+          echo "::error::github-pages artifact not listed within 120 s"
+          exit 1
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
