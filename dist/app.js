@@ -14300,12 +14300,17 @@ async function startPartyMemberSelectedRideOn() {
     let guardReady = false;
     let rebuildingGuard = false;
     let forwardGuard = false; // we are on the base and the guard we just left is still the forward entry
+    // A back is being handled / its guard restored (popstate .. go(1) landed). No pushState in this window: the browser
+    // treats such a push as gesture-less even right after a tap, and then skips the base on the next back (app closes).
+    let backFlow = false;
+    let backFlowTimer = null;
+    const endBackFlow = () => { backFlow = false; clearTimeout(backFlowTimer); backFlowTimer = null; };
 
     const isWeatherEntry = () => Boolean(history.state?.plWeather);
     const activeGesture = () => !navigator.userActivation || navigator.userActivation.isActive;
     // Push the guard only during a real user activation and while the base is current.
     const armGuard = () => {
-      if (leaving || rebuildingGuard || !userActivated || !activeGesture() || isWeatherEntry() || !history.state?.plBase) return false;
+      if (backFlow || handling || leaving || rebuildingGuard || !userActivated || !activeGesture() || isWeatherEntry() || !history.state?.plBase) return false;
       try {
         history.pushState(GUARD_STATE, '');
         guardReady = true;
@@ -14313,14 +14318,15 @@ async function startPartyMemberSelectedRideOn() {
         return true;
       } catch { return false; }
     };
-    // After a handled back: step forward onto the guard we came from (no new entry); else arm on the next tap.
+    // After a handled back: only step forward onto the guard we came from (no new entry). backFlow stays on until that
+    // traversal lands (popstate onto the guard) so nothing restores twice; without a forward guard the next tap arms one.
     const restoreGuard = () => {
-      if (leaving || !history.state?.plBase) return;
-      if (forwardGuard) {
-        forwardGuard = false;
-        try { history.go(1); return; } catch { }
-      }
-      armGuard();
+      if (leaving || !history.state?.plBase || !forwardGuard) { endBackFlow(); return; }
+      forwardGuard = false;
+      backFlow = true;
+      clearTimeout(backFlowTimer);
+      backFlowTimer = setTimeout(endBackFlow, 1500); // safety: a lost traversal never blocks the guard for good
+      try { history.go(1); } catch { endBackFlow(); }
     };
     // Popups that exist only on the web; closed here so the shared APK back list stays unchanged.
     const closeBrowserOnlyPopup = () => clickVisibleControl('#partySosConfirmModal', '#partySosConfirmCancel')
@@ -14372,9 +14378,11 @@ async function startPartyMemberSelectedRideOn() {
         return;
       }
       // Forward onto the guard (our own history.go(1) included) is not a back; ignore while leaving.
-      if (leaving || event.state?.plGuard) return;
+      if (event.state?.plGuard) { endBackFlow(); return; } // the restoring go(1) (or a forward) landed on the guard
+      if (leaving) return;
+      if (backFlow || handling) return; // a back is already being handled / restored: no second handling or restore
+      backFlow = true;
       forwardGuard = Boolean(event.state?.plBase && guardReady); // we just left the guard: it is the forward entry
-      if (handling) { restoreGuard(); return; }
       handling = true;
       let consumed = false;
       try { consumed = closeBrowserOnlyPopup() || Boolean(await handleAndroidBackButton(null)); } finally { handling = false; }
@@ -14387,7 +14395,7 @@ async function startPartyMemberSelectedRideOn() {
       if (consumed) { restoreGuard(); return; }
       // Final home screen of the installed PWA: the APK's exit question.
       if (isStandalonePwa()) {
-        if (exitConfirmationOpen) return;
+        if (exitConfirmationOpen) { endBackFlow(); return; }
         exitConfirmationOpen = true;
         let exit = false;
         try { exit = window.confirm('POWDERLINE 앱을 종료하시겠습니까?'); } finally { exitConfirmationOpen = false; }
@@ -14395,6 +14403,7 @@ async function startPartyMemberSelectedRideOn() {
         // Exit as far as the browser allows: close the app window, else leave the app's history. A WebAPK started at
         // its first entry cannot be closed by script; then no guard is left, so the next system back closes it.
         leaving = true;
+        endBackFlow();
         try { window.close(); } catch { }
         setTimeout(() => {
           if (document.visibilityState !== 'visible') return;
@@ -14407,6 +14416,7 @@ async function startPartyMemberSelectedRideOn() {
       }
       // Browser tab: leave the page once (to the previous site). If nothing happens (no previous page), stay usable.
       leaving = true;
+      endBackFlow();
       clearTimeout(leaveTimer);
       leaveTimer = setTimeout(() => { leaving = false; restoreGuard(); }, 1500);
       history.back();
