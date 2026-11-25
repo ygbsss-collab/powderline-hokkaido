@@ -1,10 +1,11 @@
 {
   "android": {
-    "versionCode": 3,
-    "versionName": "1.1.1",
+    "versionCode": 4,
+    "versionName": "1.1.2",
     "apkUrl": "https://github.com/ygbsss-collab/powderline-hokkaido/releases/latest/download/POWDERLINE.apk",
     "releaseNotes": [
-      "로그인 화면 디자인 개선 (상단 사진, 간결한 설치 안내)"
+      "오프라인 지도 전체보기 실시간 다운로드 현황 개선",
+      "파티 GPS 위치 5초 갱신 옵션 추가"
     ]
   }
 }
