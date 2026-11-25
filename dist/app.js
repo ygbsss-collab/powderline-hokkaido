@@ -2727,7 +2727,7 @@ geolocateControl.on('error', (e) => {
     return party.sharedCourse ? [party.sharedCourse] : [];
   }
 
-const PARTY_GPS_INTERVAL_OPTIONS = [10, 30, 60];
+const PARTY_GPS_INTERVAL_OPTIONS = [5, 10, 30, 60];
 const PARTY_GPS_DEFAULT_INTERVAL_SECONDS = 30;
 const PARTY_GPS_STATIONARY_HOLD_MS = 60000;
 const PARTY_GPS_STATIONARY_INTERVAL_MS = 300000;
@@ -10600,14 +10600,18 @@ async function initializeSupabase(key=localStorage.getItem(SUPABASE_KEY_STORAGE)
     if (p.errored > 0) parts.push(`실패 ${p.errored}개`);
     return parts.join(' · ');
   }
+  // Live update of every rendered copy of the region: the home card AND the all-regions modal (same text / percent).
   function paintOfflineProgress(id) {
-    const item = document.querySelector(`[data-offline-region-id="${CSS.escape(id)}"]`);
-    const label = item?.querySelector('.home-offline-region-state');
-    if (!label || !offlineActiveJob || offlineActiveJob.id !== id || offlineActiveJob.cancelRequested) return;
+    if (!offlineActiveJob || offlineActiveJob.id !== id || offlineActiveJob.cancelRequested) return;
     const p = offlineRegionProgress.get(id);
-    label.textContent = offlineProgressText(p, offlineStalled());
-    const bar = item.querySelector('.home-offline-region-bar b');
-    if (bar) bar.style.width = offlineProgressPercent(p) + '%';
+    const text = offlineProgressText(p, offlineStalled());
+    const width = offlineProgressPercent(p) + '%';
+    document.querySelectorAll(`[data-offline-region-id="${CSS.escape(id)}"]`).forEach(item => {
+      const label = item.querySelector('.home-offline-region-state, .offline-all-state > span:last-child');
+      if (label) label.textContent = text;
+      const bar = item.querySelector('.home-offline-region-bar b, .offline-all-bar b');
+      if (bar) bar.style.width = width;
+    });
   }
   let offlineProgressListenerBound = false;
   function bindOfflineDownloadProgress(plugin) {
